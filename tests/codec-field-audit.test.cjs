@@ -100,11 +100,14 @@ test('explicit file queries preserve opaque IDs and exact uint64 metadata withou
     }
 });
 
-test('file metadata query support never enables ordinary file event conversion through a truthy option or converter', async () => {
+test('file events convert only through an explicit file converter, never a truthy query option', async () => {
     const file = { elementType: 3, fileElement: { fileUuid: 'id', fileName: 'file.txt', fileSize: '10' } };
-    for (const context of [{}, { queryFiles: false }, { queryFiles: 'true' }, { queryFiles: 1 }, { file: async () => ({ file: 'id' }) }]) {
+    for (const context of [{}, { queryFiles: false }, { queryFiles: 'true' }, { queryFiles: 1 }]) {
         await assert.rejects(codec.fromKernel(receive([text('must not truncate'), file]), context), { code: 'UNSUPPORTED' });
     }
+    const url = 'https://njc-download.ftn.qq.com/ftn_handler/abcd/?fname=';
+    const converted = await codec.fromKernel(receive([file]), { file: async (element, base) => ({ ...base, url }) });
+    assert.deepEqual(converted, [{ type: 'file', data: { file: 'id', file_id: 'id', name: 'file.txt', file_size: '10', url } }]);
 });
 
 test('all query file fields are validated before resource downloads or identity lookups', async () => {

@@ -534,6 +534,22 @@ class OneBotService {
                 ? { duration: resource.duration } : {}) };
     }
 
+    async receivedFile(state, record, element, base) {
+        const source = element.fileElement;
+        try {
+            const result = await this.sessionCall(state, 'nativeGroupFileUrl', {
+                groupId: String(record.peerUid), fileId: source.fileUuid,
+                busId: Number.isSafeInteger(source.fileBizId) ? source.fileBizId : undefined,
+                fileName: source.fileName, expectedUin: state.self.uin });
+            if (typeof result?.url === 'string' && /^https:\/\/[a-z0-9.-]+\.qq\.com\/ftn_handler\//i.test(result.url)) {
+                return { ...base, url: result.url };
+            }
+        } catch {
+            // A temporarily unavailable URL still leaves valid file metadata.
+        }
+        return base;
+    }
+
     async convert(state, record, id, { queryFiles = false } = {}) {
         const account = String(state.self.uin);
         const peer = { chatType: Number(record.chatType), peerUid: String(record.peerUid) };
@@ -541,6 +557,8 @@ class OneBotService {
             numberId((await this.sessionCall(state, 'resolve', { uid: record.senderUid })).uin, 'sender account');
         const message = await codec.fromKernel(record, {
             queryFiles,
+            file: Number(record.chatType) === 2 && state.capabilities?.groupFileUrl === true
+                ? (element, base) => this.receivedFile(state, record, element, base) : undefined,
             forward: element => ({ id: this.forwardRegistry.register(state, record, element) }),
             selfUin: account, selfUid: state.self.uid,
             resolveUid: uid => this.sessionCall(state, 'resolve', { uid }),
@@ -593,7 +611,7 @@ class OneBotService {
 
     async event(event) {
         const containsMedia = event?.kind === 'message' && Array.isArray(event.record?.elements) &&
-            event.record.elements.some(element => [2, 4, 5].includes(element?.elementType));
+            event.record.elements.some(element => [2, 3, 4, 5].includes(element?.elementType));
         return this.deadlines.run(Date.now() + (containsMedia ? this.mediaActionTimeoutMs : this.actionTimeoutMs), () => this.eventInto(event));
     }
 

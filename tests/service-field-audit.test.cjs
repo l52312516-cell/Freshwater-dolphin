@@ -18,6 +18,7 @@ function fixture(t) {
         calls.push({ method, params });
         if (method === 'status') return structuredClone(state);
         if (method === 'history') return { records: [structuredClone(record)] };
+        if (method === 'nativeGroupFileUrl') return { url: 'https://njc-download.ftn.qq.com/ftn_handler/abcd/?fname=', via: 'native-msf' };
         throw new Error('Unexpected method');
     } };
     return { store, record, calls, service: new OneBotService({ backend, store }), state };
@@ -29,6 +30,15 @@ test('get_msg exposes confirmed file metadata while automatic file events remain
     assert.deepEqual(query.data.message, [{ type: 'file', data: { file: 'opaque-file-id', file_id: 'opaque-file-id', name: '文档.txt', file_size: '9007199254740993' } }]);
     assert.equal(Object.hasOwn(query.data.message[0].data, 'url'), false);
     assert.equal(await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record }), null);
+});
+test('group file events convert with a native download URL when the capability is present', async t => {
+    const f = fixture(t); f.state.capabilities.groupFileUrl = true;
+    const event = await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record });
+    assert.equal(event.message_type, 'group');
+    assert.deepEqual(event.message, [{ type: 'file', data: { file: 'opaque-file-id', file_id: 'opaque-file-id',
+        name: '文档.txt', file_size: '9007199254740993', url: 'https://njc-download.ftn.qq.com/ftn_handler/abcd/?fname=' } }]);
+    const call = f.calls.find(item => item.method === 'nativeGroupFileUrl');
+    assert.equal(call.params.groupId, '456'); assert.equal(call.params.fileId, 'opaque-file-id');
 });
 test('history queries retain a full file segment with its exact native identity and size', async t => {
     const f = fixture(t);

@@ -367,7 +367,7 @@ function validateElements(elements, context) {
             if (typeof payload.content !== 'string') throw problem('INVALID_RESPONSE', 'Invalid QQ text element');
             if (payload.atType !== undefined && ![0, 1, 2, 4].includes(payload.atType)) throw problem('UNSUPPORTED', 'Unsupported QQ mention type');
         } else if (element.elementType === 3) {
-            if (context.queryFiles !== true) throw problem('UNSUPPORTED', 'QQ file metadata is only available in explicit message queries');
+            if (context.queryFiles !== true && typeof context.file !== 'function') throw problem('UNSUPPORTED', 'QQ file metadata is only available in explicit message queries');
             queriedFile(element);
         } else if ([2, 4, 5].includes(element.elementType)) {
             const type = ({ 2: 'image', 4: 'record', 5: 'video' })[element.elementType];
@@ -405,7 +405,9 @@ async function fromKernel(record, context = {}) {
             if (!data || typeof data.file !== 'string' || typeof data.url !== 'string') throw problem('UNSUPPORTED', 'QQ image has no retrievable resource');
             result.push({ type: 'image', data: resourceDetails('image', element, data) });
         } else if (element.elementType === 3) {
-            result.push({ type: 'file', data: queriedFile(element) });
+            const base = queriedFile(element);
+            const data = typeof context.file === 'function' ? await context.file(element, base) : base;
+            result.push({ type: 'file', data });
         } else if (element.elementType === 4 || element.elementType === 5) {
             const type = element.elementType === 4 ? 'record' : 'video';
             const data = await context[type](element);
