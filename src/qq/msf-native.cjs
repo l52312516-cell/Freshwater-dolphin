@@ -15,7 +15,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl']);
+const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace']);
 let addon = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -116,6 +116,20 @@ async function fetchGroupFileUrlNative(capture, params = {}) {
     return { ...result, url: gfu.withFileName(result, params.fileName), via: 'native-msf' };
 }
 
+// Fetch real group-file space capacity over the native MSF channel
+// (OidbSvcTrpcTcp.0x6d8_3). Proto verified against LLBot oidb.ts/group.ts.
+async function fetchGroupFileSpaceNative(capture, params = {}) {
+    const native = load();
+    const gfs = require('./group-file-space.cjs');
+    await ensureInstance(capture, native);
+    const body = gfs.encodeNativeRequest(params.groupId);
+    const sent = native.send(gfs.NATIVE_CMD, body.toString('hex'));
+    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF group-file space send failed: ' + (sent.error || ''));
+    const rsp = await awaitResponse(native, params.timeoutMs);
+    if (!rsp) throw problem('TIMEOUT', 'Native MSF group-file space response timed out');
+    return { ...gfs.decodeResponse(rsp), via: 'native-msf' };
+}
+
 function run(capture, params) {
     const op = params && params.op;
     if (typeof op !== 'string' || !OPS.has(op)) {
@@ -124,6 +138,7 @@ function run(capture, params) {
     const native = load();
     if (op === 'fetchRkey') return fetchRkeyNative(capture, params);
     if (op === 'fetchGroupFileUrl') return fetchGroupFileUrlNative(capture, params);
+    if (op === 'fetchGroupFileSpace') return fetchGroupFileSpaceNative(capture, params);
     switch (op) {
         case 'probe': return jsonSafe(native.probe());
         case 'status': return jsonSafe(native.status());

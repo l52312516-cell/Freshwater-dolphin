@@ -1,7 +1,7 @@
 'use strict';
 
 const ACTIONS = new Set(['send_like', 'get_group_at_all_remain', 'get_group_root_files',
-    'get_group_files_by_folder', 'get_group_file_info', 'get_group_file_url']);
+    'get_group_files_by_folder', 'get_group_file_info', 'get_group_file_url', 'get_group_file_system_info']);
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function identifier(value, label) {
     if (!['string', 'number'].includes(typeof value) || !/^[1-9]\d{0,15}$/.test(String(value)) ||
@@ -87,7 +87,8 @@ function folderInfo(info, groupId) {
 async function runQueryExtension(service, state, action, params) {
     if (!ACTIONS.has(action)) throw problem('UNSUPPORTED', 'Unknown query extension');
     const flag = action === 'send_like' ? 'profileLike' : action === 'get_group_at_all_remain' ? 'groupAtAllRemain' :
-        action === 'get_group_file_info' ? 'groupFileInfo' : action === 'get_group_file_url' ? 'groupFileUrl' : 'groupFiles';
+        action === 'get_group_file_info' ? 'groupFileInfo' : action === 'get_group_file_url' ? 'groupFileUrl' :
+        action === 'get_group_file_system_info' ? 'groupFileSpace' : 'groupFiles';
     if (state.capabilities?.[flag] !== true) throw problem('UNSUPPORTED', 'The current QQ session does not provide this capability');
     if (action === 'send_like') {
         const uin = identifier(params.user_id, 'user_id');
@@ -128,6 +129,13 @@ async function runQueryExtension(service, state, action, params) {
             throw problem('INVALID_RESPONSE', 'QQ returned no trusted group file download URL');
         }
         return { url: result.url };
+    }
+    if (action === 'get_group_file_system_info') {
+        const result = await service.sessionCall(state, 'nativeGroupFileSpace', { groupId, expectedUin: state.self.uin });
+        const space = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ||
+            typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
+        if (!space(result?.totalSpace) || !space(result?.usedSpace)) throw problem('INVALID_RESPONSE', 'QQ returned invalid group file space');
+        return { group_id: Number(groupId), total_space: result.totalSpace, used_space: result.usedSpace };
     }
     const startIndex = integer(params.start_index, 0, 0xffffffff, 'start_index');
     const count = integer(params.count, 100, 100, 'count', 1);

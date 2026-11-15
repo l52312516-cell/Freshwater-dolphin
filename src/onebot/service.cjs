@@ -131,7 +131,7 @@ class OneBotService {
             if (!actions.has(request.action)) throw problem('UNSUPPORTED', 'Unsupported action');
             const params = request.params === undefined ? {} : request.params;
             if (!params || typeof params !== 'object' || Array.isArray(params)) throw problem('INVALID_REQUEST', 'params must be an object');
-            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_group_file_url', ...MERGED_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
+            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_group_file_url', 'get_group_file_system_info', ...MERGED_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
             if (['send_private_msg', 'send_group_msg', 'send_msg'].includes(request.action)) {
                 if (params.auto_escape !== undefined && typeof params.auto_escape !== 'boolean') throw problem('INVALID_REQUEST', 'auto_escape must be boolean');
                 const validated = codec.parse(params.message, params.auto_escape === true);

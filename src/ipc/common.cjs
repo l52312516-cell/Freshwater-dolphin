@@ -7,7 +7,7 @@ const { fault } = require('../errors.cjs');
 const VERSION = 1;
 const LIMIT = 2 * 1024 * 1024;
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'msfCapture']);
+    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'msfCapture']);
 
 function privateDirectory(directory) {
     if (!path.isAbsolute(directory)) throw fault('INVALID_CONFIG', 'RPC directory must be absolute');
