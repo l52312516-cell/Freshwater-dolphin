@@ -30,7 +30,7 @@ const EXTENSION_REQUIREMENTS = Object.freeze({ get_capabilities: null, get_group
     get_recent_contact: 'recentContacts', get_friend_requests: 'friendRequests', get_group_system_msg: 'groupRequests',
     mark_private_msg_as_read: 'markRead', mark_group_msg_as_read: 'markRead', mark_msg_as_read: 'markRead',
     get_group_at_all_remain: 'groupAtAllRemain', get_group_root_files: 'groupFiles',
-    get_group_files_by_folder: 'groupFiles', get_group_file_info: 'groupFileInfo',
+    get_group_files_by_folder: 'groupFiles', get_group_file_info: 'groupFileInfo', get_group_file_url: 'groupFileUrl',
     set_qq_profile: 'selfProfile', set_group_remark: 'groupRemark',
     qqapi_get_forward_messages: 'forwardRead', qqapi_message_forward: 'forwardExisting',
     send_private_forward_msg: 'mergeCustom', send_group_forward_msg: 'mergeCustom', ...GROUP_FILE_REQUIREMENTS });

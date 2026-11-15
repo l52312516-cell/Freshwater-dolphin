@@ -25,7 +25,7 @@ const MAX_IDENTITIES = 20000;
 const SERVICES = Object.freeze({ msg: 'getMsgService', profile: 'getProfileService',
   group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService' });
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'msfCapture']);
+  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'msfCapture']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numeric(value, label = 'QQ number') {
@@ -195,6 +195,7 @@ class Capture extends EventEmitter {
         groupKick: compatible && this.ready && resolve && this.hasMethods('group', ['kickMember', 'getAllMemberList']),
         groupAdmin: member && this.hasMethods('group', ['modifyMemberRole']), ...this.social.capabilities(),
         ...this.interactions.capabilities(), ...this.groupFilesApi.capabilities(),
+        groupFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
         ...(compatible && this.ready ? this.forwardApi.capabilities() : { forwardExisting: false, forwardRead: false }),
         mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom } };
   }
@@ -973,6 +974,14 @@ class Capture extends EventEmitter {
     }
     return require('./msf-native.cjs').run(this, params);
   }
+  async nativeGroupFileUrl(params) {
+    this.ensureReady();
+    if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) {
+      throw problem('SESSION_CHANGED', 'Native group-file URL query must be bound to the current QQ session');
+    }
+    return require('./msf-native.cjs').run(this, { op: 'fetchGroupFileUrl', groupId: params.groupId,
+      fileId: params.fileId, busId: params.busId, fileName: params.fileName, timeoutMs: params.timeoutMs });
+  }
   async socialQuery(params, context) { return this.social.query(params, context); }
   async interaction(params, context) {
     const { operation, ...input } = params;
@@ -1352,7 +1361,7 @@ class Capture extends EventEmitter {
         method === 'sendMessage' ? (params.timeoutMs ?? 10000) :
           method === 'forwardOperation' && params.kind === 'customMerge' ? (params.timeoutMs ?? 60000) :
             ['prepareMedia', 'receiveMedia'].includes(method) ? 60000 :
-              method === 'nativeRkey' ? (params.timeoutMs ?? 8000) + 6000 : 10000);
+              ['nativeRkey', 'nativeGroupFileUrl'].includes(method) ? (params.timeoutMs ?? 8000) + 6000 : 10000);
     } finally {
       // An outer deadline must also retire callback waiters inside the operation.
       controller.abort();

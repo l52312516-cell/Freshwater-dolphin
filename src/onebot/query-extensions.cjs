@@ -1,7 +1,7 @@
 'use strict';
 
 const ACTIONS = new Set(['send_like', 'get_group_at_all_remain', 'get_group_root_files',
-    'get_group_files_by_folder', 'get_group_file_info']);
+    'get_group_files_by_folder', 'get_group_file_info', 'get_group_file_url']);
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function identifier(value, label) {
     if (!['string', 'number'].includes(typeof value) || !/^[1-9]\d{0,15}$/.test(String(value)) ||
@@ -87,7 +87,7 @@ function folderInfo(info, groupId) {
 async function runQueryExtension(service, state, action, params) {
     if (!ACTIONS.has(action)) throw problem('UNSUPPORTED', 'Unknown query extension');
     const flag = action === 'send_like' ? 'profileLike' : action === 'get_group_at_all_remain' ? 'groupAtAllRemain' :
-        action === 'get_group_file_info' ? 'groupFileInfo' : 'groupFiles';
+        action === 'get_group_file_info' ? 'groupFileInfo' : action === 'get_group_file_url' ? 'groupFileUrl' : 'groupFiles';
     if (state.capabilities?.[flag] !== true) throw problem('UNSUPPORTED', 'The current QQ session does not provide this capability');
     if (action === 'send_like') {
         const uin = identifier(params.user_id, 'user_id');
@@ -118,6 +118,16 @@ async function runQueryExtension(service, state, action, params) {
             ...(params.folder_id === undefined ? {} : { directory: opaque(params.folder_id, 'folder_id') }) });
         if (result?.groupId !== groupId || result.fileInfo?.fileId !== fileId) throw problem('INVALID_RESPONSE', 'QQ returned a different group file');
         return fileInfo(result.fileInfo, groupId);
+    }
+    if (action === 'get_group_file_url') {
+        const fileId = opaque(params.file_id, 'file_id');
+        const busId = integer(params.busid, 102, 0xffffffff, 'busid');
+        const fileName = params.file_name === undefined ? undefined : opaque(params.file_name, 'file_name');
+        const result = await service.sessionCall(state, 'nativeGroupFileUrl', { groupId, fileId, busId, fileName, expectedUin: state.self.uin });
+        if (typeof result?.url !== 'string' || !/^https:\/\/[a-z0-9.-]+\.qq\.com\/ftn_handler\//i.test(result.url)) {
+            throw problem('INVALID_RESPONSE', 'QQ returned no trusted group file download URL');
+        }
+        return { url: result.url };
     }
     const startIndex = integer(params.start_index, 0, 0xffffffff, 'start_index');
     const count = integer(params.count, 100, 100, 'count', 1);

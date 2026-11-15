@@ -15,7 +15,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey']);
+const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl']);
 let addon = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -44,52 +44,76 @@ function load() {
     return addon;
 }
 
+// Capability probe: true when the native addon can be loaded in this process.
+// Never throws; loading the addon has no hooking side effect (install is separate).
+function available() {
+    try { load(); return true; } catch { return false; }
+}
+
 function jsonSafe(value) {
     return JSON.parse(JSON.stringify(value, (_k, v) => typeof v === 'bigint' ? v.toString() : v));
 }
 
-// Fetch real download-rkey over the native MSF channel (bypasses the JS
-// whitelist). Acquires the session-shell instance via the ssosend detour,
-// primes it with one natural JS send if needed, then sends the verified
-// real-device OidbBase envelope and decodes the rkey items.
-async function fetchRkeyNative(capture, params = {}) {
-    const native = load();
-    const rkey = require('./rkey.cjs');
+// Acquire the live session-shell instance via the ssosend detour. If no template
+// has been captured yet, prime it with one natural JS send (the hook captures the
+// instance synchronously at send time, so poll briefly rather than awaiting the
+// full priming response). Shared by every native fetch op.
+async function ensureInstance(capture, native) {
     native.install('ssosend');
     let template = native.readTemplate();
-    if (template.haveTemplate !== 'true') {
-        // Prime: a natural JS sendSsoCmdReqByContend call passes through the
-        // session-shell send, letting the detour capture the live instance.
-        // The hook captures synchronously, so poll briefly rather than awaiting
-        // the full priming response.
-        const service = capture.service('msg');
-        if (typeof service.sendSsoCmdReqByContend !== 'function') {
-            throw problem('UNSUPPORTED', 'QQ lacks the SSO channel needed to prime the native instance');
-        }
-        Promise.resolve(service.sendSsoCmdReqByContend(rkey.CMD, rkey.latin1(rkey.encodeRequest()))).catch(() => {});
-        const primeDeadline = Date.now() + 3000;
-        while (Date.now() < primeDeadline) {
-            await sleep(100);
-            template = native.readTemplate();
-            if (template.haveTemplate === 'true') break;
-        }
-        if (template.haveTemplate !== 'true') {
-            throw problem('NOT_READY', 'Native MSF instance was not captured; cannot send');
-        }
+    if (template.haveTemplate === 'true') return;
+    const rkey = require('./rkey.cjs');
+    const service = capture.service('msg');
+    if (typeof service.sendSsoCmdReqByContend !== 'function') {
+        throw problem('UNSUPPORTED', 'QQ lacks the SSO channel needed to prime the native instance');
     }
-    // send() resets the response counter, so poll for a fresh response after it.
-    const sent = native.send(rkey.NATIVE_CMD, rkey.encodeNativeRequest().toString('hex'));
-    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF rkey send failed: ' + (sent.error || ''));
-    const deadline = Date.now() + (Number(params.timeoutMs) || 8000);
+    Promise.resolve(service.sendSsoCmdReqByContend(rkey.CMD, rkey.latin1(rkey.encodeRequest()))).catch(() => {});
+    const primeDeadline = Date.now() + 3000;
+    while (Date.now() < primeDeadline) {
+        await sleep(100);
+        template = native.readTemplate();
+        if (template.haveTemplate === 'true') return;
+    }
+    throw problem('NOT_READY', 'Native MSF instance was not captured; cannot send');
+}
+
+// Poll for a fresh response after send() (which resets the response counter).
+async function awaitResponse(native, timeoutMs) {
+    const deadline = Date.now() + (Number(timeoutMs) || 8000);
     while (Date.now() < deadline) {
         await sleep(150);
         const rsp = native.readResponse();
-        if (rsp.count > 0 && rsp.bodyLen > 0) {
-            const body = Buffer.from(rsp.body);
-            return { rkeys: rkey.decodeResponse(body), via: 'native-msf' };
-        }
+        if (rsp.count > 0 && rsp.bodyLen > 0) return Buffer.from(rsp.body);
     }
-    throw problem('TIMEOUT', 'Native MSF rkey response timed out');
+    return null;
+}
+
+// Fetch real download-rkey over the native MSF channel (bypasses the JS
+// whitelist) using the verified real-device OidbBase envelope.
+async function fetchRkeyNative(capture, params = {}) {
+    const native = load();
+    const rkey = require('./rkey.cjs');
+    await ensureInstance(capture, native);
+    const sent = native.send(rkey.NATIVE_CMD, rkey.encodeNativeRequest().toString('hex'));
+    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF rkey send failed: ' + (sent.error || ''));
+    const body = await awaitResponse(native, params.timeoutMs);
+    if (!body) throw problem('TIMEOUT', 'Native MSF rkey response timed out');
+    return { rkeys: rkey.decodeResponse(body), via: 'native-msf' };
+}
+
+// Fetch a real group-file download URL over the native MSF channel
+// (OidbSvcTrpcTcp.0x6d6_2). Proto verified against LLBot oidb.ts/group.ts.
+async function fetchGroupFileUrlNative(capture, params = {}) {
+    const native = load();
+    const gfu = require('./group-file-url.cjs');
+    await ensureInstance(capture, native);
+    const body = gfu.encodeNativeRequest(params.groupId, params.fileId, params.busId);
+    const sent = native.send(gfu.NATIVE_CMD, body.toString('hex'));
+    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF group-file send failed: ' + (sent.error || ''));
+    const rsp = await awaitResponse(native, params.timeoutMs);
+    if (!rsp) throw problem('TIMEOUT', 'Native MSF group-file response timed out');
+    const result = gfu.decodeResponse(rsp);
+    return { ...result, url: gfu.withFileName(result, params.fileName), via: 'native-msf' };
 }
 
 function run(capture, params) {
@@ -99,6 +123,7 @@ function run(capture, params) {
     }
     const native = load();
     if (op === 'fetchRkey') return fetchRkeyNative(capture, params);
+    if (op === 'fetchGroupFileUrl') return fetchGroupFileUrlNative(capture, params);
     switch (op) {
         case 'probe': return jsonSafe(native.probe());
         case 'status': return jsonSafe(native.status());
@@ -114,4 +139,4 @@ function run(capture, params) {
     }
 }
 
-module.exports = { run, OPS };
+module.exports = { run, OPS, available };
