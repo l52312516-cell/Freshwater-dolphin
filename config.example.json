@@ -1,0 +1,17 @@
+{
+  "rpcDirectory": "work/rpc",
+  "dataDirectory": "work/data",
+  "logDirectory": "work/logs",
+  "reverseWs": {
+    "url": "ws://astrbot:6199/ws",
+    "token": "",
+    "heartbeatMs": 30000,
+    "pingTimeoutMs": 10000,
+    "reconnectMinMs": 1000,
+    "reconnectMaxMs": 30000
+  },
+  "actionTimeoutMs": 10000,
+  "mediaActionTimeoutMs": 60000,
+  "eventBufferSize": 1000,
+  "eventMaxAgeMs": 60000
+}

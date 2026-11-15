@@ -1,0 +1,4 @@
+aiocqhttp==1.4.4
+Hypercorn==0.17.3
+Quart==0.19.9
+Flask==3.0.3

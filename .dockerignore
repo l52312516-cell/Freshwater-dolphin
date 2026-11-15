@@ -1,0 +1,9 @@
+.git
+node_modules
+work
+outputs
+config.json
+*.log
+.env
+*.pem
+*.key

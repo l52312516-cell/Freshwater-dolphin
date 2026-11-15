@@ -1,0 +1,247 @@
+/*
+ * Freshwater 设计令牌 —— 唯一色值来源。
+ * 配色母题取自「夜海 · 月华」插画：夜空靛蓝、星云蓝紫、雾紫、月华奶白、彗星青。
+ * 主题由 <html data-theme data-accent data-contrast> 驱动，见 src/theme.ts。
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* 画布 */
+  --bg: #04081f;
+  --bg-deep: #02051a;
+  --bg-glow-a: rgba(26, 42, 110, 0.55);
+  --bg-glow-b: rgba(99, 112, 170, 0.18);
+
+  /* 表面 */
+  --surface-1: #0a1240;
+  --surface-2: #0e1a52;
+  --surface-3: #14215e;
+  --surface-glass: rgba(10, 18, 64, 0.74);
+  --surface-veil: rgba(4, 8, 31, 0.72);
+
+  /* 描边 */
+  --line: #23306d;
+  --line-soft: rgba(53, 70, 139, 0.42);
+  --line-strong: #35468b;
+
+  /* 文本 */
+  --text: #f2f4fb;
+  --text-strong: #fdf8e9;
+  --muted: #b8c3de;
+  --faint: #96a4c8;
+  --inverse: #070d26;
+
+  /* 主色与辅色（默认「潮汐青」） */
+  --accent: #79d8f2;
+  --accent-strong: #a9ecff;
+  --accent-contrast: #04121f;
+  --accent-soft: rgba(121, 216, 242, 0.14);
+  --accent-line: rgba(121, 216, 242, 0.34);
+  --second: #b3a7e0;
+  --second-soft: rgba(179, 167, 224, 0.16);
+  --third: #8fb2e8;
+
+  /* 状态 */
+  --success: #63dcc0;
+  --success-soft: rgba(99, 220, 192, 0.14);
+  --success-line: rgba(99, 220, 192, 0.32);
+  --warning: #ecc983;
+  --warning-soft: rgba(236, 201, 131, 0.14);
+  --warning-line: rgba(236, 201, 131, 0.32);
+  --danger: #ff9fb2;
+  --danger-soft: rgba(255, 159, 178, 0.13);
+  --danger-line: rgba(255, 159, 178, 0.32);
+  --info: #8fd3f5;
+  --info-soft: rgba(143, 211, 245, 0.12);
+  --neutral: #9aa8cc;
+  --neutral-soft: rgba(154, 168, 204, 0.12);
+
+  /* 强调色色板预览（仅用于设置页色板圆点，不参与界面着色） */
+  --swatch-tide: #79d8f2;
+  --swatch-moon: #f0cf86;
+  --swatch-nebula: #b3a7e0;
+  --swatch-abyss: #82aaff;
+
+  /* 交互与层次 */
+  --focus: #a9ecff;
+  --overlay-1: rgba(4, 8, 31, 0.82);
+  --overlay-2: rgba(4, 8, 31, 0.55);
+  --overlay-3: rgba(4, 8, 31, 0.28);
+  --shadow-1: 0 2px 8px rgba(1, 4, 15, 0.35);
+  --shadow-2: 0 12px 32px rgba(1, 4, 15, 0.45);
+  --shadow-3: 0 28px 90px rgba(1, 4, 15, 0.6);
+  --glow: 0 0 24px rgba(121, 216, 242, 0.18);
+
+  /* 尺寸 */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --sidebar-w: 236px;
+  --topbar-h: 76px;
+  --content-max: 1600px;
+
+  /* 间距（4/8 网格） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* 字体：西文与中文统一优先 Noto Sans SC，缺失时依次回落 Segoe UI / 苹方 / 微软雅黑 */
+  --font-sans: "Inter", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --fs-meta: 12px;
+  --fs-body: 14px;
+  --fs-h3: 15px;
+  --fs-h2: 18px;
+  --fs-h1: 28px;
+  --lh-body: 1.7;
+  --lh-tight: 1.4;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur: 0.18s;
+}
+
+/* 浅色「月白」：雾紫底 + 月华奶油高光，正文保持可读对比度。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #eef1f9;
+  --bg-deep: #e5eaf5;
+  --bg-glow-a: rgba(179, 167, 224, 0.32);
+  --bg-glow-b: rgba(143, 211, 245, 0.24);
+
+  --surface-1: #ffffff;
+  --surface-2: #f6f8fd;
+  --surface-3: #edf1fa;
+  --surface-glass: rgba(255, 255, 255, 0.82);
+  --surface-veil: rgba(250, 251, 255, 0.78);
+
+  --line: #d7deee;
+  --line-soft: rgba(185, 196, 221, 0.6);
+  --line-strong: #b9c4dd;
+
+  --text: #141a3c;
+  --text-strong: #10163a;
+  --muted: #455272;
+  --faint: #66738f;
+  --inverse: #ffffff;
+
+  --accent: #0c7189;
+  --accent-strong: #095a6e;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(12, 113, 137, 0.1);
+  --accent-line: rgba(12, 113, 137, 0.3);
+  --second: #5a4cb0;
+  --second-soft: rgba(90, 76, 176, 0.1);
+  --third: #2f6ba8;
+
+  --success: #0f7a5f;
+  --success-soft: rgba(15, 122, 95, 0.1);
+  --success-line: rgba(15, 122, 95, 0.28);
+  --warning: #8a6210;
+  --warning-soft: rgba(138, 98, 16, 0.1);
+  --warning-line: rgba(138, 98, 16, 0.26);
+  --danger: #b23a4d;
+  --danger-soft: rgba(178, 58, 77, 0.09);
+  --danger-line: rgba(178, 58, 77, 0.26);
+  --info: #276b96;
+  --info-soft: rgba(39, 107, 150, 0.1);
+  --neutral: #5c6a8c;
+  --neutral-soft: rgba(92, 106, 140, 0.1);
+
+  --focus: #0c7189;
+  --overlay-1: rgba(250, 251, 255, 0.86);
+  --overlay-2: rgba(250, 251, 255, 0.6);
+  --overlay-3: rgba(250, 251, 255, 0.3);
+  --shadow-1: 0 2px 8px rgba(31, 45, 80, 0.08);
+  --shadow-2: 0 12px 32px rgba(31, 45, 80, 0.12);
+  --shadow-3: 0 28px 90px rgba(31, 45, 80, 0.18);
+  --glow: 0 0 22px rgba(12, 113, 137, 0.12);
+
+  --cream-tint: #fbf6e6;
+}
+
+/* ---------- 强调色预设：只覆盖 accent 三件套与焦点环 ---------- */
+
+:root[data-accent="moon"] {
+  --accent: #f0cf86;
+  --accent-strong: #ffe9b8;
+  --accent-contrast: #1c1402;
+  --accent-soft: rgba(240, 207, 134, 0.14);
+  --accent-line: rgba(240, 207, 134, 0.34);
+  --focus: #ffe9b8;
+}
+
+:root[data-accent="nebula"] {
+  --accent: #b3a7e0;
+  --accent-strong: #d3cbf6;
+  --accent-contrast: #100a2b;
+  --accent-soft: rgba(179, 167, 224, 0.15);
+  --accent-line: rgba(179, 167, 224, 0.36);
+  --focus: #d3cbf6;
+}
+
+:root[data-accent="abyss"] {
+  --accent: #82aaff;
+  --accent-strong: #b3cbff;
+  --accent-contrast: #03102b;
+  --accent-soft: rgba(130, 170, 255, 0.14);
+  --accent-line: rgba(130, 170, 255, 0.34);
+  --focus: #b3cbff;
+}
+
+:root[data-theme="light"][data-accent="tide"] {
+  --accent: #0c7189;
+  --accent-strong: #095a6e;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(12, 113, 137, 0.1);
+  --accent-line: rgba(12, 113, 137, 0.3);
+  --focus: #0c7189;
+}
+
+:root[data-theme="light"][data-accent="moon"] {
+  --accent: #8a6210;
+  --accent-strong: #6b4a09;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(138, 98, 16, 0.1);
+  --accent-line: rgba(138, 98, 16, 0.28);
+  --focus: #8a6210;
+}
+
+:root[data-theme="light"][data-accent="nebula"] {
+  --accent: #5a4cb0;
+  --accent-strong: #453a8c;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(90, 76, 176, 0.1);
+  --accent-line: rgba(90, 76, 176, 0.28);
+  --focus: #5a4cb0;
+}
+
+:root[data-theme="light"][data-accent="abyss"] {
+  --accent: #2455a8;
+  --accent-strong: #1a4185;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(36, 85, 168, 0.1);
+  --accent-line: rgba(36, 85, 168, 0.28);
+  --focus: #2455a8;
+}
+
+/* 深色强度：OLED 纯黑只压深色画布，浅色模式不受影响。 */
+:root[data-theme="dark"][data-contrast="oled"] {
+  --bg: #000000;
+  --bg-deep: #000000;
+  --bg-glow-a: rgba(26, 42, 110, 0.32);
+  --bg-glow-b: rgba(99, 112, 170, 0.1);
+  --surface-1: #060a1d;
+  --surface-2: #090f28;
+  --surface-3: #0d1533;
+  --surface-glass: rgba(6, 10, 29, 0.82);
+}

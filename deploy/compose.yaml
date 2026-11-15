@@ -1,0 +1,30 @@
+services:
+  freshwater-dolphin:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: freshwater-dolphin:0.2.0-alpha.1
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 512mb
+    stop_grace_period: 95s
+    ports:
+      - "4090:4090"
+    # For HTTPS set both FWD_TLS_CERT and FWD_TLS_KEY to private workspace
+    # files, e.g. /workspace/work/control/tls/cert.pem and key.pem.
+    environment:
+      FWD_WEBUI_PORT: "4090"
+      FWD_QQ_BACKGROUND_MODE: "on"
+    volumes:
+      - ../work:/workspace/work
+    healthcheck:
+      test: ["CMD", "node", "src/manager/cli.cjs", "--health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

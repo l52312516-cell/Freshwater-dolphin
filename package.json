@@ -1,0 +1,25 @@
+{
+  "name": "freshwater-dolphin",
+  "version": "0.2.0-alpha.1",
+  "description": "An independent QQ kernel adapter for OneBot v11 and AstrBot",
+  "private": true,
+  "license": "LicenseRef-Freshwater-Source-Available-Noncommercial",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/manager/cli.cjs",
+    "start:worker": "node src/cli.cjs",
+    "build:webui": "npm --prefix webui run build",
+    "test": "node tools/test.cjs",
+    "package": "node tools/package.cjs",
+    "check": "node tools/check.cjs"
+  },
+  "dependencies": {
+    "fastify": "5.12.8",
+    "nodemailer": "10.5.0",
+    "silk-wasm": "3.7.1",
+    "ws": "8.23.0"
+  }
+}

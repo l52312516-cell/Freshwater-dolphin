@@ -1,0 +1,7 @@
+# Optional override for the isolated daemon with bridge and iptables disabled.
+services:
+  freshwater-dolphin:
+    build:
+      network: host
+    network_mode: host
+    ports: !reset []

@@ -1,0 +1,12 @@
+/node_modules/
+/work/
+/outputs/
+/详细报告/
+/config.json
+*.log
+__pycache__/
+*.pyc
+.env
+.env.*
+*.pem
+*.key
