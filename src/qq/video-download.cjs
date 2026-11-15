@@ -95,7 +95,13 @@ async function downloadVideo({ urls, expectedSize, expectedMd5, signal, expiresA
         if (length !== null && (typeof length !== 'string' || !/^[1-9]\d{0,15}$/.test(length) || Number(length) !== size)) {
             throw problem('INVALID_RESPONSE', 'Video response length disagrees with QQ metadata');
         }
-        if (response.headers.get('content-range') !== null || typeof response.body?.getReader !== 'function') {
+        // QQ's video CDN reports Content-Range even on a complete 200 response;
+        // accept only a full-range descriptor and reject genuinely partial streams.
+        const range = response.headers.get('content-range');
+        if (range !== null && range !== `bytes 0-${size - 1}/${size}`) {
+            throw problem('INVALID_RESPONSE', 'Video source returned a partial or missing stream');
+        }
+        if (typeof response.body?.getReader !== 'function') {
             throw problem('INVALID_RESPONSE', 'Video source returned a partial or missing stream');
         }
         reader = response.body.getReader();

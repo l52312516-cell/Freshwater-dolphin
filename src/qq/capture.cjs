@@ -186,7 +186,7 @@ class Capture extends EventEmitter {
         video: text && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getRichMediaFilePathForGuild']) && this.video.available(),
         imageReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']),
         recordReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId', 'downloadRichMedia']),
-        videoReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId', 'downloadRichMedia']),
+        videoReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']) && require('./msf-native.cjs').available(),
         groupName: compatible && this.ready && this.hasMethods('group', ['modifyGroupName']),
         groupWholeBan: compatible && this.ready && this.hasMethods('group', ['setGroupShutUp']),
         groupMemberBan: member && this.hasMethods('group', ['setMemberShutUp']),
@@ -1037,64 +1037,47 @@ class Capture extends EventEmitter {
       try { image = media.readNativeMedia(type, filename, this.mediaTargetRoots); break; }
       catch (error) { if (!['ENOENT', 'NOT_FOUND'].includes(error.code)) throw error; }
     }
-    if (!image && this.hasMethods('msg', ['downloadRichMedia'])) {
-      try {
-        const completed = await this.waiting('mediaDownload', value => {
-          if (value?.msgId !== params.nativeId || value.msgElementId !== params.elementId || value.chatType !== peer.chatType ||
-            (value.peerUid !== undefined && value.peerUid !== peer.peerUid)) return undefined;
-          if (!zeroCode(value.fileErrCode) || !zeroCode(value.fileSrvErrCode)) {
-            const code = input => typeof input === 'string' && /^-?\d{1,12}$/.test(input) || Number.isSafeInteger(input)
-              ? `${typeof input}:${input}` : typeof input;
-            throw problem('KERNEL_ERROR', `QQ failed to download the received ${type} (file=${code(value.fileErrCode)}; server=${code(value.fileSrvErrCode)})`);
-          }
-          if (typeof value.filePath !== 'string' || !value.filePath) throw problem('INVALID_RESPONSE', 'QQ image download returned no local file');
-          return value;
-        }, async () => {
-          const result = await this.invoke('msg', 'downloadRichMedia', [{ fileModelId: '0', downSourceType: 0,
-            downloadSourceType: 0, triggerType: 1, msgId: params.nativeId, chatType: peer.chatType,
-            peerUid: peer.peerUid, elementId: params.elementId, thumbSize: 0, downloadType: 1, filePath: '' }]);
-          if ((typeof result === 'number' && !zeroCode(result)) ||
-            (result && Object.hasOwn(result, 'result') && !zeroCode(result.result))) {
-            throw problem('KERNEL_ERROR', 'QQ rejected the image download request');
-          }
-          // Invocation acceptance is not download success; the matching complete
-          // event above must still confirm the real file and its error codes.
-        }, context, true, 60000);
-        if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed during image download');
-        image = media.readNativeMedia(type, completed.filePath, this.mediaTargetRoots);
-        const transferSize = completed.totalSize;
-        const validSize = typeof transferSize === 'string' && /^\d+$/.test(transferSize) || Number.isSafeInteger(transferSize) && transferSize >= 0;
-        if (!validSize || BigInt(transferSize) !== 0n && BigInt(transferSize) !== BigInt(image.bytes.length)) {
-          this.diagnostic(problem('MEDIA_DOWNLOAD_SIZE', JSON.stringify({ type, sizeType: typeof transferSize,
-            ...(validSize ? { transferSize: String(transferSize) } : {}), actualSize: image.bytes.length })));
-          throw problem('INVALID_RESPONSE', 'QQ downloaded media size does not match its completed transfer');
+    if (!image && type === 'video') {
+      // Video sources come straight from the native MSF NTV2RichMedia channel;
+      // the JS downloadRichMedia / getVideoPlayUrlV2 paths fail on this build.
+      const native = await require('./msf-native.cjs').run(this, { op: 'fetchVideoUrl',
+        fileUuid: details.fileUuid, isGroup: Number(peer.chatType) === 2, targetUid: this.self?.uid, timeoutMs: 8000 });
+      if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed during native video URL lookup');
+      image = await downloadVideo({ urls: [{ url: native.url }], expectedSize: details.fileSize, expectedMd5: details.videoMd5,
+        signal: context.signal, expiresAt: context.expiresAt ?? Date.now() + 60000 });
+    } else if (!image && this.hasMethods('msg', ['downloadRichMedia'])) {
+      const completed = await this.waiting('mediaDownload', value => {
+        if (value?.msgId !== params.nativeId || value.msgElementId !== params.elementId || value.chatType !== peer.chatType ||
+          (value.peerUid !== undefined && value.peerUid !== peer.peerUid)) return undefined;
+        if (!zeroCode(value.fileErrCode) || !zeroCode(value.fileSrvErrCode)) {
+          const code = input => typeof input === 'string' && /^-?\d{1,12}$/.test(input) || Number.isSafeInteger(input)
+            ? `${typeof input}:${input}` : typeof input;
+          throw problem('KERNEL_ERROR', `QQ failed to download the received ${type} (file=${code(value.fileErrCode)}; server=${code(value.fileSrvErrCode)})`);
         }
-        if (BigInt(transferSize) === 0n && (!/^[1-9]\d*$/.test(String(details.fileSize || '')) ||
-          BigInt(details.fileSize) !== BigInt(image.bytes.length))) throw problem('INVALID_RESPONSE', 'QQ media has no confirmed complete size');
-      } catch (error) {
-        if (type !== 'video' || error.code !== 'KERNEL_ERROR' || !this.hasMethods('richMedia', ['getVideoPlayUrlV2'])) throw error;
-        if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed before video URL lookup');
-        this.diagnostic(problem('MEDIA_VIDEO_URL_FALLBACK', 'Requesting the exact video source from QQ after its native download failed'));
-        const response = await this.invoke('richMedia', 'getVideoPlayUrlV2', [{ ...peer, guildId: '0' }, params.nativeId, params.elementId, 0,
-          { downSourceType: 1, triggerType: 1 }]);
-        if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed during video URL lookup');
-        const schema = { responseType: typeof response, keys: response && typeof response === 'object'
-          ? Object.keys(response).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)).slice(0, 16) : [],
-          resultType: typeof response?.result, ...(Number.isSafeInteger(response?.result) ? { result: response.result } : {}),
-          urlResultPresent: Boolean(response?.urlResult), domainUrlArray: Array.isArray(response?.urlResult?.domainUrl),
-          domainUrlCount: Array.isArray(response?.urlResult?.domainUrl) ? response.urlResult.domainUrl.length : 0 };
-        this.diagnostic(problem('MEDIA_VIDEO_RESULT_SCHEMA', JSON.stringify(schema)));
-        if (!response || response.result !== 0) throw problem('KERNEL_ERROR', `QQ video URL query failed (result=${Number.isSafeInteger(response?.result) ? response.result : typeof response?.result})`);
-        const result = response;
-        const urls = result.urlResult?.domainUrl;
-        this.diagnostic(problem('MEDIA_VIDEO_URL_SCHEMA', JSON.stringify({ array: Array.isArray(urls),
-          hosts: Array.isArray(urls) ? urls.slice(0, 8).map(item => {
-            try { const host = new URL(item?.url).hostname; return /^[a-zA-Z0-9.-]{1,253}$/.test(host) ? host : 'invalid'; }
-            catch { return 'invalid'; }
-          }) : [] })));
-        image = await downloadVideo({ urls, expectedSize: details.fileSize, expectedMd5: details.videoMd5,
-          signal: context.signal, expiresAt: context.expiresAt ?? Date.now() + 60000 });
+        if (typeof value.filePath !== 'string' || !value.filePath) throw problem('INVALID_RESPONSE', 'QQ image download returned no local file');
+        return value;
+      }, async () => {
+        const result = await this.invoke('msg', 'downloadRichMedia', [{ fileModelId: '0', downSourceType: 0,
+          downloadSourceType: 0, triggerType: 1, msgId: params.nativeId, chatType: peer.chatType,
+          peerUid: peer.peerUid, elementId: params.elementId, thumbSize: 0, downloadType: 1, filePath: '' }]);
+        if ((typeof result === 'number' && !zeroCode(result)) ||
+          (result && Object.hasOwn(result, 'result') && !zeroCode(result.result))) {
+          throw problem('KERNEL_ERROR', 'QQ rejected the image download request');
+        }
+        // Invocation acceptance is not download success; the matching complete
+        // event above must still confirm the real file and its error codes.
+      }, context, true, 60000);
+      if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed during image download');
+      image = media.readNativeMedia(type, completed.filePath, this.mediaTargetRoots);
+      const transferSize = completed.totalSize;
+      const validSize = typeof transferSize === 'string' && /^\d+$/.test(transferSize) || Number.isSafeInteger(transferSize) && transferSize >= 0;
+      if (!validSize || BigInt(transferSize) !== 0n && BigInt(transferSize) !== BigInt(image.bytes.length)) {
+        this.diagnostic(problem('MEDIA_DOWNLOAD_SIZE', JSON.stringify({ type, sizeType: typeof transferSize,
+          ...(validSize ? { transferSize: String(transferSize) } : {}), actualSize: image.bytes.length })));
+        throw problem('INVALID_RESPONSE', 'QQ downloaded media size does not match its completed transfer');
       }
+      if (BigInt(transferSize) === 0n && (!/^[1-9]\d*$/.test(String(details.fileSize || '')) ||
+        BigInt(details.fileSize) !== BigInt(image.bytes.length))) throw problem('INVALID_RESPONSE', 'QQ media has no confirmed complete size');
     }
     if (!image) throw problem('NOT_FOUND', 'QQ has not downloaded the complete received image');
     const declaredSize = details.fileSize;

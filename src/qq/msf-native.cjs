@@ -15,7 +15,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace']);
+const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl']);
 let addon = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -130,6 +130,21 @@ async function fetchGroupFileSpaceNative(capture, params = {}) {
     return { ...gfs.decodeResponse(rsp), via: 'native-msf' };
 }
 
+// Fetch a real video download URL over the native MSF channel (NTV2RichMedia
+// 0x11ea_200 group / 0x11e9_200 private). Used when the JS video URL query fails.
+async function fetchVideoUrlNative(capture, params = {}) {
+    const native = load();
+    const vu = require('./video-url.cjs');
+    const isGroup = params.isGroup !== false;
+    await ensureInstance(capture, native);
+    const body = vu.encodeNativeRequest(params.fileUuid, isGroup, params.targetUid);
+    const sent = native.send(vu.groupCmd(isGroup), body.toString('hex'));
+    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF video send failed: ' + (sent.error || ''));
+    const rsp = await awaitResponse(native, params.timeoutMs);
+    if (!rsp) throw problem('TIMEOUT', 'Native MSF video response timed out');
+    return { ...vu.decodeResponse(rsp, isGroup), via: 'native-msf' };
+}
+
 function run(capture, params) {
     const op = params && params.op;
     if (typeof op !== 'string' || !OPS.has(op)) {
@@ -139,6 +154,7 @@ function run(capture, params) {
     if (op === 'fetchRkey') return fetchRkeyNative(capture, params);
     if (op === 'fetchGroupFileUrl') return fetchGroupFileUrlNative(capture, params);
     if (op === 'fetchGroupFileSpace') return fetchGroupFileSpaceNative(capture, params);
+    if (op === 'fetchVideoUrl') return fetchVideoUrlNative(capture, params);
     switch (op) {
         case 'probe': return jsonSafe(native.probe());
         case 'status': return jsonSafe(native.status());

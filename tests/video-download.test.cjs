@@ -96,6 +96,12 @@ test('requires any Content-Length to be canonical and exactly match QQ metadata'
     assert.equal(cancelled, true);
 });
 
+test('accepts a complete 200 response whose Content-Range describes the full file (QQ video CDN)', async () => {
+    const result = await downloadVideo(options({ fetchImpl: async () => streaming([mp4], {
+        'content-length': String(mp4.length), 'content-range': `bytes 0-${mp4.length - 1}/${mp4.length}` }) }));
+    assert.deepEqual(result.bytes, mp4); assert.equal(result.size, mp4.length);
+});
+
 test('rejects redirects, partial responses and changed response URLs without a second attempt', async () => {
     for (const value of [new Response(mp4, { status: 302, headers: { location: source } }),
         new Response(mp4, { status: 206 }), new Response(mp4, { status: 500 }),
