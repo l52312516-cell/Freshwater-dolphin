@@ -23,7 +23,7 @@ function fixture(t) {
     } };
     return { store, record, calls, service: new OneBotService({ backend, store }), state };
 }
-test('get_msg exposes confirmed file metadata while automatic file events remain unsupported', async t => {
+test('get_msg exposes confirmed file metadata without enabling unavailable automatic file events', async t => {
     const f = fixture(t), entry = f.store.remember('123', f.record);
     const query = await f.service.action({ action: 'get_msg', params: { message_id: entry.id } });
     assert.equal(query.retcode, 0);
@@ -69,4 +69,66 @@ test('capability catalogue distinguishes JSON reception, failed share rendering,
     assert.equal(value.segments.find(row => row.name === 'video').send, true);
     assert.equal(value.segment_extensions[0].name, 'file');
     assert.equal(value.segment_extensions[0].receive, false);
+});
+test('group-only file reception follows the native URL capability and actual session readiness', async t => {
+    const f = fixture(t);
+    f.state.capabilities = { file: true, groupFileUrl: true, groupFileSpace: false };
+    const value = await f.service.capabilities();
+    const file = value.segment_extensions.find(row => row.name === 'file');
+    assert.equal(file.receive, true);
+    assert.equal(file.send, false); // This service has no account media directory.
+    assert.deepEqual(file.receive_contexts, ['group']);
+    assert.deepEqual(file.send_contexts, ['private', 'group']);
+    assert.equal(file.verification, 'offline-tested');
+    assert.equal(value.extensions.filter(row => row.name === 'get_group_file_url').length, 1);
+    assert.equal(value.extensions.filter(row => row.name === 'get_group_file_system_info').length, 1);
+    assert.equal(value.extensions.find(row => row.name === 'get_group_file_url').available, true);
+    assert.equal(value.extensions.find(row => row.name === 'get_group_file_system_info').available, false);
+    f.state.capabilities.groupFileUrl = false;
+    f.state.capabilities.groupFileSpace = true;
+    const spaceOnly = await f.service.capabilities();
+    assert.equal(spaceOnly.segment_extensions[0].receive, false);
+    assert.equal(spaceOnly.extensions.find(row => row.name === 'get_group_file_url').available, false);
+    assert.equal(spaceOnly.extensions.find(row => row.name === 'get_group_file_system_info').available, true);
+    f.state.ready = false;
+    f.state.capabilities.groupFileUrl = true;
+    const notReady = await f.service.capabilities();
+    assert.equal(notReady.segment_extensions[0].receive, false);
+    assert.equal(notReady.extensions.find(row => row.name === 'get_group_file_system_info').available, false);
+});
+test('native group file availability never enables unsupported private file reception', async t => {
+    const f = fixture(t);
+    f.state.capabilities.groupFileUrl = true;
+    Object.assign(f.record, { chatType: 1, peerUid: 'u_sender', peerUin: '789' });
+    const event = await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record });
+    assert.equal(event, null);
+    assert.equal(f.calls.some(call => call.method === 'nativeGroupFileUrl'), false);
+});
+test('private file URL capabilities remain independent of group-file support and report only enabled contexts', async t => {
+    const f = fixture(t);
+    f.state.capabilities.privateFileUrl = true;
+    const privateOnly = await f.service.capabilities();
+    assert.equal(privateOnly.extensions.find(row => row.name === 'get_private_file_url').available, true);
+    assert.equal(privateOnly.extensions.find(row => row.name === 'get_private_file_url').verification, 'offline-tested');
+    assert.equal(privateOnly.extensions.find(row => row.name === 'get_group_file_url').available, false);
+    assert.equal(privateOnly.segment_extensions[0].receive, true);
+    assert.deepEqual(privateOnly.segment_extensions[0].receive_contexts, ['private']);
+    f.state.capabilities.groupFileUrl = true;
+    const both = await f.service.capabilities();
+    assert.deepEqual(both.segment_extensions[0].receive_contexts, ['private', 'group']);
+    f.state.ready = false;
+    const stopped = await f.service.capabilities();
+    assert.equal(stopped.extensions.find(row => row.name === 'get_private_file_url').available, false);
+    assert.equal(stopped.segment_extensions[0].receive, false);
+    assert.deepEqual(stopped.segment_extensions[0].receive_contexts, []);
+});
+
+test('limited native validation evidence never enables another version or a stopped account', () => {
+    const target = capabilities({ qqVersion: '3.2.35-54395', ready: false });
+    const privateFile = target.extensions.find(row => row.name === 'get_private_file_url');
+    assert.equal(privateFile.available, false);
+    assert.ok(privateFile.target_validation.scopes.includes('56041-byte-download'));
+    assert.equal(privateFile.verification, 'offline-tested'); // Whole parameter surface remains unverified.
+    const otherVersion = capabilities({ qqVersion: 'unverified', ready: false });
+    assert.equal(Object.hasOwn(otherVersion.extensions.find(row => row.name === 'get_private_file_url'), 'target_validation'), false);
 });

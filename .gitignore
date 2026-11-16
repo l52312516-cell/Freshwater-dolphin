@@ -2,6 +2,7 @@
 /work/
 /outputs/
 /详细报告/
+/runtime/
 /config.json
 *.log
 __pycache__/

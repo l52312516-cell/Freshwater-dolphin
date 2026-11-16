@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: freshwater-dolphin:0.2.0-alpha.1
+    image: freshwater-dolphin:0.2.0-alpha.2
     platform: linux/amd64
     restart: unless-stopped
     shm_size: 512mb

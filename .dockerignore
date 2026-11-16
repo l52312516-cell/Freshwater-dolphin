@@ -1,9 +1,14 @@
 .git
 node_modules
+**/node_modules
+webui/dist
+runtime
 work
 outputs
+详细报告
 config.json
 *.log
 .env
+.env.*
 *.pem
 *.key

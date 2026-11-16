@@ -169,9 +169,9 @@ test('malformed settings disable handling without exposing settings secrets or r
 
 test('separate account workers have independent command cooldowns and exact action identities', async t => {
     const a = fixture(t), b = fixture(t);
-    b.state.self = { uin: '2441760163', uid: 'u_second' }; b.state.epoch = 'second-session';
+    b.state.self = { uin: '3000000002', uid: 'u_second' }; b.state.epoch = 'second-session';
     assert.equal(a.command.handle(a.event(), a.session()), true); assert.equal(b.command.handle(b.event(), b.session()), true);
     await Promise.all([a.command.pending, b.command.pending]);
     assert.equal(a.calls.length, 1); assert.equal(b.calls.length, 1);
-    assert.equal(a.calls[0].session.selfUin, '12345'); assert.equal(b.calls[0].session.selfUin, '2441760163');
+    assert.equal(a.calls[0].session.selfUin, '12345'); assert.equal(b.calls[0].session.selfUin, '3000000002');
 });

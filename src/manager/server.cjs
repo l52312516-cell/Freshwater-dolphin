@@ -61,7 +61,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
     let closed = false, closingPromise;
     const overview = () => { const memory = memoryAvailable(); return ({ version: require('../../package.json').version, maxAccounts: accounts.maxAccounts, accounts: accounts.list(),
         recovery: { restorePending: fs.existsSync(backups.journalFile), code: backups.recoveryError },
-        resources: { totalMemory: memory.total, freeMemory: memory.free, load: os.loadavg() }, management: { port: settings.port, tls: Boolean(https) } }); };
+        resources: { totalMemory: memory.total, freeMemory: memory.free, load: os.loadavg() }, management: { port: settings.port, tls: Boolean(https), logScan: logReader.lastRead } }); };
     const events = new ManagementEvents({ overview, readLogs: () => logReader.read({ limit: 100 }), auth });
     app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: MAX_ARCHIVE }, (_request, body, done) => done(null, body));
     app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_request, body, done) => done(null, body));
@@ -224,7 +224,11 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         if (result.status !== 'ok') throw fail('QUERY_FAILED', result.message || 'Capability query failed', 502);
         return ok(result.data);
     });
-    app.get('/api/logs', async request => ok(logReader.read(request.query)));
+    app.get('/api/logs', async (request, reply) => {
+        const rows = logReader.read(request.query);
+        reply.header('X-Freshwater-Logs-Partial', String(logReader.lastRead.partial));
+        return ok(rows);
+    });
     app.get('/api/logs/export', async (request, reply) => {
         const rows = logReader.read({ ...request.query, includeContent: false });
         return reply.header('Content-Disposition', 'attachment; filename="freshwater-logs.jsonl"')
@@ -259,7 +263,10 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         return reply.header('Content-Disposition', 'attachment; filename="' + path.basename(file) + '"').type('application/octet-stream').send(backups.download(request.params.id));
     });
     app.post('/api/backups/restore/preview', async request => ok(await backups.preview(request.body)));
-    app.post('/api/backups/restore/apply', async request => ok(await backups.apply(request.body?.previewId)));
+    app.post('/api/backups/restore/apply', async request => {
+        if (typeof request.body?.backupId !== 'string' || typeof request.body?.previewId !== 'string') throw fail('INVALID_PARAMS', 'Choose the backup and its validated preview');
+        return ok(await backups.apply(request.body.previewId, request.body.backupId));
+    });
 
     app.get('/media/:profileId/:opaque', async (request, reply) => {
         const { profileId, opaque } = request.params;

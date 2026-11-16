@@ -18,7 +18,7 @@ async function fixture(t, { action = async r => ({ status: 'ok', retcode: 0, dat
     return { server, network };
 }
 
-test('Universal handshake, array events and falsy echo share the same connection', async t => {
+test('Universal handshake, array events and falsy echo share the same connection', { timeout: 10000 }, async t => {
     const { server, network } = await fixture(t);
     const connected = once(server, 'connection');
     network.start('12345');
@@ -28,13 +28,15 @@ test('Universal handshake, array events and falsy echo share the same connection
     assert.equal(request.headers.authorization, 'Bearer test-only');
     const messages = [];
     socket.on('message', bytes => messages.push(JSON.parse(bytes)));
-    await pause(30);
+    // Wait for actual frames rather than assuming I/O finishes in 30ms on a
+    // busy Linux runner. Keep assertions on the observed ordering and content.
+    while (messages.length < 1) await once(socket, 'message');
     assert.equal(messages[0].meta_event_type, 'lifecycle');
     socket.send(JSON.stringify({ action: 'get_status', params: {}, echo: false }));
-    await pause(30);
+    while (messages.length < 2) await once(socket, 'message');
     assert.equal(messages[1].echo, false);
     network.event({ post_type: 'message', message: [{ type: 'text', data: { text: '保留 空白\n' } }] });
-    await pause(30);
+    while (messages.length < 3) await once(socket, 'message');
     assert.ok(Array.isArray(messages[2].message));
 });
 

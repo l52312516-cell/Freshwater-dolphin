@@ -16,6 +16,8 @@ const { ACTIONS: INTERACTION_ACTIONS, runInteraction } = require('./interactions
 const { ACTIONS: GROUP_FILE_ACTIONS, runGroupFiles } = require('./group-files.cjs');
 const { ACTIONS: FORWARD_ACTIONS, runForward, createForwardRegistry } = require('./forward.cjs');
 const { ACTIONS: MERGED_ACTIONS, runMerged } = require('./merged.cjs');
+const { ACTIONS: EXTENDED_ACTIONS, runExtended } = require('./extended-actions.cjs');
+const { decodeInlineMedia, stageInlineMedia } = require('./media-input.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numberId(value, label = 'QQ number') {
@@ -79,13 +81,14 @@ class OneBotService {
         return remaining;
     }
     async status() { return this.call('status'); }
-    async capabilities() {
-        const status = await this.status();
+    async capabilities(current) {
+        const status = current || await this.status();
         return capabilities({ ...status, capabilities: { ...status.capabilities,
             music: status.capabilities?.music === true && this.globalServices?.musicEnabled() === true,
             image: status.capabilities?.image === true && Boolean(this.mediaDirectory),
             file: status.capabilities?.file === true && Boolean(this.mediaDirectory),
             record: status.capabilities?.record === true && Boolean(this.mediaDirectory),
+            recordExport: status.capabilities?.recordExport === true && Boolean(this.mediaDirectory),
             recordReceive: status.capabilities?.recordReceive === true && Boolean(this.mediaDirectory && this.mediaBaseUrl && this.mediaSigningKeyFile),
             video: status.capabilities?.video === true && Boolean(this.mediaDirectory),
             videoReceive: status.capabilities?.videoReceive === true && Boolean(this.mediaDirectory && this.mediaBaseUrl && this.mediaSigningKeyFile),
@@ -99,6 +102,17 @@ class OneBotService {
         }
         numberId(state.self.uin, 'self account');
         return state;
+    }
+
+    checkContext(state, params, expectedSession) {
+        const account = state?.self?.uin;
+        if (expectedSession && (!state?.ready || expectedSession.epoch !== state.epoch ||
+            String(expectedSession.selfUin ?? expectedSession.uin) !== String(account))) {
+            throw problem('NOT_READY', 'OneBot connection belongs to a different QQ session');
+        }
+        if (params.self_id !== undefined && (account === undefined || numberId(params.self_id, 'self_id') !== Number(account))) {
+            throw problem('INVALID_REQUEST', 'self_id belongs to a different account');
+        }
     }
 
     async assertSession(state) {
@@ -131,7 +145,7 @@ class OneBotService {
             if (!actions.has(request.action)) throw problem('UNSUPPORTED', 'Unsupported action');
             const params = request.params === undefined ? {} : request.params;
             if (!params || typeof params !== 'object' || Array.isArray(params)) throw problem('INVALID_REQUEST', 'params must be an object');
-            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_group_file_url', 'get_group_file_system_info', ...MERGED_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
+            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_record', 'get_group_file_url', 'get_group_file_system_info', ...MERGED_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
             if (['send_private_msg', 'send_group_msg', 'send_msg'].includes(request.action)) {
                 if (params.auto_escape !== undefined && typeof params.auto_escape !== 'boolean') throw problem('INVALID_REQUEST', 'auto_escape must be boolean');
                 const validated = codec.parse(params.message, params.auto_escape === true);
@@ -176,44 +190,26 @@ class OneBotService {
     async run(action, params, expectedSession) {
         if (['get_stranger_info', 'get_group_list', 'get_group_info', 'get_group_member_info', 'get_group_member_list'].includes(action) &&
             params.no_cache !== undefined && typeof params.no_cache !== 'boolean') throw problem('INVALID_REQUEST', 'no_cache must be boolean');
-        if (action === 'get_capabilities') return this.capabilities();
-        if (action === 'can_send_record') {
-            const state = await this.status();
-            return { yes: Boolean(state.ready && state.capabilities?.record === true && this.mediaDirectory) };
-        }
-        if (action === 'can_send_image') {
-            const state = await this.status();
-            return { yes: Boolean(state.ready && state.capabilities?.image && this.mediaDirectory) };
-        }
-        if (action === 'get_version_info') {
-            if (params.self_id !== undefined) {
-                const state = await this.identity();
-                if (numberId(params.self_id, 'self_id') !== Number(state.self.uin)) throw problem('INVALID_REQUEST', 'self_id belongs to a different account');
-            }
-            return { app_name: 'Freshwater-dolphin', app_version: appVersion, protocol_version: 'v11' };
-        }
-        if (action === 'get_status') {
-            const state = await this.status();
-            if (params.self_id !== undefined && (!state.self || numberId(params.self_id, 'self_id') !== Number(state.self.uin))) {
-                throw problem('INVALID_REQUEST', 'self_id belongs to a different account');
-            }
-            return { online: state.online === true, qq_online_state: state.online === true ? 'online' : state.online === false ? 'offline' : 'unknown',
-                good: Boolean(state.ready && state.online === true) };
+        if (['get_capabilities', 'can_send_record', 'can_send_image', 'get_version_info', 'get_status'].includes(action)) {
+            const current = await this.status();
+            this.checkContext(current, params, expectedSession);
+            if (action === 'get_capabilities') return this.capabilities(current);
+            if (action === 'can_send_record') return { yes: Boolean(current.ready && current.capabilities?.record === true && this.mediaDirectory) };
+            if (action === 'can_send_image') return { yes: Boolean(current.ready && current.capabilities?.image === true && this.mediaDirectory) };
+            if (action === 'get_version_info') return { app_name: 'Freshwater-dolphin', app_version: appVersion, protocol_version: 'v11' };
+            return { online: current.online === true, qq_online_state: current.online === true ? 'online' : current.online === false ? 'offline' : 'unknown',
+                good: Boolean(current.ready && current.online === true) };
         }
         const state = await this.identity();
         const account = String(state.self.uin);
-        if (expectedSession && (expectedSession.epoch !== state.epoch || String(expectedSession.selfUin) !== account)) {
-            throw problem('NOT_READY', 'OneBot connection belongs to a different QQ session');
-        }
-        if (params.self_id !== undefined && numberId(params.self_id, 'self_id') !== Number(account)) {
-            throw problem('INVALID_REQUEST', 'self_id belongs to a different account');
-        }
+        this.checkContext(state, params, expectedSession);
         if (SOCIAL_ACTIONS.has(action)) return runSocial(this, state, action, params);
         if (QUERY_ACTIONS.has(action)) return runQueryExtension(this, state, action, params);
         if (INTERACTION_ACTIONS.has(action)) return runInteraction(this, state, action, params);
         if (GROUP_FILE_ACTIONS.has(action)) return runGroupFiles(this, state, action, params);
         if (MERGED_ACTIONS.has(action)) return runMerged(this, state, action, params);
         if (FORWARD_ACTIONS.has(action)) return runForward(this, state, action, params);
+        if (EXTENDED_ACTIONS.has(action)) return runExtended(this, state, action, params);
         switch (action) {
         case 'get_login_info': {
             let nickname = typeof state.self.nickname === 'string' ? state.self.nickname : '';
@@ -239,6 +235,20 @@ class OneBotService {
             uin: String(numberId(params.user_id)), refresh: Boolean(params.no_cache) });
         case 'get_group_member_list': return this.sessionCall(state, 'groupMembers', { groupId: String(numberId(params.group_id, 'group_id')),
             refresh: Boolean(params.no_cache) });
+        case 'get_private_file_url': {
+            if (state.capabilities?.privateFileUrl !== true) throw problem('UNSUPPORTED', 'Private file URL queries are unavailable on this QQ instance');
+            const record = await this.record(state, shortId(params.message_id));
+            const where = locator(record);
+            if (where.peer.chatType !== 1) throw problem('INVALID_REQUEST', 'Private file lookup requires a private message');
+            if (params.file_id !== undefined && (typeof params.file_id !== 'string' || !params.file_id || params.file_id.length > 1024)) throw problem('INVALID_REQUEST', 'Invalid private file_id');
+            const files = (record.elements || []).filter(item => item?.elementType === 3 && item.fileElement &&
+                (params.file_id === undefined || item.fileElement.fileUuid === params.file_id));
+            if (files.length !== 1 || typeof files[0].elementId !== 'string' || !files[0].elementId) throw problem('NOT_FOUND', 'Private message has no unique matching file');
+            const result = await this.sessionCall(state, 'nativePrivateFileUrl', { peer: where.peer, nativeId: where.nativeId,
+                elementId: files[0].elementId, expectedUin: account, timeoutMs: Math.min(10000, this.remaining()) });
+            if (result?.fileId !== files[0].fileElement.fileUuid || typeof result.url !== 'string') throw problem('INVALID_RESPONSE', 'QQ returned another private file');
+            return { url: require('../qq/private-file-url.cjs').validateDownloadUrl(result.url) };
+        }
         case 'get_group_msg_history': case 'get_friend_msg_history': return this.history(state, params, action);
         case 'upload_group_file': case 'upload_private_file': return this.uploadFile(state, params, action);
         case 'get_image': {
@@ -247,6 +257,19 @@ class OneBotService {
             if (info?.file !== params.file) throw problem('INVALID_RESPONSE', 'QQ returned a different image resource');
             return { file: info.path, size: info.size, filename: info.filename, width: info.width, height: info.height,
                 url: media.signedImageUrl(this, info.file) };
+        }
+        case 'get_record': {
+            if (state.capabilities?.recordExport !== true || !this.mediaDirectory) throw problem('UNSUPPORTED', 'Voice format export is unavailable on this QQ instance');
+            if (Object.keys(params).some(key => !['file', 'out_format', 'self_id'].includes(key)) ||
+                typeof params.file !== 'string' || !/^fwd-record-[a-f0-9]{32}$/.test(params.file) || typeof params.out_format !== 'string') {
+                throw problem('INVALID_REQUEST', 'get_record needs an account voice resource and out_format');
+            }
+            if (!['silk', 'wav', 'mp3', 'flac', 'ogg'].includes(params.out_format)) throw problem('UNSUPPORTED', 'The requested voice output format is unavailable');
+            const result = await this.sessionCall(state, 'recordExport', { file: params.file, outFormat: params.out_format });
+            if (result?.file !== params.file || result.outFormat !== params.out_format || result.format !== params.out_format ||
+                typeof result.path !== 'string' || !require('node:path').isAbsolute(result.path) || !this.mediaDirectory || !media.inside(this.mediaDirectory, result.path) ||
+                !Number.isSafeInteger(result.size) || result.size < 1 || result.size > 32 * 1024 * 1024) throw problem('INVALID_RESPONSE', 'QQ returned no matching account voice export');
+            return { file: result.path };
         }
         case 'set_group_name': case 'set_group_whole_ban': case 'set_group_ban': case 'set_group_leave': case 'set_group_card': case 'set_group_admin': case 'set_group_kick':
             return this.groupAction(state, params, action);
@@ -369,11 +392,17 @@ class OneBotService {
         for (const image of images) media.readImage(this.mediaDirectory, image.data.file);
         const records = segments.filter(item => item.type === 'record');
         if (records.length && (state.capabilities?.record !== true || !this.mediaDirectory)) throw problem('UNSUPPORTED', 'Native voice sending is unavailable');
-        for (const record of records) media.readLocal(this.mediaDirectory, record.data.file);
+        for (const record of records) {
+            if (record.data.file.startsWith('base64://')) decodeInlineMedia(record.data.file, 'record');
+            else media.readLocal(this.mediaDirectory, record.data.file);
+        }
         const files = segments.filter(item => item.type === 'file'), videos = segments.filter(item => item.type === 'video');
         if (files.length && (state.capabilities?.file !== true || !this.mediaDirectory)) throw problem('UNSUPPORTED', 'Native local file sending is unavailable');
         if (videos.length && (state.capabilities?.video !== true || !this.mediaDirectory)) throw problem('UNSUPPORTED', 'Native local MP4 video sending is unavailable');
-        for (const segment of [...files, ...videos]) media.readLocal(this.mediaDirectory, segment.data.file);
+        for (const segment of [...files, ...videos]) {
+            if (segment.data.file.startsWith('base64://')) decodeInlineMedia(segment.data.file, segment.type);
+            else media.readLocal(this.mediaDirectory, segment.data.file);
+        }
         let chatType;
         if (action === 'send_private_msg') chatType = 1;
         else if (action === 'send_group_msg') chatType = 2;
@@ -399,6 +428,10 @@ class OneBotService {
                 const resource = media.exportImage(this.mediaDirectory, media.readImage(this.mediaDirectory, image.data.file));
                 temporaryImages.push(resource.path);
                 image.data.file = resource.path;
+            }
+            for (const segment of [...records, ...files, ...videos]) if (segment.data.file.startsWith('base64://')) {
+                const imported = stageInlineMedia(this.mediaDirectory, segment.type, segment.data.file);
+                temporaryImages.push(imported); segment.data.file = imported;
             }
             const elements = await codec.toKernel(segments, {
                 peer,
@@ -537,6 +570,13 @@ class OneBotService {
     async receivedFile(state, record, element, base) {
         const source = element.fileElement;
         try {
+            if (Number(record.chatType) === 1) {
+                const result = await this.sessionCall(state, 'nativePrivateFileUrl', {
+                    peer: { chatType: 1, peerUid: String(record.peerUid) }, nativeId: String(record.msgId), elementId: element.elementId,
+                    expectedUin: state.self.uin, timeoutMs: Math.min(10000, this.remaining()) });
+                if (result?.fileId !== source.fileUuid || typeof result.url !== 'string') throw problem('INVALID_RESPONSE', 'QQ returned another private file');
+                return { ...base, url: require('../qq/private-file-url.cjs').validateDownloadUrl(result.url) };
+            }
             const result = await this.sessionCall(state, 'nativeGroupFileUrl', {
                 groupId: String(record.peerUid), fileId: source.fileUuid,
                 busId: Number.isSafeInteger(source.fileBizId) ? source.fileBizId : undefined,
@@ -557,7 +597,7 @@ class OneBotService {
             numberId((await this.sessionCall(state, 'resolve', { uid: record.senderUid })).uin, 'sender account');
         const message = await codec.fromKernel(record, {
             queryFiles,
-            file: Number(record.chatType) === 2 && state.capabilities?.groupFileUrl === true
+            file: (Number(record.chatType) === 2 && state.capabilities?.groupFileUrl === true || Number(record.chatType) === 1 && state.capabilities?.privateFileUrl === true)
                 ? (element, base) => this.receivedFile(state, record, element, base) : undefined,
             forward: element => ({ id: this.forwardRegistry.register(state, record, element) }),
             selfUin: account, selfUid: state.self.uid,

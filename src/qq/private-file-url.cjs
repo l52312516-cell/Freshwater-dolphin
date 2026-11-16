@@ -1,111 +1,193 @@
 'use strict';
 
-// Native QQ private (c2c) file download URL over the kernel's own MSF channel.
-//
-// Command OidbSvcTrpcTcp.0xe37_1200 (LLBot GetPrivateFileUrl). Proto verified
-// against LLBot src/ntqqapi/proto/oidb.ts (GetPrivateFileReq/Resp) and the
-// encoder in src/main/qqProtocol/mixins/friend.ts getPrivateFileUrl():
-//   request inner = {1:1200, 2:1, 14:{10:receiverUid, 20:fileUuid, 30:2, 60:'', 601:0},
-//                    101:3, 102:1, 200:1, 99999:bytes(c0852c01)}
-//   response inner = {14:{10:retCode, 20:state, 30:{120:{102:{8:downloadUrl(bytes), 11:downloadDns}}},
-//                     40:{7:fileName}}}
-// receiverUid is the query initiator's OWN uid. URL is the same official
-// ftn_handler form as group files: https://<dns>/ftn_handler/<tokenHex>/?fname=<name>.
-//
-// UNTESTED-LIVE until confirmed on a disposable instance with a real private file.
-
-const { problem, varintField, bytesField, messageField, fields, one, unsigned, text } = require('./proto.cjs');
+// Fixed private-file URL query. Wire fields have been checked against the
+// current QQApi schema and the published 0xe37_1200 definition. This module is
+// independently implemented; it does not expose arbitrary SSO commands.
+// UID mode is field12=0. Preserve the message's actual file10MMd5 input:
+// this build may supply a 32-hex checksum while 140/145 carry opaque addons.
+// Metadata aliases are checked below; actual downloads are verified separately.
+const net = require('node:net');
+const { problem, varintField, bytesField, messageField, fields } = require('./proto.cjs');
 
 const COMMAND = 0xe37;
 const SUBCOMMAND = 1200;
 const CMD = `OidbSvc.0x${COMMAND.toString(16)}_${SUBCOMMAND}`;
 const NATIVE_CMD = `OidbSvcTrpcTcp.0x${COMMAND.toString(16)}_${SUBCOMMAND}`;
-const FIELD_99999 = Buffer.from([0xc0, 0x85, 0x2c, 0x01]);
-const MAX_UID_BYTES = 128;
-const MAX_FILE_UUID_BYTES = 512;
-const MAX_DOWNLOAD_URL_BYTES = 4096;
-const MAX_DNS_BYTES = 253;
+const OFFLINE_CMD = 'OfflineFilleHandleSvr.pb_ftn_CMD_REQ_APPLY_DOWNLOAD-1200';
+const U32 = 0xffffffffn;
 
-function uid(value, label) {
-    if (typeof value !== 'string' || !value || Buffer.byteLength(value) > MAX_UID_BYTES || /[\x00-\x1f\x7f]/.test(value)) {
-        throw problem('INVALID_PARAMS', 'Private file URL requires a bounded ' + label);
+function opaque(value, label, limit) {
+    if (typeof value !== 'string' || !value || Buffer.byteLength(value) > limit ||
+        /[\x00-\x1f\x7f]/.test(value) || Buffer.from(value, 'utf8').toString('utf8') !== value) {
+        throw problem('INVALID_PARAMS', 'Private file URL requires a valid ' + label);
     }
     return value;
 }
-
-function encodeNativeRequest(receiverUid, fileUuid) {
-    const body = messageField(14, [
-        bytesField(10, Buffer.from(uid(receiverUid, 'receiver UID'), 'utf8')),
-        bytesField(20, Buffer.from(uid(fileUuid, 'file UUID'), 'utf8')),
-        varintField(30, 2),
-        bytesField(60, Buffer.alloc(0)),
-        varintField(601, 0)
-    ]);
+function resource(fileId, fileHash) {
+    return { fileId: opaque(fileId, 'file UUID', 1024), fileHash: opaque(fileHash, 'opaque file hash', 4096) };
+}
+function encodeNativeRequest(selfUid, fileId, fileHash) {
+    if (typeof selfUid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(selfUid)) {
+        throw problem('INVALID_PARAMS', 'Private file URL requires the observed account UID');
+    }
+    const item = resource(fileId, fileHash);
     const inner = Buffer.concat([
-        varintField(1, SUBCOMMAND), varintField(2, 1), body,
-        varintField(101, 3), varintField(102, 1), varintField(200, 1),
-        bytesField(99999, FIELD_99999)
+        varintField(1, SUBCOMMAND), varintField(2, 1),
+        messageField(14, [bytesField(10, Buffer.from(selfUid)), bytesField(20, Buffer.from(item.fileId)),
+            varintField(30, 2), bytesField(60, Buffer.from(item.fileHash)), varintField(601, 0)]),
+        varintField(101, 3), varintField(102, 103), varintField(200, 1),
+        bytesField(99999, Buffer.from([0xc0, 0x85, 0x2c, 0x01]))
     ]);
-    return Buffer.concat([
-        varintField(1, COMMAND), varintField(2, SUBCOMMAND),
-        bytesField(4, inner), varintField(12, 1)
-    ]);
+    return Buffer.concat([varintField(1, COMMAND), varintField(2, SUBCOMMAND), varintField(3, 0),
+        bytesField(4, inner), varintField(12, 0)]);
 }
 
-function hostname(value) {
-    if (typeof value !== 'string' || !value || value.length > MAX_DNS_BYTES ||
-        !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(value) || value.includes('..') ||
-        !/\.qq\.com$/i.test(value)) return null;
+function field(map, tag, wire, required = false) {
+    const values = map.get(tag) || [];
+    if (values.length > 1 || values.length === 1 && values[0].wire !== wire || required && !values.length) {
+        throw problem('INVALID_RESPONSE', 'Private file response has an invalid field');
+    }
+    return values[0]?.value;
+}
+function integer(map, tag, required = false) {
+    const value = field(map, tag, 0, required);
+    if (value !== undefined && value > U32) throw problem('INVALID_RESPONSE', 'Private file response integer is out of range');
     return value;
 }
-function message(entry) {
-    if (!entry || entry.wire !== 2) return null;
-    return fields(entry.value);
+function string(map, tag, limit, required = false) {
+    const bytes = field(map, tag, 2, required);
+    if (bytes === undefined) return undefined;
+    if (bytes.length > limit) throw problem('INVALID_RESPONSE', 'Private file response text is too large');
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw problem('INVALID_RESPONSE', 'Private file response contains invalid UTF-8'); }
 }
+function nested(map, tag) { return fields(field(map, tag, 2, true)); }
 
-// OidbBase{1:command,2:subCommand,3:errorCode,4:body}; body = GetPrivateFileResp.
-function decodeResponse(buffer) {
-    const envelope = fields(buffer);
-    const command = unsigned(one(envelope, 1), 0xffffffffn);
-    const subCommand = unsigned(one(envelope, 2), 0xffffffffn);
-    if (command !== BigInt(COMMAND) || subCommand !== BigInt(SUBCOMMAND)) {
-        throw problem('QUERY_FAILED', 'QQ private-file command mismatch (kernel returned a stub)');
+function downloadUrl(host, port, target, thumbnail = true, scheme = 'http:') {
+    if (!host || host.length > 253 || /[\s/@?#\\%\x00-\x1f\x7f]/.test(host)) {
+        throw problem('INVALID_RESPONSE', 'Invalid private file download authority');
     }
-    const errorCode = unsigned(one(envelope, 3), 0xffffffffn) ?? 0n;
-    if (errorCode !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the private-file URL query (errorCode ' + errorCode + ')');
-    const resp = message(one(envelope, 4));
-    if (!resp) throw problem('QUERY_FAILED', 'QQ returned no private-file body');
-    const inner = message(one(resp, 14));
-    if (!inner) throw problem('QUERY_FAILED', 'QQ returned no private-file payload');
-    const retCode = unsigned(one(inner, 10), 0x7fffffffffffffffn) ?? 0n;
-    const state = text(one(inner, 20), 1024) || '';
-    if (retCode !== 0n) throw problem('QUERY_FAILED', 'QQ private-file download rejected (retCode ' + retCode + (state ? ': ' + state : '') + ')');
-    const result = message(one(inner, 30));
-    const extra = result && message(one(result, 120));
-    const download = extra && message(one(extra, 102));
-    if (!download) throw problem('INVALID_RESPONSE', 'QQ returned no private-file download payload');
-    const dns = hostname(text(one(download, 11), MAX_DNS_BYTES));
-    if (!dns) throw problem('INVALID_RESPONSE', 'QQ returned an invalid private-file download host');
-    const urlBytes = one(download, 8);
-    if (!urlBytes || urlBytes.wire !== 2 || urlBytes.value.length === 0 || urlBytes.value.length > MAX_DOWNLOAD_URL_BYTES) {
-        throw problem('INVALID_RESPONSE', 'QQ returned an invalid private-file download token');
+    const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+    const ip = net.isIP(bare);
+    if (!ip && (!host.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)) ||
+        !/(?:^|\.)qq\.com(?:\.cn)?$/i.test(host))) {
+        throw problem('INVALID_RESPONSE', 'Invalid private file download host');
     }
-    const tokenHex = urlBytes.value.toString('hex');
-    const metadata = message(one(inner, 40));
-    const fileName = metadata ? text(one(metadata, 7), 1024) : null;
-    const url = `https://${dns}/ftn_handler/${tokenHex}/?fname=`;
+    if (!['http:', 'https:'].includes(scheme) || typeof port !== 'bigint' || port < 1n || port > 65535n || typeof target !== 'string' || !target.startsWith('/') ||
+        target.startsWith('//') || /[\s#\\\x00-\x1f\x7f]/.test(target) || /%(?![a-f0-9]{2})/i.test(target)) {
+        throw problem('INVALID_RESPONSE', 'Invalid private file download target');
+    }
+    const authority = ip === 6 ? '[' + bare + ']' : host;
+    const value = `${scheme}//${authority}:${port}${target}`;
     let parsed;
-    try { parsed = new URL(url); } catch { throw problem('INVALID_RESPONSE', 'QQ private-file download URL is malformed'); }
-    if (parsed.protocol !== 'https:' || parsed.hostname !== dns || !parsed.pathname.startsWith('/ftn_handler/')) {
-        throw problem('INVALID_RESPONSE', 'QQ private-file download URL identity is inconsistent');
+    try { parsed = new URL(value); }
+    catch { throw problem('INVALID_RESPONSE', 'Invalid private file download URL'); }
+    const expectedHost = ip === 6 ? '[' + bare.toLowerCase() + ']' : host.toLowerCase();
+    const targetAfterParsing = parsed.pathname + parsed.search;
+    if (parsed.hostname.toLowerCase() !== expectedHost || (parsed.port || (scheme === 'https:' ? '443' : '80')) !== String(port) ||
+        parsed.username || parsed.password || parsed.hash ||
+        targetAfterParsing !== target && !(target.endsWith('?') && targetAfterParsing === target.slice(0, -1))) {
+        throw problem('INVALID_RESPONSE', 'Private file download URL changed during validation');
     }
-    return { url, downloadDns: dns, downloadUrlHex: tokenHex, retCode: Number(retCode), state, fileName: fileName || undefined };
+    // Do not normalize or reserialize a server-issued signed path/query.
+    return thumbnail ? value + (target.includes('?') ? '&' : '?') + 'isthumb=0' : value;
 }
 
-function withFileName(result, fileName) {
-    const name = typeof fileName === 'string' && fileName ? fileName : result.fileName;
-    if (typeof name !== 'string' || !name) return result.url;
-    return result.url + encodeURIComponent(name);
+function decodeResponse(buffer, expected) {
+    const item = resource(expected?.fileId, expected?.fileHash);
+    const top = fields(buffer);
+    if (integer(top, 1, true) !== BigInt(COMMAND) || integer(top, 2, true) !== BigInt(SUBCOMMAND) ||
+        (integer(top, 12) ?? 0n) !== 0n) throw problem('INVALID_RESPONSE', 'Private file response identity mismatch');
+    if ((integer(top, 3) ?? 0n) !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the private file URL query');
+    const payload = nested(nested(top, 4), 14);
+    // The meaning of nonzero field10 is not established by the schema.
+    if ((integer(payload, 10) ?? 0n) !== 0n) throw problem('UNSUPPORTED', 'Private file response contains an unverified status');
+    const result = nested(payload, 30);
+    const host = string(result, 20, 253, true), port = integer(result, 40, true), target = string(result, 50, 8192, true);
+    const metadata = field(payload, 40, 2);
+    let fileName;
+    if (metadata !== undefined) {
+        const info = fields(metadata), returnedId = string(info, 6, 1024), returnedHash = string(info, 140, 4096);
+        // This QQ build can return a canonical file in 6/140 while retaining
+        // the requested UUID/addon in 144/145. Its 32-hex file10MMd5 is also
+        // returned as 16 bytes in field100; it is not the 87-byte addon string.
+        // Accept that observed variant only with the exact original UUID AND
+        // its checksum, never by filename, case folding or a missing identity.
+        const originalId = string(info, 144, 1024), originalHash = string(info, 145, 4096);
+        const checksum = field(info, 100, 2);
+        const originalChecksumMatches = originalId === item.fileId && /^[a-fA-F0-9]{32}$/.test(item.fileHash) &&
+            checksum?.length === 16 && checksum.equals(Buffer.from(item.fileHash, 'hex'));
+        const idMatches = returnedId === item.fileId || originalId === item.fileId;
+        const hashMatches = returnedHash === item.fileHash || originalHash === item.fileHash || originalChecksumMatches;
+        if ((returnedId !== undefined || originalId !== undefined) && !idMatches ||
+            (returnedHash !== undefined || originalHash !== undefined) && !hashMatches ||
+            originalId === item.fileId && returnedId !== item.fileId && originalHash !== item.fileHash && !originalChecksumMatches) {
+            throw problem('INVALID_RESPONSE', 'Private file response belongs to another resource');
+        }
+        fileName = string(info, 7, 1024);
+    }
+    return { fileId: item.fileId, url: downloadUrl(host, port, target), ...(fileName ? { fileName } : {}) };
 }
 
-module.exports = { COMMAND, SUBCOMMAND, CMD, NATIVE_CMD, encodeNativeRequest, decodeResponse, withFileName };
+function fromFileElement(element) {
+    if (!element || typeof element !== 'object') throw problem('INVALID_PARAMS', 'Private file element is required');
+    // Keep the real message field: 32-hex values are checked against the native
+    // response checksum; do not guess a replacement from fileMd5 or fileSubId.
+    return resource(element.fileUuid, element.file10MMd5);
+}
+
+// Classic offline-file service uses numeric UIN and a bare service protobuf,
+// not the UID-mode OIDB envelope above. Public clients agree on these fields;
+// support by this QQ build must still be established by a real native query.
+function encodeOfflineRequest(selfUin, fileId) {
+    if (!['string', 'number', 'bigint'].includes(typeof selfUin) || typeof selfUin === 'number' && !Number.isSafeInteger(selfUin)) {
+        throw problem('INVALID_PARAMS', 'Offline file URL requires an exact numeric account UIN');
+    }
+    const uin = String(selfUin ?? '');
+    if (!/^[1-9]\d{0,9}$/.test(uin) || BigInt(uin) > U32) {
+        throw problem('INVALID_PARAMS', 'Offline file URL requires the observed numeric account UIN');
+    }
+    return Buffer.concat([varintField(1, SUBCOMMAND),
+        messageField(14, [varintField(10, BigInt(uin)), bytesField(20, Buffer.from(opaque(fileId, 'file UUID', 1024))), varintField(30, 2)]),
+        varintField(101, 3), varintField(102, 104), messageField(99999, [varintField(1, 90200)])]);
+}
+
+function absoluteDownloadUrl(value, declaredHost, declaredPort) {
+    const matched = /^(https?):\/\/(\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::([0-9]+))?(\/[^]*)$/i.exec(value);
+    if (!matched) throw problem('INVALID_RESPONSE', 'Invalid absolute offline file URL');
+    const scheme = matched[1].toLowerCase() + ':';
+    const port = BigInt(matched[3] || (scheme === 'https:' ? '443' : '80'));
+    downloadUrl(matched[2], port, matched[4], false, scheme);
+    // Some responses include both an absolute URL and the separate routing
+    // fields. Do not let the URL silently override a different destination.
+    if (declaredPort !== undefined && declaredPort !== port) throw problem('INVALID_RESPONSE', 'Offline file download port identity mismatch');
+    if (declaredHost !== undefined) {
+        const routed = new URL(downloadUrl(declaredHost, port, matched[4], false, scheme));
+        if (routed.hostname !== new URL(value).hostname) throw problem('INVALID_RESPONSE', 'Offline file download host identity mismatch');
+    }
+    return value;
+}
+
+function decodeOfflineResponse(buffer, expected) {
+    const fileId = opaque(expected?.fileId, 'file UUID', 1024), top = fields(buffer);
+    const command = integer(top, 1);
+    if (command !== undefined && command !== BigInt(SUBCOMMAND)) throw problem('INVALID_RESPONSE', 'Offline file response command mismatch');
+    const payload = nested(top, 14);
+    if ((integer(payload, 10) ?? 0n) !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the offline file URL query');
+    const result = nested(payload, 30), target = string(result, 50, 8192, true);
+    const absolute = /^https?:\/\//i.test(target);
+    const host = string(result, 30, 253, !absolute), port = integer(result, 40, !absolute);
+    const url = absolute ? absoluteDownloadUrl(target, host, port) : downloadUrl(host, port, target, false);
+    const metadata = field(payload, 40, 2);
+    let fileName;
+    if (metadata !== undefined) {
+        const info = fields(metadata), returnedId = string(info, 6, 1024);
+        if (returnedId !== undefined && returnedId !== fileId) throw problem('INVALID_RESPONSE', 'Offline file response belongs to another resource');
+        fileName = string(info, 7, 1024);
+    }
+    return { fileId, url, ...(fileName ? { fileName } : {}) };
+}
+
+module.exports = { COMMAND, SUBCOMMAND, CMD, NATIVE_CMD, OFFLINE_CMD,
+    encodeNativeRequest, decodeResponse, fromFileElement, encodeOfflineRequest, decodeOfflineResponse,
+    validateDownloadUrl: absoluteDownloadUrl };

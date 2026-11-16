@@ -38,8 +38,11 @@ function infoEntry({ rkey, type, ttl, storeId, createTime }) {
     parts.push(vfield(5, type));
     return bfield(1, Buffer.concat(parts));
 }
-function response({ command = 0x9067, sub = 202, errorCode = 0, entries } = {}) {
-    const body = entries === undefined ? Buffer.alloc(0) : bfield(4, Buffer.concat(entries.map(infoEntry)));
+function response({ command = 0x9067, sub = 202, errorCode = 0, entries, businessHeader } = {}) {
+    const body = Buffer.concat([
+        ...(businessHeader === undefined ? [] : [bfield(1, businessHeader)]),
+        ...(entries === undefined ? [] : [bfield(4, Buffer.concat(entries.map(infoEntry)))])
+    ]);
     return Buffer.concat([vfield(1, command), vfield(2, sub), vfield(3, errorCode), bfield(4, body)]);
 }
 
@@ -67,13 +70,13 @@ test('encodeRequest is the bare NTV2RichMediaReq with the verified head scene an
 
 test('decodeResponse extracts bounded rkey entries from a successful OidbBase response', () => {
     const buffer = response({ entries: [
-        { rkey: '&rkey=GROUP', type: 10, ttl: 3600, storeId: 1, createTime: 1700000000 },
-        { rkey: '&rkey=PRIVATE', type: 20, ttl: 7200 }
+        { rkey: '&rkey=GROUP', type: 20, ttl: 3600, storeId: 1, createTime: 1700000000 },
+        { rkey: '&rkey=PRIVATE', type: 10, ttl: 7200 }
     ] });
     const entries = rkey.decodeResponse(buffer);
     assert.equal(entries.length, 2);
-    assert.deepEqual(entries[0], { rkey: '&rkey=GROUP', type: 10, rkeyTtlSec: 3600, storeId: 1, rkeyCreateTime: 1700000000 });
-    assert.deepEqual(entries[1], { rkey: '&rkey=PRIVATE', type: 20, rkeyTtlSec: 7200 });
+    assert.deepEqual(entries[0], { rkey: '&rkey=GROUP', type: 20, rkeyTtlSec: 3600, storeId: 1, rkeyCreateTime: 1700000000 });
+    assert.deepEqual(entries[1], { rkey: '&rkey=PRIVATE', type: 10, rkeyTtlSec: 7200 });
 });
 
 test('decodeResponse rejects the empty kernel stub observed on QQ 3.2.35', () => {
@@ -101,6 +104,21 @@ test('decodeResponse rejects invalid rkey values, types and oversized entries', 
     assert.throws(() => rkey.decodeResponse(tooMany), { code: 'INVALID_RESPONSE' });
 });
 
+test('decodeResponse checks the NTV2 business result before accepting rkey entries', () => {
+    const entries = [{ rkey: 'G', type: 10, ttl: 60, createTime: 1700000000 }];
+    assert.equal(rkey.decodeResponse(response({ entries, businessHeader: vfield(2, 0) }))[0].rkey, 'G');
+    assert.throws(() => rkey.decodeResponse(response({ entries, businessHeader: vfield(2, 121) })), { code: 'QUERY_FAILED' });
+    assert.throws(() => rkey.decodeResponse(response({ entries, businessHeader: bfield(2, Buffer.from('bad')) })), { code: 'INVALID_RESPONSE' });
+});
+
+test('decodeResponse retains exact uint64 TTL values and rejects truncated protobuf fields', () => {
+    const entries = [{ rkey: 'G', type: 10, ttl: 0xffffffffffffffffn, createTime: 1700000000 }];
+    assert.equal(rkey.decodeResponse(response({ entries }))[0].rkeyTtlSec, 0xffffffffffffffffn);
+    const invalidBodies = [Buffer.from([0x0d, 1]), Buffer.from([0x09, 1]), Buffer.from([0x0a, 0x7f]),
+        Buffer.from([0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02])];
+    for (const body of invalidBodies) assert.throws(() => rkey.decodeResponse(body), { code: 'INVALID_RESPONSE' });
+});
+
 function fakeCapture({ rsp, result = 0, method = true, hang = false } = {}) {
     return {
         session: {},
@@ -117,7 +135,7 @@ function fakeCapture({ rsp, result = 0, method = true, hang = false } = {}) {
 
 test('fetchRkeys returns decoded entries from the kernel SSO channel', async () => {
     const rsp = response({ entries: [{ rkey: '&rkey=G', type: 10, ttl: 60, createTime: 1700000000 }] });
-    const result = await rkey.fetchRkeys(fakeCapture({ rsp }), { timeoutMs: 1000 });
+    const result = await rkey.fetchRkeys(fakeCapture({ rsp }), { timeoutMs: 1000, cmd: 'ArbitraryCommandNotAllowed' });
     assert.equal(result.rkeys.length, 1);
     assert.equal(result.rkeys[0].rkey, '&rkey=G');
 });

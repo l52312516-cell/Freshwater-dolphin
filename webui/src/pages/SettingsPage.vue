@@ -12,7 +12,7 @@ import { useTheme } from '../theme';
 import type { IconName } from '../components/Icon.vue';
 import type { BackupState, Overview, SettingsState, StorageCleanup, StorageCleanupRequest, StorageSnapshot } from '../types';
 
-const props = defineProps<{ overview: Overview; busy: boolean; settings: SettingsState; backup: BackupState; storage: StorageSnapshot | null; storageResult: StorageCleanup | null }>();
+const props = defineProps<{ overview: Overview; busy: boolean; settings: SettingsState; settingsDirty?: boolean; backup: BackupState; storage: StorageSnapshot | null; storageResult: StorageCleanup | null }>();
 const emit = defineEmits<{
   subnav: [id: string];
   saveSettings: [];
@@ -87,6 +87,7 @@ defineExpose({ openSection });
     <SubNav v-model="section" :items="sections" />
 
     <div class="settings-body">
+      <p v-if="settingsDirty" class="notice" role="status">运行或全局配置有尚未保存的修改，切换页面会保留草稿。</p>
       <NotificationsPanel v-if="section === 'notifications'" />
       <template v-else-if="section === 'appearance'">
         <section class="panel">

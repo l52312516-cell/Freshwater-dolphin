@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { fault } = require('../errors.cjs');
-const { VERSION, LIMIT, METHODS, privateDirectory, readJson, writeJson, remove, claimOwner } = require('./common.cjs');
+const { VERSION, LIMIT, METHODS, cancellable, privateDirectory, readJson, writeJson, remove, claimOwner } = require('./common.cjs');
 
 async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, pollMs = 25,
     eventTtlMs = 60000, now = Date.now, logger = () => {} }) {
@@ -16,11 +16,14 @@ async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, po
     const responses = path.join(dir, 'responses');
     privateDirectory(requests);
     privateDirectory(responses);
+    const cancellations = path.join(dir, 'cancellations');
+    privateDirectory(cancellations);
     const owner = path.join(dir, 'owner.json');
     const instance = crypto.randomUUID();
     claimOwner(owner, { instance, version: VERSION });
     let sequence = 0, closed = false, polling = false, queueBytes = 0;
     const queue = [], pending = new Set(), controllers = new Set();
+    const activeRequests = new Map();
     function pruneEvents() {
         const cutoff = now() - eventTtlMs;
         while (queue.length && queue[0].at <= cutoff) queueBytes -= queue.shift().bytes;
@@ -73,6 +76,11 @@ async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, po
                 throw fault('INVALID_REQUEST', 'Invalid RPC envelope');
             }
             if (request.expiresAt <= Date.now()) return;
+            if (request.cancelToken !== undefined && (!cancellable(request.method, request.params) ||
+                typeof request.cancelToken !== 'string' || !/^[a-f0-9]{64}$/.test(request.cancelToken))) {
+                throw fault('INVALID_REQUEST', 'Invalid RPC cancellation capability');
+            }
+            if (request.cancelToken) activeRequests.set(id, { controller, token: request.cancelToken, expiresAt: request.expiresAt });
             const result = await Promise.race([
                 Promise.resolve().then(() => request.method === 'events' ? events(request.params)
                     : backend.call(request.method, request.params, { signal: controller.signal, expiresAt: request.expiresAt })),
@@ -91,7 +99,7 @@ async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, po
                     error: { code: error.code || 'KERNEL_ERROR', message: error.message || 'Kernel operation failed' } }); }
                 catch (_) { logger('rpc_response_failed'); }
             }
-        } finally { clearTimeout(deadline); controllers.delete(controller); remove(file); }
+        } finally { clearTimeout(deadline); activeRequests.delete(id); controllers.delete(controller); remove(file); }
     }
 
     async function poll() {
@@ -99,6 +107,17 @@ async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, po
         polling = true;
         try {
             pruneEvents();
+            // Process cancellations even when every request slot is occupied.
+            for (const name of fs.readdirSync(cancellations)) {
+                if (!/^[a-zA-Z0-9-]{1,100}\.json$/.test(name)) continue;
+                const file = path.join(cancellations, name);
+                try {
+                    const value = readJson(file), entry = activeRequests.get(name.slice(0, -5));
+                    if (entry && value?.version === VERSION && value.id === name.slice(0, -5) &&
+                        value.cancelToken === entry.token && value.expiresAt === entry.expiresAt) entry.controller.abort();
+                } catch (_) { logger('rpc_invalid_cancellation'); }
+                finally { remove(file); }
+            }
             for (const name of fs.readdirSync(requests)) {
                 if (/^[a-zA-Z0-9-]{1,100}\.json\.[a-zA-Z0-9-]+\.(?:processing|tmp)$/.test(name)) {
                     const orphan = path.join(requests, name);

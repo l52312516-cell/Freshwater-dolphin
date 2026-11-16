@@ -118,6 +118,8 @@ function recalledRecord(record) {
 }
 
 async function runHistory(service, state, params, action, { numberId, shortId }) {
+    if (params.reverse_order !== undefined && typeof params.reverse_order !== 'boolean') throw problem('INVALID_REQUEST', 'reverse_order must be boolean');
+    if (params.reverseOrder !== undefined || params.reverse !== undefined) throw problem('INVALID_REQUEST', 'Use reverse_order for the history direction');
     const chatType = action === 'get_group_msg_history' ? 2 : 1;
     const target = String(numberId(chatType === 2 ? params.group_id : params.user_id));
     const resolved = chatType === 1 ? await service.sessionCall(state, 'resolve', { uin: target }) : null;

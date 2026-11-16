@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeShareData, buildShareCard, createShareCards } = require('../src/qq/share-card.cjs');
-const data = { url: 'https://github.com/l52312516-cell/Freshwater-dolphin#readme', title: 'Freshwater 分享测试', content: 'A\n B', image: 'https://q1.qlogo.cn/g?b=qq&nk=2068886823&s=100' };
+const data = { url: 'https://github.com/l52312516-cell/Freshwater-dolphin#readme', title: 'Freshwater 分享测试', content: 'A\n B', image: 'https://q1.qlogo.cn/g?b=qq&nk=1000000001&s=100' };
 function fixture() {
     const capture = { epoch: 'session-1', self: { uin: '123', uid: 'u_123' }, ready: true,
         ensureReady() { if (!this.ready) throw Object.assign(new Error('not ready'), { code: 'NOT_READY' }); } };

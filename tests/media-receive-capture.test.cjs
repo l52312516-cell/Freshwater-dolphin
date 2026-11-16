@@ -7,6 +7,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { Capture, TARGET_VERSION } = require('../src/qq/capture.cjs');
 const msfNative = require('../src/qq/msf-native.cjs');
+const { OneBotService } = require('../src/onebot/service.cjs');
+const { MessageStore } = require('../src/onebot/store.cjs');
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const box = (kind, payload) => { const size = Buffer.alloc(4); size.writeUInt32BE(payload.length + 8); return Buffer.concat([size, Buffer.from(kind), payload]); };
@@ -66,6 +68,53 @@ test('all typed downloads retain complete resource bytes and hashes', async t =>
         assert.equal((await f.capture.call('receiveMedia', f.params)).file, info.file);
         assert.equal(f.downloads(), type === 'video' ? 0 : 1);
         assert.equal(f.capture.bus.listenerCount('mediaDownload'), 0);
+    }
+});
+
+test('formal get_msg registers actual local QQ voice for get_record when no downloader is exposed', async t => {
+    const silkCodec = require('silk-wasm'), pcm = Buffer.alloc(48000);
+    for (let index = 0; index < pcm.length / 2; index++) pcm.writeInt16LE(Math.round(Math.sin(index / 24000 * 440 * 2 * Math.PI) * 5000), index * 2);
+    const encoded = Buffer.from((await silkCodec.encode(pcm, 24000)).data), f = fixture(t, 'record', encoded);
+    delete f.msg.downloadRichMedia;
+    const filename = path.join(f.cache, 'observed.silk'); fs.writeFileSync(filename, encoded, { mode: 0o600 }); f.details.filePath = filename;
+    const get = f.msg.getMsgsByMsgId;
+    f.msg.getMsgsByMsgId = (...args) => {
+        const value = get(...args);
+        for (const record of value.msgList) Object.assign(record, { senderUin: '123', senderUid: 'u_123', sendStatus: 2,
+            msgTime: String(Math.floor(Date.now() / 1000)), msgSeq: '10', clientSeq: '10', sendNickName: 'Self' });
+        return value;
+    };
+    const flags = f.capture.state().capabilities;
+    assert.equal(flags.recordReceive, true); assert.equal(flags.recordReceiveDownload, false);
+    const store = new MessageStore({ directory: path.join(f.root, 'data') });
+    try {
+    const record = f.msg.getMsgsByMsgId(f.params.peer, [f.params.nativeId]).msgList[0], entry = store.remember('123', record);
+    const key = path.join(f.root, 'media-key.txt'); fs.writeFileSync(key, 'ab'.repeat(32), { mode: 0o600 });
+    const service = new OneBotService({ backend: f.capture, store, profileId: 'test', mediaDirectory: f.directory,
+        mediaBaseUrl: 'http://127.0.0.1:4090/media/test', mediaSigningKeyFile: key });
+    const capability = (await service.capabilities()).segments.find(row => row.name === 'record');
+    assert.equal(capability.receive, true); assert.equal(capability.receive_scope, 'account-local-only');
+    const queried = await service.action({ action: 'get_msg', params: { message_id: entry.id } });
+    assert.equal(queried.retcode, 0, JSON.stringify(queried));
+    const segment = queried.data.message.find(item => item.type === 'record'); assert.match(segment.data.file, /^fwd-record-[a-f0-9]{32}$/);
+    assert.ok(segment.data.url.startsWith('http://127.0.0.1:4090/media/test/')); assert.equal(f.downloads(), 0);
+    assert.deepEqual(fs.readFileSync(path.join(f.directory, segment.data.file)), encoded);
+    const exported = await service.action({ action: 'get_record', params: { file: segment.data.file, out_format: 'wav' } });
+    assert.equal(exported.retcode, 0, JSON.stringify(exported)); const bytes = fs.readFileSync(exported.data.file);
+    assert.equal(bytes.toString('ascii', 0, 4), 'RIFF'); assert.equal(bytes.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(bytes.readUInt32LE(24), 24000); assert.ok(Math.abs(bytes.readUInt32LE(40) / 48000 - 1) <= 0.05);
+    } finally { store.close(); }
+});
+
+test('local-only voice receipt rejects absent, unrelated or mismatched cache bytes without publishing a resource', async t => {
+    for (const mode of ['absent', 'outside', 'hash', 'size']) {
+        const f = fixture(t); delete f.msg.downloadRichMedia;
+        const filename = path.join(mode === 'outside' ? f.root : f.cache, 'voice.silk'); f.details.filePath = filename;
+        if (mode !== 'absent') fs.writeFileSync(filename, silk, { mode: 0o600 });
+        if (mode === 'hash') f.details.md5HexStr = 'ab'.repeat(16);
+        if (mode === 'size') f.details.fileSize = String(silk.length + 1);
+        await assert.rejects(f.capture.call('receiveMedia', f.params), { code: mode === 'absent' ? 'NOT_FOUND' : 'INVALID_RESPONSE' });
+        assert.equal(f.downloads(), 0); assert.deepEqual(fs.readdirSync(f.directory), []);
     }
 });
 

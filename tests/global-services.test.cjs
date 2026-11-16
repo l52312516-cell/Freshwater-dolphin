@@ -163,11 +163,11 @@ test('rkey responses accept bare and successful OneBot shapes, cache per account
     const f = fixture(t, { rkey: { fallbackServers: ['https://rkey.example/'] } }, options);
     assert.equal(new URL(await f.client.resolveImageUrl(image, true)).searchParams.get('rkey'), 'group-1');
     await f.client.resolveImageUrl(image, true); assert.equal(calls, 1);
-    assert.equal(new URL(await f.client.resolveImageUrl(image, false)).searchParams.get('rkey'), 'private-2');
+    assert.equal(new URL(await f.client.resolveImageUrl(image.replace('1407', '1406'), false)).searchParams.get('rkey'), 'private-2');
     const other = new GlobalServices({ root: f.root, ...options });
     assert.equal(new URL(await other.resolveImageUrl(image, true)).searchParams.get('rkey'), 'group-3');
     now = 1006000;
-    await assert.rejects(f.client.resolveImageUrl(image, false), { code: 'RKEY_UNAVAILABLE' });
+    await assert.rejects(f.client.resolveImageUrl(image.replace('1407', '1406'), false), { code: 'RKEY_UNAVAILABLE' });
     assert.equal(calls, 4);
 });
 

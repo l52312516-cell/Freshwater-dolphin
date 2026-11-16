@@ -10,7 +10,7 @@ const { OneBotService } = require('../src/onebot/service.cjs');
 function fixture(overrides = {}, options = {}) {
     const capture = new Capture({ install: false });
     capture.epoch = 'one'; capture.ready = true; capture.readyAt = Date.now() - 1000;
-    capture.qqVersion = '3.2.35-54395'; capture.self = { uin: '2068886823', uid: 'u_self' };
+    capture.qqVersion = '3.2.35-54395'; capture.self = { uin: '1000000001', uid: 'u_self' };
     const services = { buddy: {}, group: {}, profile: {}, recent: {}, msg: {}, ...overrides };
     const getters = { buddy: 'getBuddyService', group: 'getGroupService', profile: 'getProfileService', recent: 'getRecentContactService', msg: 'getMsgService' };
     capture.session = Object.fromEntries(Object.entries(getters).map(([name, getter]) => [getter, () => services[name]]));
@@ -18,7 +18,7 @@ function fixture(overrides = {}, options = {}) {
     // before its small service/listener integration is applied.
     capture.service = name => { capture.ensureReady(); return services[name]; };
     capture.registrations = [{ name: 'buddy' }, { name: 'group' }];
-    capture.remember('1515564167', 'u_friend');
+    capture.remember('1000000003', 'u_friend');
     const events = []; const diagnostics = [];
     capture.on('event', event => events.push(event)); capture.diagnostic = error => diagnostics.push(error.code);
     const social = createSocial(capture, options);
@@ -36,7 +36,9 @@ function group(extra = {}) {
 }
 function observeFriend(f, value = friend()) { f.social.listenerMethods.buddy.onBuddyReqChange({ buddyReqs: [value] }); return value; }
 function observeGroup(f, value = group(), doubt = false) { f.social.listenerMethods.group.onGroupNotifiesUpdated(doubt, [value]); return value; }
-function limit(ms = 30) { return { expiresAt: Date.now() + ms }; }
+// Success cases must tolerate process scheduling on the small cloud host.
+// Deadline-specific cases below still pass their explicit short deadlines.
+function limit(ms = 1000) { return { expiresAt: Date.now() + ms }; }
 
 test('friend request callbacks deduplicate native identity, retain comments and exclude old/self/doubt requests', () => {
     const f = fixture(); const record = observeFriend(f);
@@ -151,10 +153,10 @@ test('query requires real callback rather than a successful request return and e
 test('friend remark requires read-back of the exact verified identity and value', async () => {
     const f = fixture(); let args;
     f.services.buddy.setBuddyRemark = value => { args = value; };
-    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1515564167', coreInfo: { remark: 'old' } }]]);
-    await assert.rejects(f.social.action({ operation: 'remark', uin: '1515564167', remark: 'new' }), { code: 'KERNEL_ERROR' });
-    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1515564167', coreInfo: { remark: 'new' } }]]);
-    assert.deepEqual(await f.social.action({ operation: 'remark', uin: '1515564167', remark: 'new' }), { updated: true });
+    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1000000003', coreInfo: { remark: 'old' } }]]);
+    await assert.rejects(f.social.action({ operation: 'remark', uin: '1000000003', remark: 'new' }), { code: 'KERNEL_ERROR' });
+    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1000000003', coreInfo: { remark: 'new' } }]]);
+    assert.deepEqual(await f.social.action({ operation: 'remark', uin: '1000000003', remark: 'new' }), { updated: true });
     assert.deepEqual(args, { uid: 'u_friend', remark: 'new' });
 });
 
@@ -191,9 +193,9 @@ test('categories return the real category IDs, names and verified friend profile
     f.services.buddy.getBuddyListV2 = () => ({ result: 0, data: [{ categoryId: 3, categroyName: 'Friends', categroyMbCount: 1, buddyUids: ['u_friend'] }] });
     f.services.profile.getCoreAndBaseInfo = () => new Map();
     await assert.rejects(f.social.query({ operation: 'categories' }), { code: 'INVALID_RESPONSE' });
-    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1515564167', coreInfo: { nick: 'Name' } }]]);
+    f.services.profile.getCoreAndBaseInfo = () => new Map([['u_friend', { uid: 'u_friend', uin: '1000000003', coreInfo: { nick: 'Name' } }]]);
     const result = await f.social.query({ operation: 'categories' });
-    assert.equal(result[0].categoryId, 3); assert.equal(result[0].buddyList[0].user_id, 1515564167);
+    assert.equal(result[0].categoryId, 3); assert.equal(result[0].buddyList[0].user_id, 1000000003);
 });
 
 test('mark read sends a real kernel UID and requires confirmed QQ result', async () => {
@@ -201,27 +203,27 @@ test('mark read sends a real kernel UID and requires confirmed QQ result', async
     f.services.msg.setMsgRead = value => { args = value; return { result: 0 }; };
     assert.deepEqual(await f.social.action({ operation: 'read', peer: { chatType: 1, peerUid: 'u_friend' } }), { read: true });
     assert.deepEqual(args, { chatType: 1, peerUid: 'u_friend' });
-    await assert.rejects(f.social.action({ operation: 'read', peer: { chatType: 1, peerUid: '1515564167' } }), { code: 'INVALID_PARAMS' });
+    await assert.rejects(f.social.action({ operation: 'read', peer: { chatType: 1, peerUid: '1000000003' } }), { code: 'INVALID_PARAMS' });
     f.services.msg.setMsgRead = () => undefined;
     await assert.rejects(f.social.action({ operation: 'read', peer: { chatType: 2, peerUid: '12345678' } }), { code: 'KERNEL_ERROR' });
 });
 
 test('recent contacts preserve 64-bit native IDs internally and reject inconsistent UID/UIN mapping', async () => {
     const f = fixture();
-    const row = { chatType: 1, peerUid: 'u_friend', peerUin: '1515564167', msgId: '9007199254740993123456', msgTime: String(Math.floor(Date.now() / 1000)), peerName: 'Friend' };
+    const row = { chatType: 1, peerUid: 'u_friend', peerUin: '1000000003', msgId: '9007199254740993123456', msgTime: String(Math.floor(Date.now() / 1000)), peerName: 'Friend' };
     f.services.recent.getRecentContactListSnapShot = () => ({ result: 0, info: { errCode: 0, changedList: [row] } });
     assert.equal((await f.social.query({ operation: 'recent' }))[0].nativeMsgId, row.msgId);
-    row.peerUin = '2441760163';
+    row.peerUin = '3000000002';
     await assert.rejects(f.social.query({ operation: 'recent' }), { code: 'INVALID_RESPONSE' });
 });
 
 function onebotFixture() {
-    const state = { epoch: 'one', self: { uin: '2068886823', uid: 'u_self' }, readyAt: Date.now() - 1000 };
+    const state = { epoch: 'one', self: { uin: '1000000001', uid: 'u_self' }, readyAt: Date.now() - 1000 };
     const calls = [];
     const service = { store: { get: () => undefined, find: () => undefined }, assertSession: async () => {},
         sessionCall: async (_state, method, params) => {
             calls.push({ method, params });
-            if (method === 'resolve') return { uin: params.uin || '1515564167', uid: params.uid || 'u_friend' };
+            if (method === 'resolve') return { uin: params.uin || '1000000003', uid: params.uid || 'u_friend' };
             if (method === 'socialAction') return { read: true, handled: true, updated: true };
             return [];
         } };
@@ -233,23 +235,23 @@ test('OneBot validates booleans, subtype and opaque flags before any kernel side
     await assert.rejects(runSocial(f.service, f.state, 'set_friend_add_request', { flag: '123', approve: true }), { code: 'INVALID_PARAMS' });
     await assert.rejects(runSocial(f.service, f.state, 'set_friend_add_request', { flag: 'fwd_req_' + 'a'.repeat(48), approve: 'false' }), { code: 'INVALID_PARAMS' });
     assert.equal(f.calls.length, 0);
-    await runSocial(f.service, f.state, 'mark_private_msg_as_read', { user_id: 1515564167 });
+    await runSocial(f.service, f.state, 'mark_private_msg_as_read', { user_id: 1000000003 });
     assert.deepEqual(f.calls[1].params, { operation: 'read', peer: { chatType: 1, peerUid: 'u_friend' } });
 });
 
 test('OneBot request events use real sender identity and session-bound opaque flags', async () => {
-    const f = onebotFixture(); const event = { kind: 'request', epoch: 'one', selfUin: '2068886823', time: Math.floor(Date.now() / 1000),
+    const f = onebotFixture(); const event = { kind: 'request', epoch: 'one', selfUin: '1000000001', time: Math.floor(Date.now() / 1000),
         request: { type: 'group', subType: 'invite', groupId: '12345678', uid: 'u_friend', flag: 'fwd_req_' + 'a'.repeat(48), comment: 'space\nline' } };
     const result = await convertSocialEvent(f.service, f.state, event);
-    assert.deepEqual(result, { time: event.time, self_id: 2068886823, post_type: 'request', request_type: 'group',
-        sub_type: 'invite', group_id: 12345678, user_id: 1515564167, flag: event.request.flag, comment: 'space\nline' });
+    assert.deepEqual(result, { time: event.time, self_id: 1000000001, post_type: 'request', request_type: 'group',
+        sub_type: 'invite', group_id: 12345678, user_id: 1000000003, flag: event.request.flag, comment: 'space\nline' });
     assert.equal(await convertSocialEvent(f.service, f.state, { ...event, epoch: 'two' }), null);
 });
 
 test('OneBot recent contacts expose mapped message ID only and never a numeric native ID', async () => {
     const f = onebotFixture();
-    f.service.sessionCall = async () => [{ chatType: 1, peerUid: 'u_friend', peerUin: '1515564167', nativeMsgId: '9007199254740993123456' }];
-    assert.deepEqual(await runSocial(f.service, f.state, 'get_recent_contact', {}), [{ chatType: 1, peerUid: 'u_friend', peerUin: '1515564167' }]);
+    f.service.sessionCall = async () => [{ chatType: 1, peerUid: 'u_friend', peerUin: '1000000003', nativeMsgId: '9007199254740993123456' }];
+    assert.deepEqual(await runSocial(f.service, f.state, 'get_recent_contact', {}), [{ chatType: 1, peerUid: 'u_friend', peerUin: '1000000003' }]);
     f.service.store.find = () => ({ id: 101 });
     assert.equal((await runSocial(f.service, f.state, 'get_recent_contact', {}))[0].message_id, 101);
 });
@@ -260,7 +262,7 @@ test('OneBot service and Capture fixed-method dispatch integrate request event a
     const service = new OneBotService({ backend: { call: (method, params, options) => f.capture.call(method, params,
         { expiresAt: Date.now() + options.timeoutMs }) }, store: {}, actionTimeoutMs: 1000 });
     const event = await service.event(f.events[0]);
-    assert.equal(event.post_type, 'request'); assert.equal(event.user_id, 1515564167);
+    assert.equal(event.post_type, 'request'); assert.equal(event.user_id, 1000000003);
     const response = await service.action({ action: 'set_friend_add_request', params: { flag: event.flag }, echo: false });
     assert.deepEqual(response, { status: 'ok', retcode: 0, data: null, echo: false });
 });
@@ -279,17 +281,17 @@ test('native session observation registers social listeners and retired epoch ca
     const session = {
         init(_config, _depends, _dispatcher, handler) { completion = handler; },
         getMsgService: () => registration('msg'), getGroupService: () => registration('group'), getBuddyService: () => buddy,
-        getProfileService: () => ({ ...registration('profile'), getUinByUid: (_source, values) => new Map(values.map(value => [value, '1515564167'])) })
+        getProfileService: () => ({ ...registration('profile'), getUinByUid: (_source, values) => new Map(values.map(value => [value, '1000000003'])) })
     };
     capture.observeSession(session);
-    const config = { selfUin: '2068886823', selfUid: 'u_self', clientVer: '3.2.35-54395' };
+    const config = { selfUin: '1000000001', selfUid: 'u_self', clientVer: '3.2.35-54395' };
     session.init(config, {}, {}, { onSessionInitComplete() {} }); completion.onSessionInitComplete({ result: 0 });
     const state = await capture.call('status'); assert.equal(state.capabilities.friendRequests, true);
     const rows = await capture.call('socialQuery', { operation: 'friendRequests', expectedEpoch: state.epoch });
     assert.equal(rows.length, 1); assert.equal(events.length, 1);
     const service = new OneBotService({ backend: { call: (method, params, options) => capture.call(method, params,
         { expiresAt: Date.now() + options.timeoutMs }) }, store: {} });
-    const event = await service.event(events[0]); assert.equal(event.user_id, 1515564167);
+    const event = await service.event(events[0]); assert.equal(event.user_id, 1000000003);
     assert.equal((await service.action({ action: 'set_friend_add_request', params: { flag: event.flag } })).status, 'ok');
     const retired = listeners.buddy;
     session.init(config, {}, {}, { onSessionInitComplete() {} }); completion.onSessionInitComplete({ result: 0 });
@@ -303,9 +305,9 @@ test('a native UID lookup that finishes after cancellation cannot modify a frien
     f.capture.resolve = () => new Promise(resolve => { release = resolve; });
     f.services.buddy.setBuddyRemark = () => { changed++; };
     f.services.profile.getCoreAndBaseInfo = () => new Map();
-    const pending = f.capture.call('socialAction', { operation: 'remark', uin: '1515564167', remark: 'Late', expectedEpoch: f.capture.epoch }, limit(20));
+    const pending = f.capture.call('socialAction', { operation: 'remark', uin: '1000000003', remark: 'Late', expectedEpoch: f.capture.epoch }, limit(20));
     await assert.rejects(pending, { code: 'TIMEOUT' });
-    release({ uid: 'u_friend', uin: '1515564167' });
+    release({ uid: 'u_friend', uin: '1000000003' });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(changed, 0);
 });

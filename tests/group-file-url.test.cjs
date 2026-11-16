@@ -18,14 +18,14 @@ function response({ command = 0x6d6, sub = 2, errorCode = 0, retCode = 0, wordin
 }
 
 test('encodeNativeRequest is the OidbBase envelope with the verified group-file download fields', () => {
-    const request = gfu.encodeNativeRequest(1103828635, '/d1e95931-02ce-4b6a-9dc8-4e39058bb4b6', 102);
+    const request = gfu.encodeNativeRequest(2000000001, '/d1e95931-02ce-4b6a-9dc8-4e39058bb4b6', 102);
     const top = fields(request);
     assert.equal(Number(unsigned(one(top, 1), 0xffffffffn)), 0x6d6, 'command');
     assert.equal(Number(unsigned(one(top, 2), 0xffffffffn)), 2, 'subCommand');
     assert.equal(Number(unsigned(one(top, 12), 0xffffffffn)), 1, 'isReserved');
     const download = fields(one(top, 4).value);
     const info = fields(one(download, 3).value);
-    assert.equal(Number(unsigned(one(info, 1), 0xffffffffn)), 1103828635, 'groupCode');
+    assert.equal(Number(unsigned(one(info, 1), 0xffffffffn)), 2000000001, 'groupCode');
     assert.equal(Number(unsigned(one(info, 2), 0xffffffffn)), 7, 'appId constant');
     assert.equal(Number(unsigned(one(info, 3), 0xffffffffn)), 102, 'busId');
     assert.equal(one(info, 4).value.toString('utf8'), '/d1e95931-02ce-4b6a-9dc8-4e39058bb4b6', 'fileId');

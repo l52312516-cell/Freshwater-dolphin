@@ -31,7 +31,7 @@ function sourceFiles(root) {
   return files.sort();
 }
 
-function pack(root = path.resolve(__dirname, '..')) {
+function pack(root = path.resolve(__dirname, '..'), { run = spawnSync, rename = fs.renameSync } = {}) {
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   if (!/^[0-9A-Za-z.+-]+$/.test(version || '')) throw new Error('Package version is invalid');
   const output = path.join(root, 'outputs');
@@ -39,19 +39,51 @@ function pack(root = path.resolve(__dirname, '..')) {
   fs.mkdirSync(output, { recursive: true });
   fs.mkdirSync(temp, { recursive: true });
   const archive = path.join(output, 'freshwater-dolphin-' + version + '-source.tar.gz');
-  const manifest = path.join(temp, 'package-' + crypto.randomBytes(8).toString('hex') + '.txt');
+  for (const directory of [output, temp]) if (fs.lstatSync(directory).isSymbolicLink()) throw new Error('Package directories cannot be symbolic links');
   const files = sourceFiles(root);
-  fs.writeFileSync(manifest, files.join('\n') + '\n', { flag: 'wx', mode: 0o600 });
+  const lock = archive + '.lock';
+  const lockFd = fs.openSync(lock, 'wx', 0o600);
+  let stage;
+  let preserveStage = false;
   try {
-    const result = spawnSync('tar', ['-czf', archive, '-T', manifest], {
+    stage = fs.mkdtempSync(path.join(temp, 'package-'));
+    const manifest = path.join(stage, 'files.txt');
+    const stagedArchive = path.join(stage, 'source.tar.gz');
+    fs.writeFileSync(manifest, files.join('\n') + '\n', { flag: 'wx', mode: 0o600 });
+    const result = run('tar', ['-czf', stagedArchive, '-T', manifest], {
       cwd: root, encoding: 'utf8', env: { ...process.env, TEMP: temp, TMP: temp, TMPDIR: temp }
     });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error('Source archive failed: ' + result.stderr.trim());
-    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
-    fs.writeFileSync(archive + '.sha256', sha256 + '  ' + path.basename(archive) + '\n');
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(stagedArchive)).digest('hex');
+    const stagedHash = stagedArchive + '.sha256';
+    fs.writeFileSync(stagedHash, sha256 + '  ' + path.basename(archive) + '\n', { flag: 'wx', mode: 0o600 });
+    const targets = [archive, archive + '.sha256'];
+    const staged = [stagedArchive, stagedHash];
+    const previous = targets.map((target, index) => {
+      if (!fs.existsSync(target)) return null;
+      const stat = fs.lstatSync(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('Existing package must be an ordinary private file');
+      const saved = path.join(stage, 'previous-' + index); fs.copyFileSync(target, saved, fs.constants.COPYFILE_EXCL); return saved;
+    });
+    for (const file of staged) { const fd = fs.openSync(file, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
+    let published = 0;
+    try {
+      for (; published < targets.length; published++) rename(staged[published], targets[published]);
+    } catch (error) {
+      try {
+        for (let index = 0; index < published; index++) {
+          if (previous[index]) fs.renameSync(previous[index], targets[index]);
+          else fs.unlinkSync(targets[index]);
+        }
+      } catch { preserveStage = true; throw new Error('Package publication rollback requires repair; previous files retained at ' + stage, { cause: error }); }
+      throw error;
+    }
     return { archive, sha256, files: files.length };
-  } finally { fs.unlinkSync(manifest); }
+  } finally {
+    fs.closeSync(lockFd); fs.unlinkSync(lock);
+    if (stage && !preserveStage) fs.rmSync(stage, { recursive: true, force: true });
+  }
 }
 
 if (require.main === module) {

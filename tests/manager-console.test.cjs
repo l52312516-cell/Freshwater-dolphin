@@ -38,21 +38,21 @@ test('old QR routes are absent and bridge operations require administrator CSRF'
 
 test('contact avatar routes authenticate and keep user and group cache entries separate', async t => {
     const { manager, root, api } = await fixture(t);
-    manager.accounts.get('one').boundUin = '2068886823';
+    manager.accounts.get('one').boundUin = '1000000001';
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCU0AAAAASUVORK5CYII=', 'base64');
     const group = Buffer.concat([png, Buffer.from('group')]);
     const directory = path.join(root, 'work/cache/avatars');
-    fs.writeFileSync(path.join(directory, '1515564167.img'), png);
-    fs.writeFileSync(path.join(directory, 'group-1515564167.img'), group);
+    fs.writeFileSync(path.join(directory, '1000000003.img'), png);
+    fs.writeFileSync(path.join(directory, 'group-1000000003.img'), group);
     for (const [kind, bytes] of [['user', png], ['group', group]]) {
-        const result = await api('accounts/one/avatars/' + kind + '/1515564167');
+        const result = await api('accounts/one/avatars/' + kind + '/1000000003');
         assert.equal(result.statusCode, 200); assert.match(result.headers['content-type'], /^image\/png/);
         assert.deepEqual(result.rawPayload, bytes);
     }
-    assert.equal((await api('accounts/one/avatars/url/1515564167')).statusCode, 400);
+    assert.equal((await api('accounts/one/avatars/url/1000000003')).statusCode, 400);
     assert.equal((await api('accounts/one/avatars/user/not-a-number')).statusCode, 400);
-    assert.equal((await api('accounts/missing/avatars/user/1515564167')).statusCode, 404);
-    assert.equal((await api('accounts/two/avatars/user/1515564167')).statusCode, 404);
+    assert.equal((await api('accounts/missing/avatars/user/1000000003')).statusCode, 404);
+    assert.equal((await api('accounts/two/avatars/user/1000000003')).statusCode, 404);
 });
 test('authenticated logs preserve original text and filters while exported logs strip content', async t => {
     const { manager, root, api } = await fixture(t);

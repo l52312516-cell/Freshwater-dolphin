@@ -154,11 +154,13 @@ function finalResource(record) {
 function createForward(capture, { now = Date.now } = {}) {
     let owner;
     const trees = new Map(), writes = new Map(), builds = new Map();
+    const recentMerges = [];
+    function diagnostics() { return structuredClone(recentMerges); }
     function scope() {
         capture.ensureReady();
         const value = { epoch: capture.epoch, session: capture.session, uid: capture.self?.uid, uin: capture.self?.uin };
         if (!owner || owner.epoch !== value.epoch || owner.session !== value.session || owner.uid !== value.uid || owner.uin !== value.uin) {
-            trees.clear(); writes.clear(); builds.clear(); owner = value;
+            trees.clear(); writes.clear(); builds.clear(); recentMerges.length = 0; owner = value;
         }
         return value;
     }
@@ -173,7 +175,13 @@ function createForward(capture, { now = Date.now } = {}) {
     }
     function supported(methods) { return capture.hasMethods('msg', methods); }
     function capabilities() {
-        return { forwardExisting: supported(['getMsgsByMsgId', 'forwardMsg']), forwardRead: supported(['getMsgsByMsgId', 'getMultiMsg']) };
+        return { forwardExisting: supported(['getMsgsByMsgId', 'forwardMsg']), forwardRead: supported(['getMsgsByMsgId', 'getMultiMsg']),
+            // QQ 3.2.35-54395 accepts and delivers this operation, but its real
+            // early and final callbacks expose neither our correlation nor an
+            // exact source tuple. Method presence cannot prove which native ID
+            // belongs to the request. Keep the formal variant disabled until a
+            // verified native identity contract exists; private probes remain.
+            mergeExistingNative: false };
     }
     async function exact(state, context, target, ids) {
         active(state, context);
@@ -265,9 +273,9 @@ function createForward(capture, { now = Date.now } = {}) {
         }).catch(() => {});
         return capture.deadline(() => operation, context);
     }
-    async function nativeMergeProbe(params, context, state) {
-        // QQ's native existing-message merge, private until real delivery and
-        // complete resource readback have been demonstrated. Callers cannot
+    async function nativeMergeProbe(params, context, state, timeoutMs = 10000) {
+        // QQ's native existing-message merge remains a private probe while the
+        // target build cannot bind requests to confirmed destinations. Callers cannot
         // supply content, authors, cards, native elements or another target.
         fields(params, ['kind', 'source', 'msgIds', 'diagnostic']);
         if (params.diagnostic !== undefined && typeof params.diagnostic !== 'boolean') {
@@ -289,6 +297,15 @@ function createForward(capture, { now = Date.now } = {}) {
         const token = { dispatched: false }, controller = new AbortController();
         builds.set(key, token);
         context = { ...context, signal: context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal };
+        // Fixed counters/booleans only: no account, message IDs, text, resource
+        // identities, filesystem paths or native response bodies enter status.
+        const evidence = { at: now(), sourceCount: msgIds.length, phase: 'source-query', nativeInvoked: false,
+            nativePromise: false, nativeSettled: false, nativeAccepted: false, closed: false,
+            callbacks: { records: 0, samePeer: 0, sameSelf: 0, correlationMatches: 0, missingGuild: 0,
+                mismatchedGuild: 0, pending: 0, success: 0, failed: 0 },
+            observations: { added: 0, updated: 0, exactSourceTuple: 0, correlatedAdded: 0, correlatedUpdated: 0,
+                correlatedNativeId: false } };
+        recentMerges.push(evidence); while (recentMerges.length > 8) recentMerges.shift();
         const operation = Promise.resolve().then(async () => {
             const sources = await exact(state, context, source, msgIds), signatures = sources.map(pureTextSignature);
             const msgInfos = sources.map(record => {
@@ -302,15 +319,36 @@ function createForward(capture, { now = Date.now } = {}) {
                 return { msgId: record.msgId, senderShowName };
             });
             active(state, context);
+            evidence.phase = 'server-time';
             const time = await capture.invoke('msf', 'getServerTime', []);
             active(state, context);
+            evidence.phase = 'correlation-id';
             const correlation = String(await capture.invoke('msg', 'generateMsgUniqueId', [source.chatType, time]));
             active(state, context);
             if (!/^[1-9]\d{0,19}$/.test(correlation) || BigInt(correlation) > MAX_ID) {
                 throw problem('INVALID_RESPONSE', 'QQ returned an invalid native merged correlation ID');
             }
-            let diagnostic, observer, handler, outcome = { confirmed: false };
+            let diagnostic, observer, handler, statusObserver, outcome = { confirmed: false };
             try {
+              statusObserver = observation => {
+                if (evidence.closed || !Array.isArray(observation?.records) ||
+                    !['onAddSendMsg', 'onMsgInfoListUpdate'].includes(observation.callback)) return;
+                for (const record of observation.records) {
+                    if (!object(record) || record.chatType !== source.chatType || record.peerUid !== source.peerUid ||
+                        String(record.senderUin) !== state.uin || record.senderUid !== state.uid) continue;
+                    if (observation.callback === 'onAddSendMsg') evidence.observations.added++;
+                    else evidence.observations.updated++;
+                    if (String(record.guildId) === correlation) {
+                        if (observation.callback === 'onAddSendMsg') evidence.observations.correlatedAdded++;
+                        else evidence.observations.correlatedUpdated++;
+                        if (typeof record.msgId === 'string' && /^[1-9]\d{0,19}$/.test(record.msgId) &&
+                            BigInt(record.msgId) <= MAX_ID && !msgIds.includes(record.msgId)) evidence.observations.correlatedNativeId = true;
+                    }
+                    const tuple = record.buildMultiMsgReqInfo?.srcMsgIds;
+                    if (Array.isArray(tuple) && tuple.length === msgIds.length && tuple.every((id, index) => id === msgIds[index])) evidence.observations.exactSourceTuple++;
+                }
+              };
+              capture.bus.on('sendObservation', statusObserver);
               if (params.diagnostic === true) {
                 diagnostic = beginForwardDiagnostic({ environment: capture.processObject?.env, state, source, sourceMsgIds: msgIds, correlation, now });
                 observer = observation => {
@@ -331,8 +369,21 @@ function createForward(capture, { now = Date.now } = {}) {
               }
               const delivered = new Promise((resolve, reject) => {
                 handler = records => { for (const record of records) {
+                    evidence.callbacks.records++;
+                    if (record.chatType === source.chatType && record.peerUid === source.peerUid) {
+                        evidence.callbacks.samePeer++;
+                        if (String(record.senderUin) === state.uin && record.senderUid === state.uid) {
+                            evidence.callbacks.sameSelf++;
+                            if (record.guildId === undefined || record.guildId === null || record.guildId === '') evidence.callbacks.missingGuild++;
+                            else if (String(record.guildId) !== correlation) evidence.callbacks.mismatchedGuild++;
+                            if (record.sendStatus === 2) evidence.callbacks.success++;
+                            else if (record.sendStatus === 0) evidence.callbacks.failed++;
+                            else evidence.callbacks.pending++;
+                        }
+                    }
                     if (String(record.guildId) !== correlation || record.chatType !== source.chatType || record.peerUid !== source.peerUid ||
                         String(record.senderUin) !== state.uin || record.senderUid !== state.uid) continue;
+                    evidence.callbacks.correlationMatches++;
                     try {
                         active(state, context);
                         if (record.sendStatus === 0) reject(problem('SEND_FAILED', 'QQ rejected native merged delivery'));
@@ -348,24 +399,33 @@ function createForward(capture, { now = Date.now } = {}) {
                         throw problem('DIAGNOSTIC_FAILED', 'Native merge diagnostic failed before submission');
                     }
                     token.dispatched = true;
+                    evidence.nativeInvoked = true; evidence.phase = 'native-and-delivery';
                     let result;
                     try {
                         result = capture.invoke('msg', 'multiForwardMsgWithComment', [msgInfos, { ...source, guildId: '' },
                             { ...source, guildId: correlation }, [], new Map()]);
                     } catch (error) { diagnostic?.nativeResult(error, true); throw error; }
                     const asynchronous = result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function';
+                    evidence.nativePromise = asynchronous;
                     if (!asynchronous) diagnostic?.nativeResult(result);
                     return Promise.all([Promise.resolve(result).then(value => {
+                        evidence.nativeSettled = true;
+                        if (evidence.closed) evidence.lateNativeResult = true;
                         if (asynchronous) diagnostic?.nativeResult(value);
-                        if (value === undefined) return 'void-with-delivery-proof';
+                        if (value === undefined) { evidence.nativeAccepted = true; evidence.nativeResultShape = 'void'; return 'void-with-delivery-proof'; }
                         if (!object(value) || !Object.hasOwn(value, 'result') || typeof value.result !== 'number') {
+                            evidence.nativeResultShape = 'unknown';
                             throw problem('INVALID_RESPONSE', 'QQ native merge returned an unrecognized acceptance result');
                         }
+                        evidence.nativeResultShape = value.result === 0 ? 'numeric-zero' : 'numeric-nonzero';
                         if (value.result !== 0) throw problem('KERNEL_ERROR', 'QQ rejected the native merged operation; it was not retried');
+                        evidence.nativeAccepted = true;
                         return 'numeric-zero';
-                    }, error => { diagnostic?.nativeResult(error, true); throw error; }), delivered]);
-                }, context);
+                    }, error => { evidence.nativeSettled = true; evidence.nativeResultShape = 'rejected';
+                        if (evidence.closed) evidence.lateNativeResult = true; diagnostic?.nativeResult(error, true); throw error; }), delivered]);
+                }, context, timeoutMs);
                 active(state, context);
+                evidence.phase = 'root-readback';
                 const nativeId = fullId(sent.msgId);
                 if (msgIds.includes(nativeId)) throw problem('INVALID_RESPONSE', 'QQ reused a source identity as the merged destination');
                 const [root] = await exact(state, context, source, [nativeId]);
@@ -373,6 +433,7 @@ function createForward(capture, { now = Date.now } = {}) {
                     throw problem('INVALID_RESPONSE', 'QQ merged root is not a confirmed own message');
                 }
                 const resId = finalResource(root);
+                evidence.phase = 'resource-readback';
                 const response = acceptance(await capture.invoke('msg', 'getMultiMsg', [{ ...source, guildId: '' }, nativeId, nativeId]));
                 active(state, context);
                 const records = copyRecords(response.msgList);
@@ -381,23 +442,37 @@ function createForward(capture, { now = Date.now } = {}) {
                     throw problem('INVALID_RESPONSE', 'QQ completed merged resource does not match the original native source nodes');
                 }
                 outcome = { confirmed: true };
+                evidence.phase = 'confirmed';
                 return { confirmed: true, confirmation: 'correlated-native-merge-and-resource-readback', nativeAcceptance: accepted,
                     source, destination: source, sourceMsgIds: msgIds, messageId: nativeId, resId, record: copyRecords([root])[0], records,
                     ...(diagnostic ? { diagnosticId: diagnostic.id } : {}) };
             } catch (error) {
+                if (!['expired', 'failed'].includes(evidence.phase)) evidence.failedAt = evidence.phase;
+                evidence.phase = ['TIMEOUT', 'EXPIRED'].includes(error?.code) ? 'expired' : 'failed';
                 outcome = { confirmed: false, code: typeof error?.code === 'string' ? error.code : 'KERNEL_ERROR' };
                 throw error;
             } finally {
                 if (handler) capture.bus.removeListener('sent', handler);
                 if (observer) capture.bus.removeListener('sendObservation', observer);
+                if (statusObserver) capture.bus.removeListener('sendObservation', statusObserver);
+                evidence.closed = true; evidence.elapsedMs = Math.max(0, now() - evidence.at);
                 diagnostic?.close({ ...outcome, dispatched: token.dispatched });
             }
         });
         operation.finally(() => {
             if (!token.dispatched && builds.get(key) === token) builds.delete(key);
         }).catch(() => {});
-        try { return await capture.deadline(() => operation, context); }
-        finally { controller.abort(); await Promise.resolve(); }
+        try { return await capture.deadline(() => operation, context, timeoutMs); }
+        catch (error) {
+            if (!evidence.closed) {
+                if (!['expired', 'failed'].includes(evidence.phase)) evidence.failedAt = evidence.phase;
+                evidence.phase = ['TIMEOUT', 'EXPIRED'].includes(error?.code) ? 'expired' : 'failed';
+            }
+            throw error;
+        } finally {
+            controller.abort(); await Promise.resolve();
+            evidence.closed = true; evidence.elapsedMs = Math.max(0, now() - evidence.at);
+        }
     }
     async function read(params, context, state) {
         fields(params, ['kind', 'peer', 'rootMsgId', 'parentMsgId', 'resId']);
@@ -435,17 +510,29 @@ function createForward(capture, { now = Date.now } = {}) {
     }
     async function run(params, context = {}) {
         const state = scope();
-        context = { ...context, expiresAt: Math.min(context.expiresAt ?? Infinity, now() + 10000) };
+        const timeoutMs = params?.kind === 'existingMerge' ? params.timeoutMs ?? 60000 : 10000;
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) {
+            throw problem('INVALID_PARAMS', 'Existing merged-send timeout must be at most 60 seconds');
+        }
+        context = { ...context, expiresAt: Math.min(context.expiresAt ?? Infinity, now() + timeoutMs) };
         if (params?.expectedEpoch !== undefined && params.expectedEpoch !== state.epoch) throw problem('SESSION_CHANGED', 'Forward request belongs to another QQ session');
         active(state, context);
         if (params?.kind === 'forward') return send(params, context, state);
         if (params?.kind === 'build' || params?.kind === 'inspectBuild') return build(params, context, state);
         if (params?.kind === 'mergeProbe') throw problem('UNSUPPORTED', 'Pending-carrier merged sending was disabled after real QQ returned an empty resource');
+        if (params?.kind === 'existingMerge') {
+            fields(params, ['kind', 'source', 'msgIds', 'timeoutMs']);
+            if (!capabilities().mergeExistingNative) {
+                throw problem('UNSUPPORTED', 'Existing-message merging is disabled: this QQ build does not expose a verified request-to-message identity');
+            }
+            const { timeoutMs: _timeout, ...request } = params;
+            return nativeMergeProbe({ ...request, kind: 'nativeMergeProbe' }, context, state, timeoutMs);
+        }
         if (params?.kind === 'nativeMergeProbe') return nativeMergeProbe(params, context, state);
         if (params?.kind === 'read') return capture.deadline(() => read(params, context, state), context);
         throw problem('INVALID_PARAMS', 'Unknown fixed forward operation');
     }
-    return { run, capabilities, clear() { trees.clear(); writes.clear(); builds.clear(); owner = undefined; } };
+    return { run, capabilities, diagnostics, clear() { trees.clear(); writes.clear(); builds.clear(); recentMerges.length = 0; owner = undefined; } };
 }
 
 module.exports = { createForward, descriptor, rootDescriptor, finalResource };

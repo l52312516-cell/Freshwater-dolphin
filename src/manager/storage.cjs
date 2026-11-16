@@ -209,6 +209,9 @@ class Storage {
 
     cleanHistory(id) {
         const result = this.result('account', { profileId: id, category: 'history', clearedMessages: 0 });
+        const data = path.join(this.accounts.location(id), 'data');
+        try { if (fs.existsSync(data)) require('../onebot/store.cjs').checkpointDirectory(data); }
+        catch { throw fail('INVALID_MESSAGE_STORE', 'A message journal could not be validated; nothing was cleared', 409); }
         const scan = this.scan(path.join(this.accounts.location(id), 'data'), this.budget(), name => MAPPING_NAME.test(name), false);
         if (scan.partial || scan.files > 256 || scan.bytes > 128 * MIB) throw fail('STORAGE_LIMIT', 'Message mappings could not be fully checked; nothing was cleared', 409);
         // Validate every mapping before changing any. Never remove nextId or an

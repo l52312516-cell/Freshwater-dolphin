@@ -11,6 +11,8 @@ const accountId = ref('');
 const component = ref('');
 const selectedLevel = ref('');
 const autoScroll = ref(true);
+const page = ref(1);
+const pageSize = 100;
 const wrap = ref(true);
 const viewport = ref<HTMLElement | null>(null);
 const hidden = ref(new Set<string>());
@@ -45,6 +47,9 @@ const filtered = computed(() => {
     (!component.value || module(item) === component.value) && (!selectedLevel.value || level(item) === selectedLevel.value) &&
     (!needle || searchable(item).includes(needle)));
 });
+const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)));
+const visible = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize));
+function showPage(value: number) { autoScroll.value = false; page.value = Math.max(1, Math.min(pageCount.value, value)); }
 function clock(item: Json) {
   const value = item.time ?? item.at;
   if (!value) return '—';
@@ -84,14 +89,14 @@ function exportDiagnostics() {
 async function scroll() { if (!autoScroll.value) return; await nextTick(); const element = viewport.value; if (element) element.scrollTop = element.scrollHeight; }
 // Records are immutable snapshots. Avoid recursively watching every message
 // field, and let filtering/clearing use the same post-render scroll path.
-watch(filtered, scroll, { flush: 'post' });
+watch(filtered, () => { page.value = autoScroll.value ? pageCount.value : Math.min(page.value, pageCount.value); void scroll(); }, { flush: 'post' });
 watch(() => props.records, records => {
   if (!hidden.value.size) return;
   const retained = new Set(records.map(key));
   const next = new Set([...hidden.value].filter(id => retained.has(id)));
   if (next.size !== hidden.value.size) hidden.value = next;
 });
-watch(autoScroll, scroll);
+watch(autoScroll, () => { if (autoScroll.value) page.value = pageCount.value; void scroll(); });
 </script>
 
 <template>
@@ -132,7 +137,7 @@ watch(autoScroll, scroll);
       <table>
         <thead><tr><th>时间</th><th>级别</th><th>模块</th><th>消息</th></tr></thead>
         <tbody>
-          <tr v-for="item in filtered" :key="key(item)">
+          <tr v-for="item in visible" :key="key(item)">
             <td class="log-time"><span class="cell-label" aria-hidden="true">时间</span><span :title="String(item.time || item.at || '')">{{ clock(item) }}</span><small>{{ accountLabel(item) }}</small></td>
             <td><span class="cell-label" aria-hidden="true">级别</span><span class="log-level" :class="level(item).toLowerCase()"><i></i>{{ level(item) }}</span></td>
             <td class="log-module"><span class="cell-label" aria-hidden="true">模块</span>[{{ module(item) }}]</td>
@@ -145,6 +150,12 @@ watch(autoScroll, scroll);
           <tr v-if="!filtered.length"><td colspan="4" class="empty compact">{{ records.length ? '暂无匹配日志，可调整筛选条件。' : '暂无日志，收到消息后将在这里显示原文。' }}</td></tr>
         </tbody>
       </table>
+    </div>
+    <div v-if="pageCount > 1" class="button-row" aria-label="日志分页">
+      <button :disabled="page <= 1" @click="showPage(page - 1)">上一页</button>
+      <span>{{ page }} / {{ pageCount }} 页 · 每页 {{ pageSize }} 条</span>
+      <button :disabled="page >= pageCount" @click="showPage(page + 1)">下一页</button>
+      <button @click="autoScroll = true">跟随最新</button>
     </div>
     <div class="log-notes"><span>聊天原文仅供管理员查看；下载的诊断文件排除正文和对象资料。</span><span>{{ paused ? '暂停期间不保证补发全部记录' : autoScroll ? '自动跟随最新日志' : '已关闭自动滚动' }}</span></div>
   </section>

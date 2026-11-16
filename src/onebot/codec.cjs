@@ -3,6 +3,7 @@
 const { decodeBase64Image, MAX_IMAGE_BYTES } = require('../qq/media.cjs');
 const { normalizeMusicData, MAX_CARD_BYTES } = require('../qq/music.cjs');
 const { descriptor: forwardDescriptor } = require('../qq/forward.cjs');
+const { decodeInlineMedia } = require('./media-input.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -14,6 +15,7 @@ function escape(value, parameter = false) {
     return escaped;
 }
 function localMediaFile(value, type) {
+    if (typeof value === 'string' && value.startsWith('base64://')) return value;
     if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f]/.test(value)) {
         throw problem('INVALID_REQUEST', type + ' requires an account-local file');
     }
@@ -104,19 +106,23 @@ function parse(message, autoEscape = false) {
             return { type, data: { id } };
         }
         if (type === 'record') {
-            if (Object.keys(data).some(key => key !== 'file') || typeof data.file !== 'string' || !data.file ||
-                data.file.length > 4096 || /[\x00-\x1f]/.test(data.file)) throw problem('INVALID_REQUEST', 'record requires only an account-local audio file');
-            if (/^(https?|base64):/i.test(data.file)) throw problem('UNSUPPORTED', 'Remote and base64 voice inputs are unavailable');
-            if (/^[a-z][a-z0-9+.-]*:/i.test(data.file) && !/^file:/i.test(data.file) && !/^[a-z]:[\\/]/i.test(data.file)) {
-                throw problem('UNSUPPORTED', 'Only account-local voice files are available');
+            if (Object.keys(data).some(key => key !== 'file')) throw problem('INVALID_REQUEST', 'record accepts only its audio file');
+            const file = localMediaFile(data.file, type);
+            if (file.startsWith('base64://')) {
+                inlineImageBytes += decodeInlineMedia(file, type).bytes.length;
+                if (inlineImageBytes > MAX_IMAGE_BYTES) throw problem('INVALID_REQUEST', 'Inline media in one message exceed 10 MiB in total');
             }
-            return { type, data: { file: data.file } };
+            return { type, data: { file } };
         }
         if (type === 'file' || type === 'video') {
             if (Object.keys(data).some(key => key !== 'file' && !(type === 'file' && key === 'name'))) {
                 throw problem('UNSUPPORTED', 'Unsupported ' + type + ' options');
             }
             const file = localMediaFile(data.file, type);
+            if (file.startsWith('base64://')) {
+                inlineImageBytes += decodeInlineMedia(file, type).bytes.length;
+                if (inlineImageBytes > MAX_IMAGE_BYTES) throw problem('INVALID_REQUEST', 'Inline media in one message exceed 10 MiB in total');
+            }
             if (data.name !== undefined && (typeof data.name !== 'string' || !data.name.trim() || ['.', '..'].includes(data.name) ||
                 Buffer.byteLength(data.name) > 255 || /[\\/\x00-\x1f\x7f-\x9f]/.test(data.name))) {
                 throw problem('INVALID_REQUEST', 'Invalid file display name');

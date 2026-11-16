@@ -6,14 +6,13 @@ const { WebSocket, WebSocketServer } = require('ws');
 const { ReverseWebSocket } = require('./ws.cjs');
 const { executeQuickOperation } = require('./quick-operation.cjs');
 const { MAX_ACTION_BYTES } = require('./limits.cjs');
+const { decodeHttpParameter } = require('./parameter-schema.cjs');
 
 const MAX_BODY = 1024 * 1024;
 const failure = (retcode, message, request) => ({ status: 'failed', retcode, data: null, message, wording: message,
     ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) });
 const sameSession = (a, b) => Boolean(a && b && a.epoch === b.epoch && a.uin === b.uin);
 const clone = value => structuredClone(value);
-const NUMERIC_PARAMETERS = new Set(['self_id', 'user_id', 'group_id', 'message_id', 'message_seq', 'duration', 'times', 'delay', 'count', 'font', 'cache', 'proxy', 'timeout', 'file_size', 'busid']);
-const BOOLEAN_PARAMETERS = new Set(['auto_escape', 'no_cache', 'approve', 'enable', 'reject_add_request', 'is_dismiss', 'reverseOrder', 'reverse', 'asface', 'isSet', 'is_set']);
 
 function authorized(request, token, url) {
     if (!token) return true;
@@ -42,13 +41,7 @@ function parameters(search) {
     for (const [key, value] of search) {
         if (Object.hasOwn(result, key)) throw new Error('Duplicate parameter');
         if (key === 'access_token') continue;
-        result[key] = value;
-        // HTTP query/form values are strings. Do not turn message text or opaque request flags into numbers.
-        if ((NUMERIC_PARAMETERS.has(key) && /^-?(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value))) ||
-            (BOOLEAN_PARAMETERS.has(key) && ['true', 'false'].includes(value)) || key === 'echo' ||
-            (key === 'message' && value.startsWith('[')) || (['context', 'operation', 'anonymous'].includes(key) && value.startsWith('{'))) {
-            try { result[key] = JSON.parse(value); } catch (_) {}
-        }
+        result[key] = decodeHttpParameter(key, value);
     }
     return result;
 }

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { beginForwardDiagnostic } = require('../src/qq/forward-diagnostics.cjs');
 const temporaryRoot = path.resolve(__dirname, '../work/temp');
-const STATE = { epoch: 'diagnostic-session', uin: '2068886823', uid: 'u_self' };
+const STATE = { epoch: 'diagnostic-session', uin: '1000000001', uid: 'u_self' };
 function fixture(t) {
     fs.mkdirSync(temporaryRoot, { recursive: true });
     const root = fs.mkdtempSync(path.join(temporaryRoot, 'forward-diagnostic-'));
@@ -19,7 +19,7 @@ function fixture(t) {
         assert.ok(root.startsWith(temporaryRoot + path.sep));
         fs.rmSync(root, { recursive: true, force: true });
     });
-    const begin = extra => beginForwardDiagnostic({ environment, state: STATE, source: { chatType: 2, peerUid: '1103828635' },
+    const begin = extra => beginForwardDiagnostic({ environment, state: STATE, source: { chatType: 2, peerUid: '2000000001' },
         sourceMsgIds: ['18446744073709551610'], correlation: '18446744073709551000', ...extra });
     const rows = id => fs.readFileSync(path.join(base, id, 'records.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const summary = id => JSON.parse(fs.readFileSync(path.join(base, id, 'summary.json'), 'utf8')).data;
@@ -50,7 +50,7 @@ test('unmanaged, mismatched or linked account paths fail before a run is opened'
     const f = fixture(t);
     for (const environment of [{}, { ...f.environment, FWD_ACCOUNT_ROOT: path.join(f.root, 'outside') },
         { ...f.environment, FWD_RPC_DIR: path.join(f.account, 'other') },
-        { ...f.environment, FWD_EXPECTED_UIN: '2441760163' },
+        { ...f.environment, FWD_EXPECTED_UIN: '3000000002' },
         { ...f.environment, FWD_MANAGER_ROOT: '.' }]) {
         assert.throws(() => f.begin({ environment }), { code: 'INVALID_CONFIG' });
     }

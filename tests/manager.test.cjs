@@ -13,7 +13,7 @@ const { Backups, encode, decode, validateArchive, ordinaryMapping } = require('.
 const { atomic } = require('../src/manager/files.cjs');
 const { createManager } = require('../src/manager/server.cjs');
 const { inspect } = require('../src/manager/ownership.cjs');
-const mapping = nextId => JSON.stringify({ version: 1, account: '2068886823', nextId, entries: [] });
+const mapping = nextId => JSON.stringify({ version: 1, account: '1000000001', nextId, entries: [] });
 
 function temporary(t) {
     const parent = path.resolve(__dirname, '../work/temp'); fs.mkdirSync(parent, { recursive: true });
@@ -82,11 +82,11 @@ test('account updates own the full stop-save-start operation and cannot race pub
 test('manager revokes an existing grant when the worker health becomes corrupt or future dated', async t => {
     const { root, accounts } = fakeAccounts(t); accounts.create({ id: 'a' }); await accounts.start('a');
     const state = path.join(root, 'work/accounts/a/state'), grant = path.join(state, 'authorization.json');
-    atomic(path.join(state, 'health.json'), { at: Date.now(), selfId: '2068886823', sessionEpoch: 'first', ready: true });
+    atomic(path.join(state, 'health.json'), { at: Date.now(), selfId: '1000000001', sessionEpoch: 'first', ready: true });
     accounts.poll(); assert.equal(fs.existsSync(grant), true);
     fs.writeFileSync(path.join(state, 'health.json'), 'invalid');
     accounts.poll(); assert.equal(fs.existsSync(grant), false);
-    atomic(path.join(state, 'health.json'), { at: Date.now() + 60000, selfId: '2068886823', sessionEpoch: 'first', ready: true });
+    atomic(path.join(state, 'health.json'), { at: Date.now() + 60000, selfId: '1000000001', sessionEpoch: 'first', ready: true });
     accounts.poll(); assert.equal(fs.existsSync(grant), false);
 });
 
@@ -104,17 +104,17 @@ test('process ledger validation refuses reused group identities and unrelated me
 
 test('account gates isolate directories, reject duplicate identities and revoke on stop', async t => {
     const { root, accounts, children } = fakeAccounts(t);
-    accounts.create({ id: 'alpha', expectedUin: '2068886823' });
-    accounts.create({ id: 'beta', expectedUin: '2441760163' });
+    accounts.create({ id: 'alpha', expectedUin: '1000000001' });
+    accounts.create({ id: 'beta', expectedUin: '3000000002' });
     await accounts.start('alpha'); await accounts.start('beta');
     assert.notEqual(children[0].env.FWD_RPC_DIR, children[1].env.FWD_RPC_DIR);
-    for (const [id, uin] of [['alpha', '2068886823'], ['beta', '2441760163']]) atomic(path.join(root, 'work/accounts', id, 'state/health.json'), {
+    for (const [id, uin] of [['alpha', '1000000001'], ['beta', '3000000002']]) atomic(path.join(root, 'work/accounts', id, 'state/health.json'), {
         at: Date.now(), selfId: uin, sessionEpoch: id + '-epoch', ready: true, online: true, gatewayPort: 12345
     });
     accounts.poll();
     const grantA = path.join(root, 'work/accounts/alpha/state/authorization.json');
     const grantB = path.join(root, 'work/accounts/beta/state/authorization.json');
-    assert.equal(JSON.parse(fs.readFileSync(grantA)).uin, '2068886823');
+    assert.equal(JSON.parse(fs.readFileSync(grantA)).uin, '1000000001');
     assert.ok(JSON.parse(fs.readFileSync(grantA)).managementToken.length >= 32);
     await accounts.stop('alpha'); assert.equal(fs.existsSync(grantA), false); assert.equal(fs.existsSync(grantB), true);
     assert.equal(accounts.states.get('beta'), 'online');
@@ -125,7 +125,7 @@ test('unknown duplicate QQ cannot both receive authorization, wrong expected QQ 
     accounts.create({ id: 'a' }); accounts.create({ id: 'b' });
     await accounts.start('a'); await accounts.start('b');
     for (const id of ['a', 'b']) atomic(path.join(root, 'work/accounts', id, 'state/health.json'), {
-        at: Date.now(), selfId: '2068886823', sessionEpoch: id, ready: true, online: true
+        at: Date.now(), selfId: '1000000001', sessionEpoch: id, ready: true, online: true
     });
     accounts.poll();
     assert.equal(accounts.states.get('a'), 'online'); assert.equal(accounts.states.get('b'), 'duplicate_account');
@@ -181,34 +181,34 @@ test('ordinary backups strip login state and tokens and keep restored connection
     const { root, accounts } = fakeAccounts(t); accounts.create({ id: 'a', nodes: [{ id: 'bot', type: 'wsClient', url: 'ws://127.0.0.1:17700/ws', token: 'node-token' }] });
     const base = accounts.location('a');
     fs.mkdirSync(path.join(base, 'data'), { recursive: true }); fs.mkdirSync(path.join(base, 'home'), { recursive: true });
-    fs.writeFileSync(path.join(base, 'data/2068886823.json'), mapping(42)); fs.writeFileSync(path.join(base, 'home/login.dat'), 'ticket');
+    fs.writeFileSync(path.join(base, 'data/1000000001.json'), mapping(42)); fs.writeFileSync(path.join(base, 'home/login.dat'), 'ticket');
     const backups = new Backups(root, accounts), backup = await backups.create({ profileIds: ['a'] });
     const document = await decode(fs.readFileSync(backups.file(backup.id)));
     assert.equal(document.profiles[0].entries.length, 1); assert.equal(document.profiles[0].config.nodes[0].token, undefined);
     const preview = await backups.preview({ backupId: backup.id }); await backups.apply(preview.previewId);
     assert.equal(accounts.get('a').nodes[0].enabled, false); assert.equal(accounts.get('a').nodes[0].token, '');
     assert.equal(fs.existsSync(path.join(base, 'home/login.dat')), false);
-    assert.equal(fs.readFileSync(path.join(base, 'data/2068886823.json'), 'utf8'), mapping(42));
+    assert.equal(fs.readFileSync(path.join(base, 'data/1000000001.json'), 'utf8'), mapping(42));
 });
 
 test('ordinary mappings preserve stable locators and dedup flags while stripping every cached message body', () => {
-    const locator = { peer: { chatType: 1, peerUid: 'u_friend' }, nativeId: '90071992547409931234', seq: '3', clientSeq: '4', senderUin: '2441760163' };
-    const stored = { version: 1, account: '2068886823', nextId: 2, entries: [{ id: 1, locator, emitted: true,
+    const locator = { peer: { chatType: 1, peerUid: 'u_friend' }, nativeId: '90071992547409931234', seq: '3', clientSeq: '4', senderUin: '3000000002' };
+    const stored = { version: 1, account: '1000000001', nextId: 2, entries: [{ id: 1, locator, emitted: true,
         recalled: true, recallEmitted: false, record: { text: 'private body' }, event: { raw_message: 'private body' }, recallEvent: { secret: 'private body' } }] };
-    const bytes = ordinaryMapping(Buffer.from(JSON.stringify(stored)), '2068886823', { strip: true });
+    const bytes = ordinaryMapping(Buffer.from(JSON.stringify(stored)), '1000000001', { strip: true });
     assert.equal(bytes.includes(Buffer.from('private body')), false);
     assert.deepEqual(JSON.parse(bytes).entries[0], { id: 1, locator, emitted: true, recalled: true, recallEmitted: false });
-    assert.doesNotThrow(() => ordinaryMapping(bytes, '2068886823'));
-    assert.throws(() => ordinaryMapping(Buffer.from(JSON.stringify(stored)), '2068886823'), { code: 'INVALID_BACKUP' });
-    assert.throws(() => ordinaryMapping(bytes, '2441760163'), { code: 'INVALID_BACKUP' });
+    assert.doesNotThrow(() => ordinaryMapping(bytes, '1000000001'));
+    assert.throws(() => ordinaryMapping(Buffer.from(JSON.stringify(stored)), '1000000001'), { code: 'INVALID_BACKUP' });
+    assert.throws(() => ordinaryMapping(bytes, '3000000002'), { code: 'INVALID_BACKUP' });
     const duplicate = JSON.parse(bytes); duplicate.entries.push(duplicate.entries[0]);
-    assert.throws(() => ordinaryMapping(Buffer.from(JSON.stringify(duplicate)), '2068886823'), { code: 'INVALID_BACKUP' });
+    assert.throws(() => ordinaryMapping(Buffer.from(JSON.stringify(duplicate)), '1000000001'), { code: 'INVALID_BACKUP' });
 });
 
 test('ordinary backup waits for the writer to stop and captures its final persisted message mapping', async t => {
     const { root, accounts, children } = fakeAccounts(t);
     accounts.create({ id: 'a' }); await accounts.start('a');
-    const data = path.join(accounts.location('a'), 'data/2068886823.json');
+    const data = path.join(accounts.location('a'), 'data/1000000001.json');
     fs.writeFileSync(data, mapping(1));
     const originalKill = children[0].kill;
     children[0].kill = signal => { fs.writeFileSync(data, mapping(2)); return originalKill(signal); };
@@ -247,10 +247,10 @@ test('restore survives actual process crashes between renames and registry write
         const root = temporary(t), accounts = new Accounts(root);
         accounts.create({ id: 'a', label: 'original' });
         fs.mkdirSync(path.join(accounts.location('a'), 'data'), { recursive: true });
-        const mapping = path.join(accounts.location('a'), 'data/2068886823.json');
-        fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '2068886823', nextId: 10, entries: [] }));
+        const mapping = path.join(accounts.location('a'), 'data/1000000001.json');
+        fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '1000000001', nextId: 10, entries: [] }));
         const backups = new Backups(root, accounts), backup = await backups.create({ profileIds: ['a'] });
-        fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '2068886823', nextId: 20, entries: [] }));
+        fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '1000000001', nextId: 20, entries: [] }));
         const script = `const {Accounts}=require(process.argv[1]);const {Backups}=require(process.argv[2]);(async()=>{const a=new Accounts(process.argv[3]);const b=new Backups(process.argv[3],a,{checkpoint:n=>{if(n===process.argv[5])process.exit(77)}});const p=await b.preview({backupId:process.argv[4]});await b.apply(p.previewId)})().catch(()=>process.exit(78));`;
         const child = spawnSync(process.execPath, ['-e', script, require.resolve('../src/manager/accounts.cjs'), require.resolve('../src/manager/backups.cjs'), root, backup.id, checkpoint],
             { cwd: root, env: { ...process.env, TEMP: path.resolve(__dirname, '../work/temp'), TMP: path.resolve(__dirname, '../work/temp'), TMPDIR: path.resolve(__dirname, '../work/temp') }, encoding: 'utf8' });
@@ -269,9 +269,9 @@ test('restore survives actual process crashes between renames and registry write
 test('a committed restore survives a crash without rolling back its new state', async t => {
     const root = temporary(t), accounts = new Accounts(root); accounts.create({ id: 'a' });
     fs.mkdirSync(path.join(accounts.location('a'), 'data'), { recursive: true });
-    const mapping = path.join(accounts.location('a'), 'data/2068886823.json'); fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '2068886823', nextId: 10, entries: [] }));
+    const mapping = path.join(accounts.location('a'), 'data/1000000001.json'); fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '1000000001', nextId: 10, entries: [] }));
     const backups = new Backups(root, accounts), backup = await backups.create({ profileIds: ['a'] });
-    fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '2068886823', nextId: 20, entries: [] }));
+    fs.writeFileSync(mapping, JSON.stringify({ version: 1, account: '1000000001', nextId: 20, entries: [] }));
     const script = `const {Accounts}=require(process.argv[1]);const {Backups}=require(process.argv[2]);(async()=>{const a=new Accounts(process.argv[3]);const b=new Backups(process.argv[3],a,{checkpoint:n=>{if(n==='after_commit')process.exit(77)}});const p=await b.preview({backupId:process.argv[4]});await b.apply(p.previewId)})().catch(()=>process.exit(78));`;
     const child = spawnSync(process.execPath, ['-e', script, require.resolve('../src/manager/accounts.cjs'), require.resolve('../src/manager/backups.cjs'), root, backup.id], { cwd: root, encoding: 'utf8' });
     assert.equal(child.status, 77, child.stderr);

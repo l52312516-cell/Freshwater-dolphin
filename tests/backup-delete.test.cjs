@@ -13,10 +13,10 @@ function fixture(t) {
     const parent = path.resolve(__dirname, '../work/temp'); fs.mkdirSync(parent, { recursive: true });
     const root = fs.mkdtempSync(path.join(parent, 'backup-delete-'));
     const accounts = new Accounts(root), backups = new Backups(root, accounts);
-    accounts.create({ id: 'one', expectedUin: '2068886823' });
+    accounts.create({ id: 'one', expectedUin: '1000000001' });
     const data = path.join(accounts.location('one'), 'data'); fs.mkdirSync(data, { recursive: true });
-    const sentinel = path.join(data, '2068886823.json');
-    fs.writeFileSync(sentinel, JSON.stringify({ version: 1, account: '2068886823', nextId: 1, entries: [] }));
+    const sentinel = path.join(data, '1000000001.json');
+    fs.writeFileSync(sentinel, JSON.stringify({ version: 1, account: '1000000001', nextId: 1, entries: [] }));
     t.after(async () => { await accounts.close(); fs.rmSync(root, { recursive: true, force: true }); });
     async function save(kind = 'ordinary') {
         const document = { version: 2, architecture: 'x64', qqVersion: '3.2.35-54395', kind,
@@ -124,12 +124,15 @@ test('delete API requires authentication and CSRF and makes a deleted backup una
     assert.equal((await app.inject({ method: 'DELETE', url, headers: { cookie: headers.cookie } })).statusCode, 403);
     const preview = await app.inject({ method: 'POST', url: '/api/backups/restore/preview', headers, payload: { backupId: backup.id } });
     assert.equal(preview.statusCode, 200);
+    assert.equal(preview.json().data.backupId, backup.id);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/backups/restore/apply', headers,
+        payload: { previewId: preview.json().data.previewId } })).statusCode, 400);
     const result = await app.inject({ method: 'DELETE', url, headers });
     assert.equal(result.statusCode, 200);
     assert.deepEqual(result.json().data, { id: backup.id, deleted: true });
     assert.equal((await app.inject({ url: url + '/download', headers })).statusCode, 404);
     assert.equal((await app.inject({ method: 'POST', url: '/api/backups/restore/apply', headers,
-        payload: { previewId: preview.json().data.previewId } })).json().error.code, 'PREVIEW_EXPIRED');
+        payload: { previewId: preview.json().data.previewId, backupId: backup.id } })).json().error.code, 'PREVIEW_EXPIRED');
     assert.deepEqual((await app.inject({ url: '/api/backups', headers })).json().data.map(value => value.id), [other.id]);
     assert.equal((await app.inject({ method: 'DELETE', url: '/api/backups/' + other.id, headers })).statusCode, 200);
     assert.equal(f.accounts.get('one').id, 'one');

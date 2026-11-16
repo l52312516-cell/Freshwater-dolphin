@@ -132,7 +132,8 @@ async function mergedImage(service, state, element) {
         needsKey = !url.searchParams.get('rkey');
     }
     let resolved = url;
-    if (needsKey) {
+    if (needsKey || NT_IMAGE_HOSTS.has(url.hostname) && url.pathname === '/download' &&
+        typeof service.globalServices?.resolveImageUrl === 'function') {
         if (typeof service.globalServices?.resolveImageUrl !== 'function') throw problem('UNSUPPORTED', 'Merged image needs a configured rkey service');
         await service.assertSession(state);
         const operation = service.operation?.getStore();

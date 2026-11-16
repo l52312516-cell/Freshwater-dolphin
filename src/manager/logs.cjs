@@ -103,7 +103,11 @@ function normalize(item, profileId, includeContent) {
 }
 
 class LogReader {
-    constructor(root, accounts) { this.root = root; this.accounts = accounts; this.cache = new Map(); this.cacheBytes = 0; }
+    constructor(root, accounts, { maxScanBytes = 8 * 1024 * 1024, maxScanRows = 20000, maxScanMs = 100, now = () => performance.now() } = {}) {
+        this.root = root; this.accounts = accounts; this.cache = new Map(); this.cacheBytes = 0;
+        this.maxScanBytes = maxScanBytes; this.maxScanRows = maxScanRows; this.maxScanMs = maxScanMs; this.now = now;
+        this.cursors = new Map(); this.lastRead = { partial: false, files: 0, bytes: 0, rows: 0 };
+    }
     forget(key) { const old = this.cache.get(key); if (old) this.cacheBytes -= old.bytes; this.cache.delete(key); }
     file(filename) {
         try {
@@ -149,11 +153,29 @@ class LogReader {
         const validFiles = new Set(this.accounts.document.profiles.flatMap(item => ['adapter', 'messages'].flatMap(name =>
             ['', '.1', '.2', '.3'].map(suffix => path.join(this.accounts.location(item.id), 'logs', name + '.jsonl' + suffix)))));
         for (const key of this.cache.keys()) if (!validFiles.has(key)) this.forget(key);
-        const result = [], seen = new Set();
+        let result = []; const seen = new Set();
+        const maximum = Math.max(1, Math.min(1000, Number(limit) || 1000));
+        const sources = ['', '.1', '.2', '.3'].flatMap(suffix => ids.flatMap(id => ['adapter', 'messages'].map(name =>
+            ({ id, file: path.join(this.accounts.location(id), 'logs', name + '.jsonl' + suffix) }))));
+        const budget = { partial: false, files: 0, bytes: 0, rows: 0 }, started = this.now();
+        const scope = profileId || '*';
+        for (const key of this.cursors.keys()) if (key !== '*' && !this.accounts.document.profiles.some(item => item.id === key)) this.cursors.delete(key);
+        const offset = (this.cursors.get(scope) || 0) % Math.max(1, sources.length);
         const needle = typeof query === 'string' ? query.slice(0, 200).toLocaleLowerCase() : '';
         const wantedLevel = typeof level === 'string' ? level.toUpperCase() : '';
-        for (const id of ids) for (const name of ['adapter', 'messages']) for (const suffix of ['', '.1', '.2', '.3']) {
-            for (const row of this.file(path.join(this.accounts.location(id), 'logs', name + '.jsonl' + suffix))) {
+        let visited = 0;
+        for (; visited < sources.length; visited++) {
+            // Missing/empty files can consume the wall-clock budget on a busy
+            // disk. Make progress through one nonempty source before yielding.
+            if (budget.bytes > 0 && this.now() - started >= this.maxScanMs || budget.rows >= this.maxScanRows) { budget.partial = true; break; }
+            const { id, file } = sources[(offset + visited) % sources.length];
+            let bytes = 0;
+            try { bytes = Math.min(fs.lstatSync(file).size, 512 * 1024); } catch { /* absent logs cost no I/O budget */ }
+            if (budget.bytes + bytes > this.maxScanBytes) { budget.partial = true; break; }
+            budget.files++; budget.bytes += bytes;
+            for (const row of this.file(file)) {
+                if (budget.rows >= this.maxScanRows) { budget.partial = true; break; }
+                budget.rows++;
                 const safe = normalize(row, id, includeContent);
                 if (!safe) continue;
                 safe.id = row.id;
@@ -164,10 +186,14 @@ class LogReader {
                     needle && ![safe.message, safe.content, safe.event, safe.component, id].some(value => String(value).toLocaleLowerCase().includes(needle))) continue;
                 result.push(safe);
             }
+            // Bound live candidates as well as cached file bytes. The response
+            // needs only the newest maximum entries, not an all-account sort.
+            if (result.length > maximum) result = result.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id)).slice(-maximum);
         }
+        this.cursors.set(scope, budget.partial ? (offset + Math.max(1, visited)) % Math.max(1, sources.length) : 0);
+        this.lastRead = budget;
         const sorted = result.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
         const selected = []; let size = 0;
-        const maximum = Math.max(1, Math.min(1000, Number(limit) || 1000));
         for (const item of sorted.reverse()) {
             const bytes = Buffer.byteLength(JSON.stringify(item));
             if (selected.length >= maximum) break;
@@ -176,6 +202,6 @@ class LogReader {
         }
         return selected.reverse();
     }
-    close() { this.cache.clear(); this.cacheBytes = 0; }
+    close() { this.cache.clear(); this.cacheBytes = 0; this.cursors.clear(); }
 }
 module.exports = { LogReader, normalize, messageText };

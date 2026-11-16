@@ -18,14 +18,16 @@ const { createShareCards } = require('./share-card.cjs');
 const { createVideoProcessor } = require('./video-send.cjs');
 const { createForward } = require('./forward.cjs');
 const { createMergedSend } = require('./merged-send.cjs');
+const { createExtended } = require('./extended.cjs');
+const { createRecordExporter } = require('./record-export.cjs');
 const { integer: profileInteger, groupFields, memberFields, userFields } = require('./profile-fields.cjs');
 
 const TARGET_VERSION = '3.2.35-54395';
 const MAX_IDENTITIES = 20000;
 const SERVICES = Object.freeze({ msg: 'getMsgService', profile: 'getProfileService',
-  group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService' });
+  group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService', ticket: 'getTicketService', tipOff: 'getTipOffService' });
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'msfCapture']);
+  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numeric(value, label = 'QQ number') {
@@ -118,7 +120,9 @@ class Capture extends EventEmitter {
       .map(name => this.processObject.env?.[name]).filter(Boolean);
     this.audio = options.audioProcessor || createAudioProcessor({ root: this.processObject.env?.FWD_MANAGER_ROOT || path.resolve(__dirname, '../..'), mediaDirectory: this.mediaDirectory });
     this.video = options.videoProcessor || createVideoProcessor({ root: this.processObject.env?.FWD_MANAGER_ROOT || path.resolve(__dirname, '../..'), mediaDirectory: this.mediaDirectory });
+    this.recordExporter = options.recordExporter || createRecordExporter({ root: this.processObject.env?.FWD_MANAGER_ROOT || path.resolve(__dirname, '../..'), mediaDirectory: this.mediaDirectory });
     this.preparedMedia = new Map();
+    this.sendDiagnostics = [];
     this.preparedMusic = new Map();
     this.shareCards = createShareCards(this);
     this.receivedMedia = new Map();
@@ -154,6 +158,7 @@ class Capture extends EventEmitter {
     this.groupFilesApi = createGroupFiles(this);
     this.forwardApi = createForward(this);
     this.mergedSendApi = createMergedSend(this);
+    this.extendedApi = createExtended(this);
     if (options.install !== false) this.install();
   }
 
@@ -170,6 +175,10 @@ class Capture extends EventEmitter {
     const member = groupEvents && resolve && this.hasMethods('group', ['getMemberInfo']);
     return { epoch: this.epoch, ready: this.ready && !this.closed, readyAt: this.readyAt, online: this.online,
       self: this.self ? { ...this.self } : null, qqVersion: this.qqVersion,
+      // Bounded scalar evidence remains available even when QQ redirects its
+      // console. It contains no message IDs, peers, contents, paths or tokens.
+      sendDiagnostics: this.sendDiagnostics.map(value => ({ ...value })),
+      forwardDiagnostics: this.forwardApi.diagnostics?.() || [],
       capabilities: { compatible, messages: messageEvents, text, at: text && member,
         reply: text && (this.hasMethods('msg', ['getMsgsByMsgId']) || this.hasMethods('msg', ['getSingleMsg'])),
         resolve, user: resolve && this.hasMethods('profile', ['getCoreAndBaseInfo']),
@@ -185,7 +194,10 @@ class Capture extends EventEmitter {
         record: text && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getRichMediaFilePathForGuild']) && this.audio.available(),
         video: text && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getRichMediaFilePathForGuild']) && this.video.available(),
         imageReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']),
-        recordReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId', 'downloadRichMedia']),
+        // A real PTT cache file can be exported even when this QQ build does
+        // not expose downloadRichMedia. No local file still fails explicitly.
+        recordReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']),
+        recordReceiveDownload: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId', 'downloadRichMedia']),
         videoReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']) && require('./msf-native.cjs').available(),
         groupName: compatible && this.ready && this.hasMethods('group', ['modifyGroupName']),
         groupWholeBan: compatible && this.ready && this.hasMethods('group', ['setGroupShutUp']),
@@ -197,8 +209,11 @@ class Capture extends EventEmitter {
         ...this.interactions.capabilities(), ...this.groupFilesApi.capabilities(),
         groupFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
         groupFileSpace: compatible && this.ready && require('./msf-native.cjs').available(),
+        privateFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
         ...(compatible && this.ready ? this.forwardApi.capabilities() : { forwardExisting: false, forwardRead: false }),
-        mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom } };
+        mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom,
+        recordExport: compatible && this.ready && this.recordExporter.available(),
+        ...(compatible && this.ready ? this.extendedApi.capabilities() : {}) } };
   }
   publish(event) { this.emit('event', { ...event, epoch: this.epoch, selfUin: this.self?.uin || null }); }
   publishState() { this.publish({ kind: 'state', status: this.state() }); }
@@ -290,6 +305,7 @@ class Capture extends EventEmitter {
 
   resetSession(session, config) {
     this.rejectPending(problem('SESSION_CHANGED', 'QQ session changed'));
+    this.sendDiagnostics.length = 0;
     clearInterval(this.observerTimer); this.observerTimer = null;
     this.detach();
     this.session = session;
@@ -953,44 +969,64 @@ class Capture extends EventEmitter {
       picSubType: 0, fileUuid: '', fileSubId: '', thumbFileSize: 0, summary: params.summary || '' } };
   }
   async imageInfo(params) { return media.resourceInfo(this.mediaDirectory, params.file); }
-  async nativeRkey(params) {
+  async nativeRkey(params, context = {}) {
     this.ensureReady();
     if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) {
       throw problem('SESSION_CHANGED', 'Native rkey query must be bound to the current QQ session');
     }
+    const epoch = this.epoch, deadline = Date.now() + (params.timeoutMs ?? 10000);
+    if (params.via !== undefined && !['native', 'js'].includes(params.via)) throw problem('INVALID_PARAMS', 'Invalid rkey transport');
     if (params.via !== 'js') {
       try {
-        return await require('./msf-native.cjs').run(this, { op: 'fetchRkey', timeoutMs: params.timeoutMs });
+        return await require('./msf-native.cjs').run(this, { op: 'fetchRkey', timeoutMs: params.timeoutMs, expectedEpoch: params.expectedEpoch, expectedUin: params.expectedUin, signal: context.signal });
       } catch (error) {
-        if (params.via === 'native') throw error;
+        if (params.via === 'native' || ['SESSION_CHANGED', 'TIMEOUT', 'EXPIRED'].includes(error.code) || context.signal?.aborted) throw error;
         // fall back to the JS SSO channel when the native path is unavailable
       }
     }
-    return require('./rkey.cjs').fetchRkeys(this, params);
+    const remaining = deadline - Date.now();
+    if (remaining < 1 || context.signal?.aborted) throw problem('TIMEOUT', 'Native rkey query exceeded its total deadline');
+    const result = await require('./rkey.cjs').fetchRkeys(this, { ...params, timeoutMs: remaining });
+    if (this.epoch !== epoch || context.signal?.aborted) throw problem('SESSION_CHANGED', 'QQ changed during rkey lookup');
+    return result;
   }
-  async msfCapture(params) {
-    this.ensureReady();
-    if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) {
-      throw problem('SESSION_CHANGED', 'Native MSF capture must be bound to the current QQ session');
-    }
-    return require('./msf-native.cjs').run(this, params);
+  async nativeStatus(params) {
+    if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Native status belongs to another QQ session');
+    return require('./msf-native.cjs').status();
   }
-  async nativeGroupFileUrl(params) {
+  async nativePrivateFileUrl(params, context = {}) {
+    const epoch = this.epoch;
+    if (params.expectedEpoch !== epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Private file lookup must be bound to the QQ session');
+    const peer = plainPeer(params.peer);
+    if (peer.chatType !== 1 || typeof params.elementId !== 'string' || !params.elementId) throw problem('INVALID_PARAMS', 'Private file lookup requires an exact private message element');
+    const record = await this.getMessage({ peer, nativeId: params.nativeId });
+    if (this.epoch !== epoch || context.signal?.aborted) throw problem('SESSION_CHANGED', 'QQ changed while locating the private file');
+    const matches = record.elements?.filter(item => item?.elementType === 3 && item.elementId === params.elementId) || [];
+    if (matches.length !== 1) throw problem('NOT_FOUND', 'QQ returned no unique matching private file');
+    const file = require('./private-file-url.cjs').fromFileElement(matches[0].fileElement);
+    return require('./msf-native.cjs').run(this, { op: 'fetchPrivateFileUrl', ...file,
+      transport: params.transport, expectedEpoch: epoch, expectedUin: this.self.uin, signal: context.signal,
+      timeoutMs: Math.min(params.timeoutMs ?? 10000, Math.max(1, (context.expiresAt ?? Date.now() + 10000) - Date.now())) });
+  }
+  async nativeGroupFileUrl(params, context = {}) {
     this.ensureReady();
     if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) {
       throw problem('SESSION_CHANGED', 'Native group-file URL query must be bound to the current QQ session');
     }
     return require('./msf-native.cjs').run(this, { op: 'fetchGroupFileUrl', groupId: params.groupId,
-      fileId: params.fileId, busId: params.busId, fileName: params.fileName, timeoutMs: params.timeoutMs });
+      fileId: params.fileId, busId: params.busId, fileName: params.fileName, timeoutMs: params.timeoutMs, expectedEpoch: params.expectedEpoch, expectedUin: params.expectedUin, signal: context.signal });
   }
-  async nativeGroupFileSpace(params) {
+  async nativeGroupFileSpace(params, context = {}) {
     this.ensureReady();
     if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) {
       throw problem('SESSION_CHANGED', 'Native group-file space query must be bound to the current QQ session');
     }
-    return require('./msf-native.cjs').run(this, { op: 'fetchGroupFileSpace', groupId: params.groupId, timeoutMs: params.timeoutMs });
+    return require('./msf-native.cjs').run(this, { op: 'fetchGroupFileSpace', groupId: params.groupId, timeoutMs: params.timeoutMs, expectedEpoch: params.expectedEpoch, expectedUin: params.expectedUin, signal: context.signal });
   }
   async socialQuery(params, context) { return this.social.query(params, context); }
+  async extendedQuery(params, context) { return this.extendedApi.query(params, context); }
+  async extendedAction(params, context) { return this.extendedApi.action(params, context); }
+  async recordExport(params, context) { this.ensureReady(); return this.recordExporter.export(params, context); }
   async interaction(params, context) {
     const { operation, ...input } = params;
     return this.interactions.dispatch(operation, input, context);
@@ -1041,7 +1077,8 @@ class Capture extends EventEmitter {
       // Video sources come straight from the native MSF NTV2RichMedia channel;
       // the JS downloadRichMedia / getVideoPlayUrlV2 paths fail on this build.
       const native = await require('./msf-native.cjs').run(this, { op: 'fetchVideoUrl',
-        fileUuid: details.fileUuid, isGroup: Number(peer.chatType) === 2, targetUid: this.self?.uid, timeoutMs: 8000 });
+        fileUuid: details.fileUuid, isGroup: Number(peer.chatType) === 2, targetUid: this.self?.uid,
+        expectedEpoch: epoch, expectedUin: this.self?.uin, signal: context.signal, timeoutMs: 8000 });
       if (context.signal?.aborted || this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed during native video URL lookup');
       image = await downloadVideo({ urls: [{ url: native.url }], expectedSize: details.fileSize, expectedMd5: details.videoMd5,
         signal: context.signal, expiresAt: context.expiresAt ?? Date.now() + 60000 });
@@ -1079,7 +1116,7 @@ class Capture extends EventEmitter {
       if (BigInt(transferSize) === 0n && (!/^[1-9]\d*$/.test(String(details.fileSize || '')) ||
         BigInt(details.fileSize) !== BigInt(image.bytes.length))) throw problem('INVALID_RESPONSE', 'QQ media has no confirmed complete size');
     }
-    if (!image) throw problem('NOT_FOUND', 'QQ has not downloaded the complete received image');
+    if (!image) throw problem('NOT_FOUND', 'QQ has no complete account-local ' + type + ' and no verified download completed');
     const declaredSize = details.fileSize;
     if (declaredSize !== undefined && (!/^[1-9]\d*$/.test(String(declaredSize)) ||
       typeof declaredSize === 'number' && !Number.isSafeInteger(declaredSize) || BigInt(declaredSize) !== BigInt(image.bytes.length))) {
@@ -1303,38 +1340,184 @@ class Capture extends EventEmitter {
       }
       if (context.signal?.aborted || Date.now() >= expiresAt) throw problem('EXPIRED', 'Send deadline expired before submission');
     };
-    ensureActive();
-    const time = await this.invoke('msf', 'getServerTime', []);
-    ensureActive();
-    const correlation = String(await this.invoke('msg', 'generateMsgUniqueId', [peer.chatType, time]));
-    ensureActive();
-    if (!/^\d+$/.test(correlation)) throw problem('INVALID_RESPONSE', 'QQ returned an invalid send correlation ID');
-    let handler;
-    const delivered = new Promise((resolve, reject) => {
-      handler = records => { for (const record of records) {
-        if (String(record.guildId) !== correlation || record.chatType !== peer.chatType || record.peerUid !== peer.peerUid) continue;
-        if (this.epoch !== epoch || this.self?.uin !== selfUin || this.self?.uid !== selfUid || this.session !== session) {
-          reject(problem('SESSION_CHANGED', 'QQ account changed during sending')); return;
-        }
-        if (String(record.senderUin) !== selfUin || requireSenderUid && record.senderUid !== selfUid) continue;
-        if (record.sendStatus === 2 && typeof record.msgId === 'string') resolve(record);
-        else if (record.sendStatus === 0) reject(problem('SEND_FAILED', 'QQ reported failed message delivery'));
-      } };
-      this.bus.on('sent', handler);
-    });
-    // Observe rejection immediately even if QQ rejects its acceptance Promise.
-    delivered.catch(() => {});
+    let handler, observer, pollTimer, pinnedId, stopped = false, dispatched = false, deliveredDone = false, queryInFlight = false;
+    let acceptanceState = 'not-dispatched', acceptanceThenable = false, exactCallbacks = 0, lastStatus = null;
+    let queryCount = 0, queryResult = this.hasMethods('msg', ['getMsgsByMsgId']) ? 'not-started' : 'unavailable';
+    let phase = 'server-time', callbackCount = 0, ownPeerCallbacks = 0, nonemptyGuildCallbacks = 0;
+    const evidence = { at: Date.now(), phase, outcome: 'pending', dispatched: false, acceptance: acceptanceState,
+      acceptanceThenable, callbackCount, ownPeerCallbacks, nonemptyGuildCallbacks, exactCallbacks,
+      pinned: false, lastStatus, queryCount, queryResult, deliverySettled: false };
+    this.sendDiagnostics.push(evidence);
+    if (this.sendDiagnostics.length > 8) this.sendDiagnostics.shift();
+    const updateEvidence = () => {
+      if (evidence.outcome !== 'pending') return;
+      Object.assign(evidence, { phase, dispatched, acceptance: acceptanceState, acceptanceThenable, callbackCount,
+        ownPeerCallbacks, nonemptyGuildCallbacks, exactCallbacks, pinned: Boolean(pinnedId), lastStatus,
+        queryCount, queryResult, deliverySettled: deliveredDone });
+    };
+    let evidenceTimer;
+    const finishEvidence = outcome => {
+      if (evidence.outcome !== 'pending') return;
+      updateEvidence(); evidence.outcome = outcome; evidence.finishedAt = Date.now();
+      clearTimeout(evidenceTimer); context.signal?.removeEventListener('abort', evidenceAbort);
+    };
+    const evidenceAbort = () => finishEvidence(Date.now() >= expiresAt ? 'timeout' : 'cancelled');
+    const evidenceTimeout = () => {
+      const left = expiresAt - Date.now();
+      if (left > 0) evidenceTimer = setTimeout(evidenceTimeout, Math.max(1, Math.ceil(left)));
+      else finishEvidence('timeout');
+    };
+    evidenceTimer = setTimeout(evidenceTimeout, Math.max(1, Math.ceil(expiresAt - Date.now())));
+    context.signal?.addEventListener('abort', evidenceAbort, { once: true });
     try {
-      return await this.deadline(async () => {
-        ensureActive();
-        if (verifyBeforeSubmit) verifyBeforeSubmit();
-        ensureActive();
-        const accepted = this.invoke('msg', 'sendMsg', ['0', { ...peer, guildId: correlation }, elements, new Map()]);
-        const [, record] = await Promise.all([Promise.resolve(accepted).then(confirmed), delivered]);
-        ensureActive();
-        return record;
-      }, context, timeoutMs);
-    } finally { this.bus.removeListener('sent', handler); }
+      ensureActive();
+      const time = await this.invoke('msf', 'getServerTime', []);
+      ensureActive();
+      phase = 'correlation'; updateEvidence();
+      const correlation = String(await this.invoke('msg', 'generateMsgUniqueId', [peer.chatType, time]));
+      ensureActive();
+      if (!/^\d+$/.test(correlation)) throw problem('INVALID_RESPONSE', 'QQ returned an invalid send correlation ID');
+      const queryController = new AbortController();
+      const queryContext = { ...context, expiresAt, signal: context.signal
+        ? AbortSignal.any([context.signal, queryController.signal]) : queryController.signal };
+      let resolveDelivery, rejectDelivery;
+      const ownPeer = record => record && record.chatType === peer.chatType && record.peerUid === peer.peerUid &&
+        String(record.senderUin) === selfUin && (!requireSenderUid || record.senderUid === selfUid);
+      const fullId = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value) && BigInt(value) <= 18446744073709551615n;
+      const settle = (error, record) => {
+        if (stopped || deliveredDone) return;
+        deliveredDone = true; clearTimeout(pollTimer); pollTimer = undefined;
+        updateEvidence();
+        if (error) rejectDelivery(error); else resolveDelivery(record);
+      };
+      const schedulePoll = () => {
+        if (stopped || deliveredDone || pollTimer || queryInFlight || !pinnedId || acceptanceState === 'rejected' || queryResult === 'unavailable' ||
+            queryCount >= Math.min(751, Math.ceil(timeoutMs / 400) + 1) || Date.now() >= expiresAt) return;
+        pollTimer = setTimeout(() => { pollTimer = undefined; poll().catch(() => {}); }, queryCount ? 400 : 0);
+      };
+      const poll = async () => {
+        if (stopped || deliveredDone || acceptanceState === 'rejected') return;
+        queryInFlight = true;
+        try {
+          ensureActive(); queryCount++; queryResult = 'pending'; updateEvidence();
+          const result = await this.deadline(() => this.invoke('msg', 'getMsgsByMsgId',
+            [{ ...peer, guildId: '' }, [pinnedId]]), queryContext, timeoutMs);
+          if (stopped || deliveredDone) return;
+          ensureActive();
+          if (!result || result.result !== 0) queryResult = 'rejected';
+          else if (!Array.isArray(result.msgList)) queryResult = 'invalid-shape';
+          else if (result.msgList.length === 0) queryResult = 'not-found';
+          else {
+            const record = result.msgList[0];
+            if (result.msgList.length !== 1 || !ownPeer(record) || record.senderUid !== selfUid || record.msgId !== pinnedId) {
+              queryResult = 'identity-mismatch';
+            } else {
+              queryResult = 'exact'; lastStatus = Number.isInteger(record.sendStatus) ? record.sendStatus : null;
+              if (record.sendStatus === 2) { settle(null, record); return; }
+              if (record.sendStatus === 0) { settle(problem('SEND_FAILED', 'QQ reported failed message delivery')); return; }
+            }
+          }
+        } catch (error) {
+          if (stopped || deliveredDone) return;
+          queryResult = ['TIMEOUT', 'EXPIRED'].includes(error?.code) ? 'timeout' : 'error';
+        } finally { queryInFlight = false; updateEvidence(); }
+        schedulePoll();
+      };
+      const delivered = new Promise((resolve, reject) => {
+        resolveDelivery = resolve; rejectDelivery = reject;
+        observer = observation => {
+          if (!dispatched || stopped || !Array.isArray(observation?.records) ||
+              !['onAddSendMsg', 'onMsgInfoListUpdate'].includes(observation.callback)) return;
+          for (const record of observation.records) {
+            callbackCount = Math.min(1000000, callbackCount + 1);
+            if (ownPeer(record)) {
+              ownPeerCallbacks = Math.min(1000000, ownPeerCallbacks + 1);
+              if (typeof record.guildId === 'string' && record.guildId.length > 0) nonemptyGuildCallbacks = Math.min(1000000, nonemptyGuildCallbacks + 1);
+            }
+            updateEvidence();
+            if (!ownPeer(record) || String(record.guildId) !== correlation) continue;
+            exactCallbacks = Math.min(1000000, exactCallbacks + 1);
+            lastStatus = Number.isInteger(record.sendStatus) ? record.sendStatus : null;
+            updateEvidence();
+            // An early correlated record binds the real native ID before QQ
+            // clears guildId. Never infer an ID from content or the generated ID.
+            if (!fullId(record.msgId) || record.senderUid !== selfUid) continue;
+            if (pinnedId && pinnedId !== record.msgId) {
+              settle(problem('INVALID_RESPONSE', 'QQ changed the correlated native message identity')); return;
+            }
+            pinnedId = record.msgId; updateEvidence(); schedulePoll();
+          }
+        };
+        this.bus.on('sendObservation', observer);
+        handler = records => { for (const record of records) {
+          if (!dispatched || stopped) return;
+          if (String(record.guildId) !== correlation || record.chatType !== peer.chatType || record.peerUid !== peer.peerUid) continue;
+          if (this.epoch !== epoch || this.self?.uin !== selfUin || this.self?.uid !== selfUid || this.session !== session) {
+            settle(problem('SESSION_CHANGED', 'QQ account changed during sending')); return;
+          }
+          if (String(record.senderUin) !== selfUin || requireSenderUid && record.senderUid !== selfUid ||
+              record.senderUid !== undefined && record.senderUid !== selfUid) continue;
+          if (record.sendStatus === 2 && typeof record.msgId === 'string') settle(null, record);
+          else if (record.sendStatus === 0) settle(problem('SEND_FAILED', 'QQ reported failed message delivery'));
+        } };
+        this.bus.on('sent', handler);
+      });
+      // Observe rejection immediately even if QQ rejects its acceptance Promise.
+      delivered.catch(() => {});
+      try {
+        return await this.deadline(async () => {
+          ensureActive();
+          phase = 'verify'; updateEvidence();
+          if (verifyBeforeSubmit) verifyBeforeSubmit();
+          ensureActive();
+          dispatched = true; acceptanceState = 'pending'; phase = 'native-send'; updateEvidence();
+          let accepted;
+          try { accepted = this.invoke('msg', 'sendMsg', ['0', { ...peer, guildId: correlation }, elements, new Map()]); }
+          catch (error) { acceptanceState = 'rejected'; updateEvidence(); throw error; }
+          acceptanceThenable = Boolean(accepted && typeof accepted.then === 'function');
+          phase = 'confirmation'; updateEvidence();
+          let acceptanceError;
+          const acceptedProof = Promise.resolve(accepted).then(result => {
+            try { confirmed(result); } catch (error) { acceptanceState = 'rejected'; acceptanceError = error; updateEvidence(); throw error; }
+            acceptanceState = 'accepted'; updateEvidence(); schedulePoll(); return result;
+          }, error => { acceptanceState = 'rejected'; acceptanceError = error; updateEvidence(); throw error; });
+          // A real correlated status=2 is QQ's delivery confirmation. On this
+          // QQ version the sendMsg Promise can remain pending after that exact
+          // callback, so it must not block proven delivery. Its rejection is
+          // still observed and takes priority if known before completion.
+          const record = await new Promise((resolve, reject) => {
+            let received;
+            const complete = () => {
+              if (acceptanceState === 'rejected') { reject(acceptanceError); return; }
+              if (!received) return;
+              const strongDelivery = ownPeer(received) && received.senderUid === selfUid && fullId(received.msgId) &&
+                received.sendStatus === 2 && (String(received.guildId) === correlation || received.msgId === pinnedId && queryResult === 'exact');
+              if (acceptanceState === 'accepted' || strongDelivery) resolve(received);
+            };
+            acceptedProof.then(complete, reject);
+            delivered.then(value => { received = value; complete(); }, reject);
+          });
+          ensureActive();
+          finishEvidence('success');
+          return record;
+        }, context, timeoutMs);
+      } catch (error) {
+        if (dispatched && ['TIMEOUT', 'EXPIRED'].includes(error?.code)) {
+          this.diagnostic(problem('SEND_CONFIRMATION_TIMEOUT', JSON.stringify({ acceptance: acceptanceState,
+            acceptanceThenable, exactCallbacks, pinned: Boolean(pinnedId), lastStatus, queryCount, queryResult })));
+        }
+        throw error;
+      } finally {
+        stopped = true; clearTimeout(pollTimer); queryController.abort();
+        this.bus.removeListener('sent', handler); this.bus.removeListener('sendObservation', observer);
+      }
+    } catch (error) {
+      finishEvidence(['TIMEOUT', 'EXPIRED'].includes(error?.code) ? 'timeout' :
+        error?.code === 'SESSION_CHANGED' ? 'session-changed' : 'failed');
+      throw error;
+    } finally {
+      if (evidence.outcome === 'pending') finishEvidence('failed');
+    }
   }
 
   async call(method, params = {}, context = {}) {
@@ -1346,13 +1529,16 @@ class Capture extends EventEmitter {
       throw problem('SESSION_CHANGED', 'Kernel request belongs to a different QQ session');
     }
     const controller = new AbortController();
-    const scoped = { ...context, signal: context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal };
+    const timeoutMs = method === 'sendMessage' ? (params.timeoutMs ?? 10000) :
+      method === 'forwardOperation' && ['customMerge', 'existingMerge'].includes(params.kind) ? (params.timeoutMs ?? 60000) :
+        ['prepareMedia', 'receiveMedia', 'recordExport'].includes(method) ? 60000 :
+          ['nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl'].includes(method) ? (params.timeoutMs ?? 10000) : 10000;
+    // All preparation, native calls and confirmation reads share the same
+    // absolute end. Inner operations cannot create a later private deadline.
+    const scoped = { ...context, expiresAt: Math.min(context.expiresAt ?? Infinity, Date.now() + timeoutMs),
+      signal: context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal };
     try {
-      return await this.deadline(() => this[method](params, scoped), scoped,
-        method === 'sendMessage' ? (params.timeoutMs ?? 10000) :
-          method === 'forwardOperation' && params.kind === 'customMerge' ? (params.timeoutMs ?? 60000) :
-            ['prepareMedia', 'receiveMedia'].includes(method) ? 60000 :
-              ['nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace'].includes(method) ? (params.timeoutMs ?? 8000) + 6000 : 10000);
+      return await this.deadline(() => this[method](params, scoped), scoped, timeoutMs);
     } finally {
       // An outer deadline must also retire callback waiters inside the operation.
       controller.abort();

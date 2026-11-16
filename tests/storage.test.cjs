@@ -42,15 +42,15 @@ function file(base, name, contents, ageDays = 0) {
     fs.writeFileSync(target, contents); const at = new Date(Date.now() - ageDays * 86400000); fs.utimesSync(target, at, at);
     return target;
 }
-function record(nativeId) { return { chatType: 2, peerUid: '1103828635', msgId: nativeId, msgSeq: nativeId,
-    senderUin: '1515564167', elements: [{ elementType: 1, textElement: { content: 'private chat content' } }] }; }
+function record(nativeId) { return { chatType: 2, peerUid: '2000000001', msgId: nativeId, msgSeq: nativeId,
+    senderUin: '1000000003', elements: [{ elementType: 1, textElement: { content: 'private chat content' } }] }; }
 
 test('storage reports per-account and global categories without counting login, program, RPC or temp files', t => {
     const f = fixture(t), a = f.account('alpha'), b = f.account('beta');
-    file(a, 'logs/adapter.jsonl', 'a'.repeat(10)); file(a, 'data/2068886823.json', 'a'.repeat(20));
+    file(a, 'logs/adapter.jsonl', 'a'.repeat(10)); file(a, 'data/1000000001.json', 'a'.repeat(20));
     file(a, 'media/picture.png', 'a'.repeat(30)); file(b, 'media/picture.png', 'b'.repeat(40));
     file(f.root, 'work/logs/manager.log', 'm'.repeat(5));
-    for (const name of ['home/login.dat', 'config/qq.json', 'qq-root/QQ', 'rpc/request.json', 'temp/old.tmp', 'data/2068886823.json.dead.tmp']) file(a, name, Buffer.alloc(1000), 30);
+    for (const name of ['home/login.dat', 'config/qq.json', 'qq-root/QQ', 'rpc/request.json', 'temp/old.tmp', 'data/1000000001.json.dead.tmp']) file(a, name, Buffer.alloc(1000), 30);
     const value = f.storage.snapshot();
     assert.deepEqual(value.policy, { logMaxMiB: 1024, logRetentionDays: 7, enabled: false });
     assert.deepEqual(value.totals, { logsBytes: 15, historyBytes: 20, mediaBytes: 70, totalBytes: 105, files: 5 });
@@ -105,8 +105,8 @@ test('log cleanup applies retention and a shared quota while append writers keep
     assert.equal(fs.statSync(expired).size, 0); fs.writeSync(fd, 'new manager log');
     assert.equal(fs.readFileSync(expired, 'utf8'), 'new manager log');
     const logger = createLogger(path.join(a, 'logs'));
-    logger.message({ profileId: 'alpha', selfId: '2068886823', messageType: 'private', peerId: '1515564167',
-        userId: '1515564167', messageId: 1, event: 'message_received', content: 'after storage cleanup' });
+    logger.message({ profileId: 'alpha', selfId: '1000000001', messageType: 'private', peerId: '1000000003',
+        userId: '1000000003', messageId: 1, event: 'message_received', content: 'after storage cleanup' });
     assert.equal(fs.readFileSync(login, 'utf8'), 'keep login');
     assert.ok(f.storage.snapshot().totals.logsBytes < MIB);
 });
@@ -125,7 +125,7 @@ test('periodic cleanup stays disabled on first deployment and stops when the ser
 
 test('clearing history preserves allocated IDs, native locators and emitted flags across reopening', async t => {
     const f = fixture(t), a = f.account('alpha'), directory = path.join(a, 'data');
-    const account = '2068886823', store = new MessageStore({ directory });
+    const account = '1000000001', store = new MessageStore({ directory });
     const first = store.remember(account, { ...record('90071992547409931234'),
         senderUid: 'u_friend', msgTime: '1794621690', clientSeq: '428' });
     const second = store.remember(account, record('90071992547409931235'));
@@ -142,7 +142,7 @@ test('clearing history preserves allocated IDs, native locators and emitted flag
     assert.ok(after.entries.every(item => !item.record && !item.event && !item.recallEvent));
     const reopened = new MessageStore({ directory });
     assert.equal(reopened.get(account, first.id).locator.nativeId, '90071992547409931234');
-    assert.equal(reopened.find(account, { peer: { chatType: 2, peerUid: '1103828635' },
+    assert.equal(reopened.find(account, { peer: { chatType: 2, peerUid: '2000000001' },
         clientSeq: '428', senderUid: 'u_friend', time: '1794621690' }).id, first.id);
     assert.equal(reopened.remember(account, record('90071992547409931236')).id, 3);
     assert.equal(reopened.remember(account, record('90071992547409931234')).id, first.id); reopened.close();
@@ -150,7 +150,7 @@ test('clearing history preserves allocated IDs, native locators and emitted flag
 
 test('history cleanup validates optional author and time metadata before changing any mappings', async t => {
     const f = fixture(t), a = f.account('alpha'), directory = path.join(a, 'data');
-    const account = '2068886823', store = new MessageStore({ directory });
+    const account = '1000000001', store = new MessageStore({ directory });
     store.remember(account, { ...record('123'), senderUid: 'u_friend', msgTime: '1794621690' }); store.close();
     const target = path.join(directory, account + '.json');
     const source = JSON.parse(fs.readFileSync(target, 'utf8'));
@@ -166,9 +166,9 @@ test('history cleanup validates optional author and time metadata before changin
 
 test('history validates every mapping before any write and leaves unknown temporary files untouched', async t => {
     const f = fixture(t), a = f.account('alpha'), directory = path.join(a, 'data');
-    const store = new MessageStore({ directory }); store.remember('2068886823', record('123')); store.close();
-    const valid = path.join(directory, '2068886823.json'), bytes = fs.readFileSync(valid);
-    file(a, 'data/2441760163.json', '{broken'); const temporary = file(a, 'data/2068886823.json.dead.tmp', 'stale but unproven', 30);
+    const store = new MessageStore({ directory }); store.remember('1000000001', record('123')); store.close();
+    const valid = path.join(directory, '1000000001.json'), bytes = fs.readFileSync(valid);
+    file(a, 'data/3000000002.json', '{broken'); const temporary = file(a, 'data/1000000001.json.dead.tmp', 'stale but unproven', 30);
     await assert.rejects(f.storage.cleanup({ scope: 'account', profileId: 'alpha', category: 'history', confirmId: 'alpha' }), { code: 'INVALID_MESSAGE_STORE' });
     assert.deepEqual(fs.readFileSync(valid), bytes); assert.equal(fs.readFileSync(temporary, 'utf8'), 'stale but unproven');
     assert.equal(f.accounts.busy.size, 0);
@@ -177,7 +177,7 @@ test('history validates every mapping before any write and leaves unknown tempor
 test('account media cleanup needs exact confirmation and preserves other accounts and all private state', async t => {
     const f = fixture(t), a = f.account('alpha'), b = f.account('beta');
     const media = file(a, 'media/nested/picture.png', 'image'), other = file(b, 'media/picture.png', 'other image');
-    const protectedFiles = ['home/login.dat', 'config/qq.json', 'qq-root/QQ', 'rpc/active.json', 'temp/old.tmp', 'data/2068886823.json'];
+    const protectedFiles = ['home/login.dat', 'config/qq.json', 'qq-root/QQ', 'rpc/active.json', 'temp/old.tmp', 'data/1000000001.json'];
     for (const name of protectedFiles) file(a, name, 'preserve', 30);
     await assert.rejects(f.storage.cleanup({ scope: 'account', profileId: 'alpha', category: 'media', confirmId: 'beta' }), { code: 'CONFIRMATION_REQUIRED' });
     await assert.rejects(f.storage.cleanup({ scope: 'account', profileId: 'alpha', category: 'rpc', confirmId: 'alpha' }), { code: 'INVALID_PARAMS' });

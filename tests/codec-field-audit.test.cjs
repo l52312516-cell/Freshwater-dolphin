@@ -167,7 +167,7 @@ test('file and video accept only explicit local files and standalone message cha
         assert.throws(() => codec.parse([{ type: 'text', data: { text: 'partial' } }, segment]), { code: 'UNSUPPORTED' });
         assert.throws(() => codec.parse([segment, segment]), { code: 'UNSUPPORTED' });
     }
-    for (const file of ['', 7, 'https://example.invalid/video.mp4', 'base64://AAAA', 'ftp://example.invalid/file', 'bad\n']) {
+    for (const file of ['', 7, 'https://example.invalid/video.mp4', 'base64://***', 'ftp://example.invalid/file', 'bad\n']) {
         for (const type of ['file', 'video']) assert.throws(() => codec.parse([{ type, data: { file } }]));
     }
     for (const data of [{ file: 'x', name: '../unsafe' }, { file: 'x', name: '' }, { file: 'x', magic: true }]) {

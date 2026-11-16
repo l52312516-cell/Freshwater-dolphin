@@ -2,7 +2,9 @@
 
 独立维护的 QQ kernel / OneBot v11 适配器，提供中文管理台、多个 QQ 实例与 Docker 部署。QQ 接入、内部通信、OneBot 协议及管理服务均在本仓库维护，不依赖原私有研究仓库。
 
-**当前为实验版本。** 首批适配环境固定为 Linux x64、QQ `3.2.35-54395`、Node.js 22 或更新版本。离线测试通过、管理台可打开和 QQ 进程存活，均不能替代真实消息与接口验证；实际验证范围以 `outputs/` 内的交付报告为准。
+**当前为实验版本。** 首批适配环境固定为 Linux x64、QQ `3.2.35-54395`、Node.js 22 或更新版本。离线测试通过、管理台可打开和 QQ 进程存活，均不能替代真实消息与接口验证；公开验证范围见 [0.2.0-alpha.2 发布说明](docs/releases/0.2.0-alpha.2.md)，更完整的本地交付报告保存在 `outputs/`。
+
+[文档导航](docs/README.md) · [能力矩阵](docs/reference/capability-matrix.md) · [Linux x64 下载](https://github.com/l52312516-cell/Freshwater-dolphin/releases/tag/v0.2.0-alpha.2)
 
 ## 运行结构
 
@@ -77,9 +79,9 @@ node tools/download-qq.cjs --url '腾讯官方HTTPS安装包URL' --sha256 '独�
 在 Linux x64 服务器构建和运行。先创建私有绑定目录，允许镜像中的 UID/GID 1000 写入所需子目录：
 
 ```sh
-mkdir -p work/cache/downloads work/temp work/accounts work/control work/logs work/state
+mkdir -p work/cache/downloads work/cache/avatars work/temp work/home work/config work/data work/runtime work/accounts work/control work/logs work/state
 chmod 711 work work/cache
-for directory in temp accounts control logs state; do
+for directory in temp home config data runtime accounts control logs state cache/avatars; do
     chown -R 1000:1000 "work/$directory"
     chmod 700 "work/$directory"
 done
@@ -162,17 +164,17 @@ docker compose -f deploy/compose.yaml -f deploy/compose.host.yaml up -d --build
 
 标准消息使用消息段数组，保留文字空格、换行和顺序，支持文字、@、引用及已声明的表情/媒体能力。字符串输入遵循 CQ 转义及 `auto_escape`。出站先验证完整消息，未支持的段整体拒绝；不能将带未支持媒体的入站消息截成残缺文字触发机器人回复。
 
-消息 ID 使用账号隔离的非零 32 位 OneBot ID，持久保存原始 QQ 定位信息。引用须在当前真实会话重新定位；跨会话、未知或无法验证的引用整体报错。登录补推历史消息不冒充新消息；断线事件缓冲有数量和年龄上限，溢出记录缺口，不承诺完整补发。
+消息 ID 使用账号隔离的非零 32 位 OneBot ID，持久保存原始 QQ 定位信息。更新使用带校验和的增量 WAL，正常关闭或备份维护时合并为兼容快照；不得丢弃 `.json.wal`。回滚旧版本前须停止全部写进程并用新版本完成 checkpoint，详见 [存储与宿主恢复](docs/storage-and-recovery.md)。引用须在当前真实会话重新定位；跨会话、未知或无法验证的引用整体报错。登录补推历史消息不冒充新消息；断线事件缓冲有数量和年龄上限，溢出记录缺口，不承诺完整补发。
 
 好友、用户、群及成员资料取自实际查询。查询失败不是空列表成功。QQ kernel 新接口会按固定版本的方法与回调核验能力；**接口列入目录不代表当前会话可用，更不代表已真机验证。** 可调用扩展 `get_capabilities` 查询当前会话支持状态，结合交付报告判断。
 
 补充 `send_like`、`get_group_at_all_remain`、`get_group_root_files`、`get_group_files_by_folder` 和 `get_group_file_info`。点赞仅在真实成功次数与请求次数一致时成功；群文件列表使用实际请求编号关联回调，并返回明确分页信息，不能将第一页当作完整列表。参数和限制见 [补充查询接口](docs/query-extensions.md)。历史查询支持跳过已识别系统灰条并通过会话绑定游标继续翻页，失败页不会留下部分消息 ID 映射，详见 [历史分页](docs/history-pagination.md)。新增源码接口仍需以对应云端报告确认验证范围。
 
-支持有界本地 PNG/JPEG/GIF 图片收发及资源查询，出站也接受规范 `base64://` 图片，适配 AstrBot 的 `Image.fromBytes`。单张及一条消息内嵌图片解码总量最多 10 MiB，HTTP/WS 动作帧最多 16 MiB；事件容量保持原有上限。管理台图片上传最多 10 MiB；私聊/群文件上传最多 50 MiB。成员列表、历史、撤回、部分群管理及好友/群请求已提供实现，具体方法与验证限制见能力目录。合并转发、视频发送和文件接收仍不支持，不宣称与 NapCat 或 SnowLuma 全量兼容。调试台里发送或产生副作用的接口会再次确认，一次操作不因超时重试。
+支持有界本地 PNG/JPEG/GIF 图片收发及资源查询，出站也接受规范 `base64://` 图片，适配 AstrBot 的 `Image.fromBytes`。单张及一条消息全部内嵌媒体解码总量最多 10 MiB，HTTP/WS 动作帧最多 16 MiB；事件容量保持原有上限。管理台图片上传最多 10 MiB；私聊/群文件上传最多 50 MiB。成员列表、历史、撤回、部分群管理及好友/群请求已有实现。合并转发支持读取和受限自定义文字/图片节点发送。已有消息 ID 节点变体在目标 QQ 版本暂时禁用：真实测试已确认送达及内容完整，但回调缺少能证明请求与目标消息对应关系的标识，正式接口在派发前返回不支持；此限制不影响自定义节点链路。视频收发和文件接收已有受限链路，具体格式、上下文与验证范围见[能力边界](docs/capability-limits.md)，不宣称与 NapCat 或 SnowLuma 全量兼容。调试台里发送或产生副作用的接口会再次确认，一次操作不因超时重试。
 
 `record` 出站接受账户媒体目录内的 MP3、WAV 或 QQ SILK 文件，由普通 FFmpeg 解码为 24kHz 单声道 PCM，再使用锁定版本的 SILK WASM 编码；时长和波形取自真实音频样本。输入最大 50 MiB、时长 600 秒，超限整体拒绝，不截取歌曲冒充完整语音。FFmpeg 默认位于项目 `work/tools/ffmpeg/ffmpeg`，也可用 `FWD_FFMPEG_PATH` 指定工作区内的普通可执行文件；新建镜像自带所需工具。没有工具时 `can_send_record` 返回 false。
 
-入站完整 SILK 语音和 MP4/WebM 视频可通过 QQ 原生下载并导出为账号签名资源，分别最多 10 MiB 和 50 MiB。检查精确消息、元素、完成回调、大小、摘要和容器，不把视频缩略图当成完整视频。资源 URL 五分钟过期，图片、语音和视频共用 1000 文件/200 MiB 配额。`get_record` 的输出格式转换尚未提供；能力及真实验证范围以本轮报告为准。
+入站完整 SILK 语音优先读取账号内真实 QQ 缓存，只有下载接口存在时才尝试下载；能力目录 `record.receive_scope` 会注明是否仅本地可用。MP4/WebM 视频通过已验证原生资源链路下载。两类资源分别最多 10 MiB 和 50 MiB，均检查精确消息、元素、大小、摘要和容器，不把视频缩略图当成完整视频。资源 URL 五分钟过期，图片、语音和视频共用 1000 文件/200 MiB 配额。`get_record` 支持本账号真实语音句柄导出 SILK/WAV，以及经固定 FFmpeg 导出的 MP3/FLAC/OGG；返回容器内文件路径，跨容器下载须另用已签名的资源 URL。实际验证范围见交付报告。
 
 系统设置中的“对外资源链接地址”应填写 AstrBot 可访问的 HTTP(S) 管理服务地址，例如 `https://服务器域名:4090`。它用于生成受限制的签名资源链接，不要填写内网不可达地址或附带 token 的 URL。
 
@@ -224,11 +226,14 @@ FWD_LEGACY_STOPPED=1 node src/manager/cli.cjs --migrate-legacy
 
 ```sh
 npm run package
-docker save freshwater-dolphin:0.2.0-alpha.1 -o outputs/freshwater-dolphin-linux-x64.tar
-sha256sum outputs/freshwater-dolphin-linux-x64.tar > outputs/freshwater-dolphin-linux-x64.tar.sha256
+set -o pipefail
+docker save freshwater-dolphin:0.2.0-alpha.2 | gzip -1 > outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz
+sha256sum outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz > outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz.sha256
 ```
 
 源码包采用白名单，排除工作目录、真实配置、凭据、QQ 及 Git 历史。Docker 导出镜像不包含绑定的登录数据。更新源码、程序或镜像由部署方显式完成；管理台不自行拉取镜像，不将容器内文件变更称为镜像升级。
+
+导出示例在 Bash 中运行，直接压缩镜像流以减少峰值空间；导出前确认剩余容量，完成后核对 SHA256。导入可使用 `gzip -dc 镜像.tar.gz | docker load`。云端存储预算与回滚要求见 [storage-and-recovery.md](docs/storage-and-recovery.md)。
 
 可选的真实 `aiocqhttp` 客户端协议测试需要工作区内 Python 虚拟环境和 `requirements-test.txt`，使用模拟 QQ 后端，不登录 QQ、不向真实对象发送消息。真实 QQ/AstrBot 测试的对象与次数须另行确认，不沿用此前单条发送授权。
 
@@ -239,3 +244,5 @@ sha256sum outputs/freshwater-dolphin-linux-x64.tar > outputs/freshwater-dolphin-
 连接节点页按账号分栏，包含通用设置、HTTP API、HTTP 客户端、WS 服务端、WS 客户端。节点可命名、编辑、启用及删除，操作先进入草稿，再统一保存应用。卡片分别展示草稿、应用结果及真实连接状态；监听已启动与已有客户端连接分开显示。token 和 HTTP 签名密钥留空保留已存值，清除需明确选择。
 
 运行日志显示经过完整协议转换和去重的接收消息，以及 QQ 明确确认且动作期限内成功的发送消息；保留空格、换行及 @、引用、表情和媒体标记。媒体下载 URL、本地路径和原生凭据不进入消息日志。原文单独写入私有 `messages.jsonl`，单文件默认 2 MiB、最多三个轮转文件，不写容器 stdout；管理员认证后才可查看。脱敏诊断下载排除原文和昵称，“清空当前视图”只影响浏览器展示。
+
+媒体转换与普通事件分别占用有界工作槽；同一会话中的普通消息可以先于较慢的媒体处理完成，消息自身元素顺序、QQ 时间和原始身份保持不变。

@@ -13,8 +13,30 @@ const MAX_SERVERS = 8;
 const MAX_RESPONSE = 128 * 1024;
 const DOWNLOAD_HOSTS = new Set(['multimedia.nt.qq.com', 'multimedia.nt.qq.com.cn', 'multimedia.qfile.qq.com']);
 // NTV2 download-rkey type per chat scope (types requested by QQApi/NapCat: 10/20/2).
-const NATIVE_RKEY_TYPE = { group: 10, private: 20 };
+const NATIVE_RKEY_TYPE = { private: 10, group: 20 };
 const NATIVE_NEGATIVE_MS = 30000;
+const NATIVE_QUERY_TIMEOUT_MS = 10000;
+
+function nativeExpiry(entry, now) {
+    const integer = (value, maximum) => {
+        if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 1)) return null;
+        if (typeof value !== 'number' && typeof value !== 'bigint' &&
+            !(typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value))) return null;
+        const result = BigInt(value);
+        return result > 0n && result <= maximum ? result : null;
+    };
+    const ttl = integer(entry.rkeyTtlSec, 0xffffffffffffffffn);
+    const created = integer(entry.rkeyCreateTime, 0xffffffffn);
+    if (ttl === null || created === null || !Number.isSafeInteger(now) || now < 0) return null;
+    const expires = (created + ttl) * 1000n;
+    if (expires <= BigInt(now) + 1000n) return null;
+    // Keep uint64 TTL arithmetic exact; the local cache never needs to retain
+    // an entry for more than an hour, even if QQ grants a longer lifetime.
+    const hour = BigInt(now) + 3600000n, safe = BigInt(Number.MAX_SAFE_INTEGER);
+    const maximum = hour < safe ? hour : safe;
+    const bounded = expires < maximum ? expires : maximum;
+    return bounded > BigInt(now) + 1000n ? Number(bounded) : null;
+}
 function problem(code, message, statusCode = 502) { return Object.assign(new Error(message), { code, statusCode }); }
 function invalid(message) { throw problem('INVALID_CONFIG', message, 400); }
 function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
@@ -105,8 +127,8 @@ class GlobalServices {
         this.file = workspacePath(root, 'work/control/settings.json');
         this.fetch = fetchImpl; this.now = now; this.timeoutMs = timeoutMs; this.nativeRkey = nativeRkey;
         this.fingerprint = null; this.keys = new Map(); this.pending = new Map();
-        this.nativeKeys = new Map(); this.nativeNegative = new Map();
-        this.session = null; this.sessionVersion = 0;
+        this.nativeKeys = new Map(); this.nativeNegative = new Map(); this.nativePending = new Map();
+        this.session = null; this.sessionVersion = 0; this.nativeGeneration = 0;
     }
     resetSession(epoch, selfUin) {
         if (typeof epoch !== 'string' || !epoch || typeof selfUin !== 'string' || !/^[1-9]\d{0,15}$/.test(selfUin) || !Number.isSafeInteger(Number(selfUin))) {
@@ -115,7 +137,8 @@ class GlobalServices {
         const identity = JSON.stringify([epoch, selfUin]);
         if (identity !== this.session) {
             this.session = identity; this.sessionVersion++; this.keys.clear(); this.pending.clear();
-            this.nativeKeys.clear(); this.nativeNegative.clear();
+            this.nativeGeneration++;
+            this.nativeKeys.clear(); this.nativeNegative.clear(); this.nativePending.clear();
         }
     }
     settings() {
@@ -129,7 +152,11 @@ class GlobalServices {
             else throw problem('INVALID_CONFIG', 'Global service settings could not be read', 503);
         }
         const settings = externalSettings(value), fingerprint = JSON.stringify(settings);
-        if (fingerprint !== this.fingerprint) { this.keys.clear(); this.pending.clear(); this.fingerprint = fingerprint; }
+        if (fingerprint !== this.fingerprint) {
+            this.nativeGeneration++;
+            this.keys.clear(); this.pending.clear(); this.nativeKeys.clear();
+            this.nativeNegative.clear(); this.nativePending.clear(); this.fingerprint = fingerprint;
+        }
         return { ...settings, fingerprint, sessionVersion: this.sessionVersion };
     }
     unchanged(fingerprint, sessionVersion) {
@@ -236,35 +263,53 @@ class GlobalServices {
         if (cached && cached.expiresAt > this.now() + 1000) return cached.key;
         const negative = this.nativeNegative.get(kind);
         if (negative && negative > this.now()) return null;
-        const budgetMs = Math.min(this.budget(deadline), 8000);
-        const [expectedEpoch, expectedUin] = this.session ? JSON.parse(this.session) : [null, null];
-        let timer, result;
-        try {
-            result = await Promise.race([
-                Promise.resolve(this.nativeRkey(kind, { timeoutMs: budgetMs, expectedEpoch, expectedUin })),
-                new Promise((_, reject) => { timer = setTimeout(() => reject(problem('TIMEOUT', 'Native rkey query timed out', 504)), budgetMs); })
-            ]);
-        } catch (error) {
-            if (['SESSION_CHANGED', 'GLOBAL_SETTINGS_CHANGED', 'INVALID_CONFIG'].includes(error.code)) throw error;
-            this.nativeNegative.set(kind, this.now() + NATIVE_NEGATIVE_MS);
-            return null;
-        } finally { clearTimeout(timer); }
-        this.unchanged(settings.fingerprint, settings.sessionVersion);
-        const entries = Array.isArray(result?.rkeys) ? result.rkeys : [];
-        const entry = entries.find(item => record(item) && item.type === NATIVE_RKEY_TYPE[kind] && typeof item.rkey === 'string');
-        const key = entry ? this.keyValue(entry.rkey) : null;
-        if (!key) { this.nativeNegative.set(kind, this.now() + NATIVE_NEGATIVE_MS); return null; }
-        const now = this.now();
-        let expiresAt = now + 60000;
-        const ttl = Number(entry.rkeyTtlSec), create = Number(entry.rkeyCreateTime);
-        if (Number.isSafeInteger(ttl) && ttl > 0 && Number.isSafeInteger(create) && create > 0) expiresAt = Math.min((create + ttl) * 1000, now + 3600000);
-        if (expiresAt <= now + 1000) { this.nativeNegative.set(kind, now + NATIVE_NEGATIVE_MS); return null; }
-        this.nativeKeys.set(kind, { key, expiresAt });
-        this.nativeNegative.delete(kind);
-        return key;
+        this.budget(deadline);
+        let pending = this.nativePending.get(kind);
+        if (!pending) {
+            const [expectedEpoch, expectedUin] = this.session ? JSON.parse(this.session) : [null, null];
+            const generation = this.nativeGeneration;
+            const current = () => {
+                this.unchanged(settings.fingerprint, settings.sessionVersion);
+                if (generation !== this.nativeGeneration) throw problem('GLOBAL_SETTINGS_CHANGED', 'Global service settings changed during the native query', 503);
+            };
+            pending = (async () => {
+                let timer, result;
+                try {
+                    // The shared operation has its own bounded budget. A caller
+                    // timing out only stops that caller's wait, not other readers.
+                    result = await Promise.race([
+                        Promise.resolve(this.nativeRkey(kind, { timeoutMs: NATIVE_QUERY_TIMEOUT_MS, expectedEpoch, expectedUin })),
+                        new Promise((_, reject) => { timer = setTimeout(() => reject(problem('TIMEOUT', 'Native rkey query timed out', 504)), NATIVE_QUERY_TIMEOUT_MS); })
+                    ]);
+                } catch (error) {
+                    // A late rejection from an old session must not poison the
+                    // replacement session's negative cache.
+                    current();
+                    if (['SESSION_CHANGED', 'GLOBAL_SETTINGS_CHANGED', 'INVALID_CONFIG'].includes(error?.code)) throw error;
+                    this.nativeNegative.set(kind, this.now() + NATIVE_NEGATIVE_MS);
+                    return null;
+                } finally { clearTimeout(timer); }
+                current();
+                const entries = Array.isArray(result?.rkeys) ? result.rkeys : [];
+                for (const entry of entries) {
+                    if (!record(entry) || entry.type !== NATIVE_RKEY_TYPE[kind]) continue;
+                    const key = this.keyValue(entry.rkey), expiresAt = nativeExpiry(entry, this.now());
+                    if (!key || expiresAt === null) continue;
+                    this.nativeKeys.set(kind, { key, expiresAt });
+                    this.nativeNegative.delete(kind);
+                    return key;
+                }
+                this.nativeNegative.set(kind, this.now() + NATIVE_NEGATIVE_MS);
+                return null;
+            })();
+            this.nativePending.set(kind, pending);
+            pending.finally(() => { if (this.nativePending.get(kind) === pending) this.nativePending.delete(kind); }).catch(() => {});
+        }
+        return this.within(pending, deadline);
     }
     async resolveImageUrl(input, isGroup, options = {}) {
-        if (!record(options) || options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 120000)) {
+        if (!record(options) || options.forceRefresh !== undefined && typeof options.forceRefresh !== 'boolean' ||
+            options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 120000)) {
             throw problem('INVALID_PARAMS', 'Invalid rkey request time budget', 400);
         }
         const deadline = performance.now() + Math.min(options.timeoutMs ?? this.timeoutMs, 60000);
@@ -272,12 +317,32 @@ class GlobalServices {
         let url;
         try { url = new URL(input); } catch { throw problem('INVALID_PARAMS', 'Invalid image URL', 400); }
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw problem('INVALID_PARAMS', 'Invalid image URL', 400);
-        if (!DOWNLOAD_HOSTS.has(url.hostname) || url.pathname !== '/download' || url.searchParams.get('rkey')) return input;
+        if (!DOWNLOAD_HOSTS.has(url.hostname) || url.pathname !== '/download') return input;
+        const supplied = url.searchParams.getAll('rkey');
+        if (supplied.length > 1) throw problem('INVALID_PARAMS', 'Ambiguous image rkey', 400);
+        const previous = supplied[0] || '';
+        // Forwarded pictures keep their original upload scope, which may differ
+        // from the conversation containing the forward. Never infer that scope
+        // from the order of keys in QQ's response.
+        const appids = url.searchParams.getAll('appid');
+        if (appids.length > 1) throw problem('INVALID_PARAMS', 'Ambiguous image appid', 400);
+        const kind = appids[0] === '1406' ? 'private' : appids[0] === '1407' ? 'group' : isGroup ? 'group' : 'private';
         const settings = this.settings();
-        const kind = isGroup ? 'group' : 'private';
+        if (options.forceRefresh) {
+            // Concurrent readers may already have replaced the rejected URL's
+            // key. Never discard that newer account-scoped cache entry.
+            for (const cache of [this.nativeKeys, this.keys]) {
+                const cached = cache.get(kind);
+                if (cached && (!previous || cached.key === previous)) cache.delete(kind);
+            }
+            this.nativeNegative.delete(kind);
+        }
         let key = await this.nativeKey(settings, kind, deadline);
         if (!key) {
-            if (!settings.rkey.fallbackServers.length) throw problem('RKEY_UNAVAILABLE', 'Image needs an rkey and fallback services are disabled', 503);
+            if (!settings.rkey.fallbackServers.length) {
+                if (previous && !options.forceRefresh) return input;
+                throw problem('RKEY_UNAVAILABLE', 'Image needs an rkey and fallback services are disabled', 503);
+            }
             const cached = this.keys.get(kind);
             key = cached && cached.expiresAt > this.now() + 1000 ? cached.key : null;
             if (!key) {
@@ -286,7 +351,11 @@ class GlobalServices {
                     pending = this.fetchKey(settings, kind, deadline); this.pending.set(kind, pending);
                     pending.finally(() => { if (this.pending.get(kind) === pending) this.pending.delete(kind); }).catch(() => {});
                 }
-                key = await this.within(pending, deadline);
+                try { key = await this.within(pending, deadline); }
+                catch (error) {
+                    if (previous && !options.forceRefresh && error.code === 'RKEY_UNAVAILABLE') return input;
+                    throw error;
+                }
             }
         }
         this.budget(deadline);

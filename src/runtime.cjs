@@ -48,8 +48,9 @@ async function run(config, log) {
         } });
     const statusCommand = new StatusCommand({ root: config.root, service, status: () => lastStatus,
         authorizeSession: session => !stopped && authorized({ uin: session.selfUin, epoch: session.epoch }), logger: log });
-    let polling = false, instance, cursor = 0, bridge = false, pollPromise = null, processingPromise = null;
+    let polling = false, instance, cursor = 0, bridge = false, pollPromise = null;
     const incoming = [];
+    const processing = new Set(), lanes = new Set(), running = { ordinary: 0, media: 0 };
     let incomingBytes = 0;
     function health() {
         writeJson(config.healthFile, { at: Date.now(), bridge, connected: network.connected,
@@ -57,7 +58,8 @@ async function run(config, log) {
             selfUid: lastStatus.self?.uid || null, nickname: typeof lastStatus.self?.nickname === 'string' ? lastStatus.self.nickname : null, pid: process.pid,
             sessionEpoch: lastStatus.epoch || null,
             authorized: authorized({ uin: String(lastStatus.self?.uin || ''), epoch: lastStatus.epoch }),
-            gatewayPort: network.port, nodes: network.describe(), activeActions: network.pendingActions + (statusCommand.pending ? 1 : 0),
+            gatewayPort: network.port, nodes: network.describe(), activeActions: network.pendingActions + (statusCommand.pending ? 1 : 0) + processing.size,
+            eventQueue: { waiting: incoming.length, processing: processing.size, bytes: incomingBytes },
             ready: lastStatus.ready === true, online: lastStatus.online === true ? true : lastStatus.online === false ? false : null });
     }
     function clearIncoming() { incoming.length = 0; incomingBytes = 0; }
@@ -84,20 +86,35 @@ async function run(config, log) {
         if (age > config.eventMaxAgeMs) { log('incoming_event_expired', { gap: true }); return null; }
         return at;
     }
-    async function processEvents() {
+    async function convertEvent(item) {
+        if (Date.now() - item.at > config.eventMaxAgeMs || item.event.epoch !== sessionEpoch ||
+            String(item.event.selfUin) !== connectedSelf) {
+            log('incoming_event_expired', { gap: true }); return;
+        }
+        try {
+            const event = await service.event(item.event);
+            if (Date.now() - item.at > config.eventMaxAgeMs) { log('incoming_event_expired', { gap: true }); return; }
+            if (!stopped && event && connectedSelf && String(event.self_id) === connectedSelf &&
+                item.event.epoch === sessionEpoch && !statusCommand.handle(event,
+                    { epoch: item.event.epoch, selfUin: item.event.selfUin })) network.event(event);
+        } catch (error) { log('event_rejected', { code: error.code || 'INVALID_EVENT' }); }
+    }
+    function processEvents() {
+        // Reserve independent bounded capacity for ordinary events. A slow media
+        // download must not consume every slot or block text from the same chat.
+        // Arrival order is preserved within each chat and class; ordinary events
+        // can overtake media, retaining their original QQ identities and times.
         while (!stopped && incoming.length) {
-            const item = incoming.shift();
+            const index = incoming.findIndex(item => !lanes.has(item.lane) && running[item.kind] < 2);
+            if (index < 0) break;
+            const [item] = incoming.splice(index, 1);
             incomingBytes -= item.bytes;
-            if (Date.now() - item.at > config.eventMaxAgeMs || item.event.epoch !== sessionEpoch ||
-                String(item.event.selfUin) !== connectedSelf) {
-                log('incoming_event_expired', { gap: true }); continue;
-            }
-            try {
-                const event = await service.event(item.event);
-                if (!stopped && event && connectedSelf && String(event.self_id) === connectedSelf &&
-                    item.event.epoch === sessionEpoch && !statusCommand.handle(event,
-                        { epoch: item.event.epoch, selfUin: item.event.selfUin })) network.event(event);
-            } catch (error) { log('event_rejected', { code: error.code || 'INVALID_EVENT' }); }
+            lanes.add(item.lane); running[item.kind]++;
+            const task = convertEvent(item).finally(() => {
+                processing.delete(task); lanes.delete(item.lane); running[item.kind]--;
+                processEvents();
+            });
+            processing.add(task);
         }
     }
     function enqueue(event) {
@@ -105,14 +122,18 @@ async function run(config, log) {
         const at = sourceTime(event);
         if (at === null) return;
         const bytes = Buffer.byteLength(JSON.stringify(event));
-        incoming.push({ at, event, bytes });
+        const kind = event.kind === 'message' && Array.isArray(event.record?.elements) &&
+            event.record.elements.some(element => [2, 3, 4, 5].includes(element?.elementType)) ? 'media' : 'ordinary';
+        const lane = JSON.stringify([event.epoch, event.selfUin, event.record?.chatType || event.request?.type,
+            event.record?.peerUid || event.request?.groupId || event.request?.uid || '', kind]);
+        incoming.push({ at, event, bytes, kind, lane });
         incomingBytes += bytes;
         let gap = false;
         while (incoming.length > config.eventBufferSize || incomingBytes > 8 * 1024 * 1024) {
             incomingBytes -= incoming.shift().bytes; gap = true;
         }
         if (gap) log('incoming_event_gap', { gap: true });
-        if (!processingPromise) processingPromise = processEvents().finally(() => { processingPromise = null; });
+        processEvents();
     }
     async function poll() {
         if (stopped || polling) return;
@@ -168,22 +189,37 @@ async function run(config, log) {
         health();
         timer = setInterval(startPoll, 250);
         startPoll();
-    } catch (error) { stopped = true; backend.close(); await statusCommand.close(); await network.close(); release(); throw error; }
+    } catch (error) {
+        stopped = true; backend.close();
+        try { await Promise.allSettled([Promise.resolve().then(() => statusCommand.close()), Promise.resolve().then(() => network.close())]); }
+        finally { release(); }
+        throw error;
+    }
     log('adapter_started', { version: require('../package.json').version });
-    return { async close() {
-        if (stopped) return;
+    let closingPromise;
+    return { close() {
+        if (closingPromise) return closingPromise;
         stopped = true;
-        const commandClosing = statusCommand.close();
-        clearInterval(timer);
-        network.stop();
-        backend.close();
-        await pollPromise;
-        await processingPromise;
-        await commandClosing;
-        await network.close();
-        try { store.close(); } finally { release(); }
-        bridge = false; lastStatus = { ready: false, online: null };
-        health();
+        closingPromise = (async () => {
+            const errors = [];
+            const attempt = operation => {
+                try { return Promise.resolve(operation()).catch(error => { errors.push(error); }); }
+                catch (error) { errors.push(error); return Promise.resolve(); }
+            };
+            const commandClosing = attempt(() => statusCommand.close());
+            clearInterval(timer); clearIncoming();
+            await Promise.all([attempt(() => network.stop()), attempt(() => backend.close())]);
+            await attempt(() => pollPromise);
+            await Promise.allSettled([...processing]);
+            await commandClosing;
+            await attempt(() => network.close());
+            await attempt(() => store.close());
+            await attempt(() => release());
+            bridge = false; lastStatus = { ready: false, online: null };
+            await attempt(() => health());
+            if (errors.length) throw new AggregateError(errors, 'Adapter shutdown encountered errors');
+        })();
+        return closingPromise;
     } };
 }
 

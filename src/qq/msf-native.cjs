@@ -1,173 +1,154 @@
 'use strict';
 
-// Opt-in native MSF capture channel. Loads the capture-first detour addon
-// (src/native/msf-capture.c) inside QQ's Electron main process and exposes a
-// fixed set of observation sub-operations. It does NOT send packets and does
-// NOT construct callbacks; install only observes QQ's natural SendMsfRequest
-// calls and restores the original bytes on uninstall.
-//
-// The addon path is derived from the trusted launcher environment, never from
-// request parameters. Session binding (expectedEpoch/expectedUin) is enforced
-// by the capture handler before this module is reached.
-//
-// UNTESTED-LIVE: first run must be on a confirmed disposable instance.
-
+// Fixed read-only operations over QQ 3.2.35-54395 x64. One queue belongs to one
+// QQ process; immutable native callback IDs isolate timed-out and late responses.
 const fs = require('node:fs');
 const path = require('node:path');
-
-const OPS = new Set(['probe', 'status', 'install', 'readCapture', 'uninstall', 'captureTarget', 'readTarget', 'restoreTarget', 'send', 'readResponse', 'readTemplate', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl']);
+const { performance } = require('node:perf_hooks');
+const { setTimeout: pause } = require('node:timers/promises');
+const OPS = new Set(['fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', 'fixedExtended']);
+const MAX_QUEUED = 32;
 let addon = null;
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
-
 function addonPath() {
-    const accountRoot = process.env.FWD_ACCOUNT_ROOT;
-    if (typeof accountRoot !== 'string' || !path.isAbsolute(accountRoot)) {
-        throw problem('INVALID_CONFIG', 'Native MSF capture requires a managed account workspace');
-    }
-    const resolved = path.resolve(accountRoot, '..', '..', 'native-build', 'msf-capture.node');
-    const expectedDir = path.resolve(accountRoot, '..', '..', 'native-build');
-    if (path.dirname(resolved) !== expectedDir) {
-        throw problem('INVALID_CONFIG', 'Native MSF capture addon path escapes the build directory');
-    }
+    const configured = process.env.FWD_MSF_ADDON_PATH, accountRoot = process.env.FWD_ACCOUNT_ROOT;
+    if (!configured && (typeof accountRoot !== 'string' || !path.isAbsolute(accountRoot))) throw problem('INVALID_CONFIG', 'Native MSF requires a managed account workspace');
+    const resolved = configured || path.resolve(accountRoot, '..', '..', 'native-build', 'msf-capture.node');
+    if (!path.isAbsolute(resolved)) throw problem('INVALID_CONFIG', 'Native MSF addon path must be absolute');
     const stat = fs.lstatSync(resolved);
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-        throw problem('INVALID_CONFIG', 'Native MSF capture addon must be an ordinary file');
-    }
+    if (!stat.isFile() || stat.isSymbolicLink()) throw problem('INVALID_CONFIG', 'Native MSF addon must be an ordinary file');
     return resolved;
 }
-
 function load() {
-    if (addon) return addon;
-    addon = require(addonPath());
+    if (!addon) {
+        const loaded = require(addonPath());
+        if (loaded.protocolVersion !== 2 || typeof loaded.release !== 'function') throw problem('UNSUPPORTED', 'Rebuild native MSF for request correlation protocol 2');
+        addon = loaded;
+    }
     return addon;
 }
+function available() { try { const native = load(); return typeof native.verifyTarget === 'function' && success(native.verifyTarget().ok); } catch { return false; } }
+function success(value) { return value === true || value === 'true'; }
 
-// Capability probe: true when the native addon can be loaded in this process.
-// Never throws; loading the addon has no hooking side effect (install is separate).
-function available() {
-    try { load(); return true; } catch { return false; }
-}
-
-function jsonSafe(value) {
-    return JSON.parse(JSON.stringify(value, (_k, v) => typeof v === 'bigint' ? v.toString() : v));
-}
-
-// Acquire the live session-shell instance via the ssosend detour. If no template
-// has been captured yet, prime it with one natural JS send (the hook captures the
-// instance synchronously at send time, so poll briefly rather than awaiting the
-// full priming response). Shared by every native fetch op.
-async function ensureInstance(capture, native) {
-    native.install('ssosend');
-    let template = native.readTemplate();
-    if (template.haveTemplate === 'true') return;
-    const rkey = require('./rkey.cjs');
-    const service = capture.service('msg');
-    if (typeof service.sendSsoCmdReqByContend !== 'function') {
-        throw problem('UNSUPPORTED', 'QQ lacks the SSO channel needed to prime the native instance');
+// Test dependencies cannot be selected through RPC parameters.
+function createChannel({ loadNative = load, now = () => performance.now(), sleep = ms => pause(ms), pollMs = 30 } = {}) {
+    const waiting = [];
+    let current = null, lastSession = null;
+    function pump() {
+        if (current || !waiting.length) return;
+        const entry = waiting.shift();
+        current = entry; entry.started = true;
+        Promise.resolve().then(entry.execute).then(entry.resolve, entry.reject).finally(() => {
+            current = null; pump();
+        }).catch(() => {});
     }
-    Promise.resolve(service.sendSsoCmdReqByContend(rkey.CMD, rkey.latin1(rkey.encodeRequest()))).catch(() => {});
-    const primeDeadline = Date.now() + 3000;
-    while (Date.now() < primeDeadline) {
-        await sleep(100);
-        template = native.readTemplate();
-        if (template.haveTemplate === 'true') return;
+    function run(capture, params = {}) {
+        if (!OPS.has(params.op)) return Promise.reject(problem('INVALID_PARAMS', 'Unsupported fixed native operation'));
+        const timeoutMs = params.timeoutMs ?? 10000;
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) return Promise.reject(problem('INVALID_PARAMS', 'Invalid native deadline'));
+        if (waiting.length + (current ? 1 : 0) >= MAX_QUEUED) return Promise.reject(problem('BUSY', 'Native operation queue is full'));
+        const deadline = now() + timeoutMs, epoch = params.expectedEpoch ?? capture.epoch;
+        const uin = String(params.expectedUin ?? capture.self?.uin ?? '');
+        const controller = new AbortController();
+        const signal = params.signal ? AbortSignal.any([params.signal, controller.signal]) : controller.signal;
+        function check() {
+            if (signal.aborted) throw typeof signal.reason?.code === 'string' ? signal.reason : problem('TIMEOUT', 'Native operation cancelled');
+            if (capture.closed || capture.epoch !== epoch || String(capture.self?.uin ?? '') !== uin) throw problem('SESSION_CHANGED', 'QQ session changed during native operation');
+            if (now() >= deadline) throw problem('TIMEOUT', 'Native operation exceeded its total deadline');
+        }
+        async function wait() { check(); await sleep(Math.max(1, Math.min(pollMs, deadline - now()))); check(); }
+        const execute = async () => {
+            check();
+            const native = loadNative(), session = JSON.stringify([epoch, uin]);
+            if (lastSession !== session) { native.resetSession(); lastSession = session; }
+            const installed = native.install('ssosend');
+            if (!success(installed.ok)) throw problem('UNSUPPORTED', 'Native MSF target does not match the supported QQ build');
+            if (!success(native.readTemplate().haveTemplate)) {
+                const rkey = require('./rkey.cjs'), service = capture.service('msg');
+                if (typeof service.sendSsoCmdReqByContend !== 'function') throw problem('UNSUPPORTED', 'QQ lacks the native session priming channel');
+                Promise.resolve(service.sendSsoCmdReqByContend(rkey.CMD, rkey.latin1(rkey.encodeRequest()))).catch(() => {});
+                while (!success(native.readTemplate().haveTemplate)) await wait();
+            }
+            check();
+            let command, request, decode;
+            if (params.op === 'fixedExtended') {
+                const proto = require('./fixed-oidb.cjs'), prepared = proto.prepare(params.operation, params.request);
+                command = prepared.name; request = prepared.body; decode = body => proto.decode(body, prepared);
+            } else if (params.op === 'fetchRkey') {
+                const proto = require('./rkey.cjs');
+                command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(); decode = body => ({ rkeys: proto.decodeResponse(body) });
+            } else if (params.op === 'fetchGroupFileUrl') {
+                const proto = require('./group-file-url.cjs');
+                command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(params.groupId, params.fileId, params.busId);
+                decode = body => { const result = proto.decodeResponse(body); return { ...result, url: proto.withFileName(result, params.fileName) }; };
+            } else if (params.op === 'fetchGroupFileSpace') {
+                const proto = require('./group-file-space.cjs');
+                command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(params.groupId); decode = proto.decodeResponse;
+            } else if (params.op === 'fetchPrivateFileUrl') {
+                const proto = require('./private-file-url.cjs');
+                if (params.transport !== undefined && !['oidb', 'offline'].includes(params.transport)) throw problem('INVALID_PARAMS', 'Invalid fixed private file transport');
+                if (params.transport === 'offline') {
+                    command = proto.OFFLINE_CMD; request = proto.encodeOfflineRequest(uin, params.fileId);
+                    decode = body => proto.decodeOfflineResponse(body, { fileId: params.fileId });
+                } else {
+                    command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(capture.self?.uid, params.fileId, params.fileHash);
+                    decode = body => proto.decodeResponse(body, { fileId: params.fileId, fileHash: params.fileHash });
+                }
+            } else {
+                const proto = require('./video-url.cjs'), group = params.isGroup !== false;
+                command = proto.groupCmd(group); request = proto.encodeNativeRequest(params.fileUuid, group, params.targetUid);
+                decode = body => proto.decodeResponse(body, group);
+            }
+            check();
+            const sent = native.send(command, request.toString('hex'));
+            if (!success(sent.ok) || !/^[1-9]\d*$/.test(String(sent.requestId))) throw problem('QUERY_FAILED', 'Native MSF query could not be submitted');
+            const id = String(sent.requestId);
+            try {
+                while (true) {
+                    check();
+                    const response = native.readResponse(id);
+                    if (String(response.requestId) !== id) throw problem('INVALID_RESPONSE', 'Native response request ID mismatch');
+                    if (response.count > 0) {
+                        if (BigInt(response.result) !== 0n) throw problem('QUERY_FAILED', 'QQ native query returned a transport error');
+                        if (!response.body?.length) {
+                            const size = /^(0|[1-9]\d{0,19})$/.test(String(response.responseBytes)) ? String(response.responseBytes) : 'unknown';
+                            const status = ['empty', 'too_large', 'invalid', 'allocation_failed'].includes(response.bodyStatus) ? response.bodyStatus : 'unknown';
+                            throw problem('QUERY_FAILED', 'QQ native query returned no response body [status=' + status + ',bytes=' + size + ']');
+                        }
+                        const result = decode(Buffer.from(response.body));
+                        check(); return { ...result, via: 'native-msf' };
+                    }
+                    await wait();
+                }
+            } finally { native.release(id); }
+        };
+        return new Promise((resolve, reject) => {
+            let settled = false, timer;
+            const settle = (error, value) => {
+                if (settled) return;
+                settled = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
+                if (error) reject(error); else resolve(value);
+            };
+            const entry = { execute, started: false, resolve: value => settle(null, value), reject: error => settle(error) };
+            const abort = () => {
+                settle(typeof signal.reason?.code === 'string' ? signal.reason : problem('TIMEOUT', 'Native operation cancelled'));
+                if (!entry.started) {
+                    const index = waiting.indexOf(entry);
+                    if (index !== -1) waiting.splice(index, 1);
+                    pump();
+                }
+            };
+            signal.addEventListener('abort', abort, { once: true });
+            timer = setTimeout(() => controller.abort(problem('TIMEOUT', 'Native operation exceeded its total deadline')), timeoutMs);
+            waiting.push(entry);
+            if (signal.aborted) abort(); else pump();
+        });
     }
-    throw problem('NOT_READY', 'Native MSF instance was not captured; cannot send');
+    return { run };
 }
-
-// Poll for a fresh response after send() (which resets the response counter).
-async function awaitResponse(native, timeoutMs) {
-    const deadline = Date.now() + (Number(timeoutMs) || 8000);
-    while (Date.now() < deadline) {
-        await sleep(150);
-        const rsp = native.readResponse();
-        if (rsp.count > 0 && rsp.bodyLen > 0) return Buffer.from(rsp.body);
-    }
-    return null;
+const channel = createChannel();
+function status() {
+    const value = load().status();
+    return { protocolVersion: 2, installed: Boolean(value.installed), targetVerified: available(), liveRequests: Number(value.liveRequests) };
 }
-
-// Fetch real download-rkey over the native MSF channel (bypasses the JS
-// whitelist) using the verified real-device OidbBase envelope.
-async function fetchRkeyNative(capture, params = {}) {
-    const native = load();
-    const rkey = require('./rkey.cjs');
-    await ensureInstance(capture, native);
-    const sent = native.send(rkey.NATIVE_CMD, rkey.encodeNativeRequest().toString('hex'));
-    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF rkey send failed: ' + (sent.error || ''));
-    const body = await awaitResponse(native, params.timeoutMs);
-    if (!body) throw problem('TIMEOUT', 'Native MSF rkey response timed out');
-    return { rkeys: rkey.decodeResponse(body), via: 'native-msf' };
-}
-
-// Fetch a real group-file download URL over the native MSF channel
-// (OidbSvcTrpcTcp.0x6d6_2). Proto verified against LLBot oidb.ts/group.ts.
-async function fetchGroupFileUrlNative(capture, params = {}) {
-    const native = load();
-    const gfu = require('./group-file-url.cjs');
-    await ensureInstance(capture, native);
-    const body = gfu.encodeNativeRequest(params.groupId, params.fileId, params.busId);
-    const sent = native.send(gfu.NATIVE_CMD, body.toString('hex'));
-    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF group-file send failed: ' + (sent.error || ''));
-    const rsp = await awaitResponse(native, params.timeoutMs);
-    if (!rsp) throw problem('TIMEOUT', 'Native MSF group-file response timed out');
-    const result = gfu.decodeResponse(rsp);
-    return { ...result, url: gfu.withFileName(result, params.fileName), via: 'native-msf' };
-}
-
-// Fetch real group-file space capacity over the native MSF channel
-// (OidbSvcTrpcTcp.0x6d8_3). Proto verified against LLBot oidb.ts/group.ts.
-async function fetchGroupFileSpaceNative(capture, params = {}) {
-    const native = load();
-    const gfs = require('./group-file-space.cjs');
-    await ensureInstance(capture, native);
-    const body = gfs.encodeNativeRequest(params.groupId);
-    const sent = native.send(gfs.NATIVE_CMD, body.toString('hex'));
-    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF group-file space send failed: ' + (sent.error || ''));
-    const rsp = await awaitResponse(native, params.timeoutMs);
-    if (!rsp) throw problem('TIMEOUT', 'Native MSF group-file space response timed out');
-    return { ...gfs.decodeResponse(rsp), via: 'native-msf' };
-}
-
-// Fetch a real video download URL over the native MSF channel (NTV2RichMedia
-// 0x11ea_200 group / 0x11e9_200 private). Used when the JS video URL query fails.
-async function fetchVideoUrlNative(capture, params = {}) {
-    const native = load();
-    const vu = require('./video-url.cjs');
-    const isGroup = params.isGroup !== false;
-    await ensureInstance(capture, native);
-    const body = vu.encodeNativeRequest(params.fileUuid, isGroup, params.targetUid);
-    const sent = native.send(vu.groupCmd(isGroup), body.toString('hex'));
-    if (sent.ok !== 'true') throw problem('QUERY_FAILED', 'Native MSF video send failed: ' + (sent.error || ''));
-    const rsp = await awaitResponse(native, params.timeoutMs);
-    if (!rsp) throw problem('TIMEOUT', 'Native MSF video response timed out');
-    return { ...vu.decodeResponse(rsp, isGroup), via: 'native-msf' };
-}
-
-function run(capture, params) {
-    const op = params && params.op;
-    if (typeof op !== 'string' || !OPS.has(op)) {
-        throw problem('INVALID_PARAMS', 'Native MSF capture op must be one of probe/status/install/readCapture/uninstall');
-    }
-    const native = load();
-    if (op === 'fetchRkey') return fetchRkeyNative(capture, params);
-    if (op === 'fetchGroupFileUrl') return fetchGroupFileUrlNative(capture, params);
-    if (op === 'fetchGroupFileSpace') return fetchGroupFileSpaceNative(capture, params);
-    if (op === 'fetchVideoUrl') return fetchVideoUrlNative(capture, params);
-    switch (op) {
-        case 'probe': return jsonSafe(native.probe());
-        case 'status': return jsonSafe(native.status());
-        case 'install': return jsonSafe(native.install(typeof params.target === 'string' ? params.target : 'sendpacket'));
-        case 'readCapture': return jsonSafe(native.readCapture());
-        case 'uninstall': return jsonSafe(native.uninstall());
-        case 'captureTarget': return jsonSafe(native.captureTarget());
-        case 'readTarget': return jsonSafe(native.readTarget());
-        case 'restoreTarget': return jsonSafe(native.restoreTarget());
-        case 'send': return jsonSafe(native.send(params.cmd, params.bodyHex));
-        case 'readResponse': return jsonSafe(native.readResponse());
-        case 'readTemplate': return jsonSafe(native.readTemplate());
-    }
-}
-
-module.exports = { run, OPS, available };
+module.exports = { run: channel.run, OPS, available, createChannel, status };

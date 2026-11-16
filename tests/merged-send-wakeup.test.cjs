@@ -9,8 +9,8 @@ const { createMergedSend } = require('../src/qq/merged-send.cjs');
 // start. Capture.deadline defers its operation to a microtask, so this exercises
 // the real boundary between observing a root and installing a wake callback.
 test('a merged root queued before the candidate waiter starts is consumed without a second update', async t => {
-    const self = { uid: 'u_wakeup_self', uin: '2068886823' };
-    const destination = { chatType: 2, peerUid: '1103828635' };
+    const self = { uid: 'u_wakeup_self', uin: '1000000001' };
+    const destination = { chatType: 2, peerUid: '2000000001' };
     const epoch = 'merged-wakeup-session';
     const sourceId = '18446744073709551001';
     const rootId = '18446744073709551500';

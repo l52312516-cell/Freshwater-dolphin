@@ -5,15 +5,15 @@ const assert = require('node:assert/strict');
 const { Capture } = require('../src/qq/capture.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
-const SOURCE = { chatType: 2, peerUid: '1103828635' };
+const SOURCE = { chatType: 2, peerUid: '2000000001' };
 const IDS = ['18446744073709551610', '18446744073709551609'], SENT = '18446744073709551608';
-const SELF = { uin: '2068886823', uid: 'u_self' }, EPOCH = 'native-merge-session';
+const SELF = { uin: '1000000001', uid: 'u_self' }, EPOCH = 'native-merge-session';
 const text = content => ({ elementType: 1, textElement: { content, atType: 0 } });
 const merged = resId => ({ elementType: 16, multiForwardMsgElement: { resId } });
 const fails = code => error => { assert.equal(error.code, code, error.stack); return true; };
 function fixture(t) {
     const calls = [], handlers = {}, originals = IDS.map((msgId, index) => ({ ...SOURCE, msgId,
-        senderUin: String(1515564167 + index), senderUid: 'u_author' + index, msgTime: '1794614400',
+        senderUin: String(1000000003 + index), senderUid: 'u_author' + index, msgTime: '1794614400',
         sendNickName: 'Original author ' + index, sendMemberName: index === 0 ? 'Real group card' : '', elements: [text(' node ' + index + '\n ')] }));
     const root = { ...SOURCE, msgId: SENT, senderUin: SELF.uin, senderUid: SELF.uid, sendStatus: 2, elements: [merged('native-completed-resource')] };
     let capture;
@@ -64,6 +64,121 @@ test('private native merge derives real author display names and proves correlat
     assert.equal(f.capture.bus.listenerCount('sent'), 0);
     await assert.rejects(f.probe(), fails('BUSY'));
     await assert.rejects(f.capture.forwardApi.run({ kind: 'build', source: SOURCE, msgIds: IDS, expectedEpoch: EPOCH }), fails('BUSY'));
+});
+
+test('the target QQ build disables formal existingMerge before lookup or native submission without disabling private probes', async t => {
+    const f = fixture(t);
+    assert.equal(f.capture.forwardApi.capabilities().mergeExistingNative, false);
+    const request = { kind: 'existingMerge', source: SOURCE, msgIds: IDS, expectedEpoch: EPOCH };
+    await assert.rejects(f.capture.forwardApi.run({ ...request, diagnostic: true }), fails('INVALID_PARAMS'));
+    await assert.rejects(f.capture.forwardApi.run(request), fails('UNSUPPORTED'));
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(f.capture.forwardApi.diagnostics(), []);
+    const result = await f.probe();
+    assert.equal(result.confirmation, 'correlated-native-merge-and-resource-readback');
+    assert.equal(result.messageId, SENT);
+});
+
+test('direct formal RPC cannot bypass the disabled native variant with a valid media deadline', async t => {
+    const f = fixture(t);
+    await assert.rejects(f.capture.call('forwardOperation', { kind: 'existingMerge', source: SOURCE, msgIds: IDS,
+        expectedEpoch: EPOCH, timeoutMs: 60000 }, { expiresAt: Date.now() + 60000 }), fails('UNSUPPORTED'));
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.capture.bus.listenerCount('sent'), 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+    assert.deepEqual(f.capture.forwardApi.diagnostics(), []);
+});
+
+test('disabled formal requests never reserve a tuple or invoke a later native retry', async t => {
+    const f = fixture(t), request = { kind: 'existingMerge', source: SOURCE, msgIds: IDS, expectedEpoch: EPOCH, timeoutMs: 60000 };
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(f.capture.call('forwardOperation', request, { expiresAt: Date.now() + 12000 }), fails('UNSUPPORTED'));
+    }
+    assert.equal(f.calls.length, 0);
+    // The explicit private probe still exercises the strict reservation and
+    // complete confirmation implementation without advertising it as public.
+    await f.probe(); await assert.rejects(f.probe(), fails('BUSY'));
+    assert.equal(f.calls.filter(call => call.method === 'multiForwardMsgWithComment').length, 1);
+});
+
+test('formal existingMerge media timeout remains an integer bounded by sixty seconds', async t => {
+    for (const timeoutMs of [0, -1, 60001, '60000', NaN]) {
+        const f = fixture(t);
+        await assert.rejects(f.capture.forwardApi.run({ kind: 'existingMerge', source: SOURCE, msgIds: IDS,
+            expectedEpoch: EPOCH, timeoutMs }), fails('INVALID_PARAMS'));
+        assert.equal(f.calls.length, 0);
+    }
+});
+
+test('bounded merge status distinguishes an accepted native call from missing callback correlation without recording private data', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    try {
+        const f = fixture(t); let submitted;
+        const dispatched = new Promise(resolve => { submitted = resolve; });
+        f.handlers.submit = () => {
+            const record = { ...f.root, guildId: '', buildMultiMsgReqInfo: { srcMsgIds: [...IDS] } };
+            f.capture.bus.emit('sendObservation', { callback: 'onAddSendMsg', records: [record] });
+            f.capture.bus.emit('sent', [record]); submitted(); return { result: 0 };
+        };
+        const pending = f.probe({}, { expiresAt: Date.now() + 100 });
+        const rejected = assert.rejects(pending, error => ['TIMEOUT', 'EXPIRED'].includes(error.code));
+        await dispatched; await new Promise(resolve => setImmediate(resolve));
+        t.mock.timers.tick(100); await rejected;
+        const [status] = f.capture.forwardApi.diagnostics();
+        assert.equal(status.nativeInvoked, true); assert.equal(status.nativeSettled, true); assert.equal(status.nativeAccepted, true);
+        assert.equal(status.failedAt, 'native-and-delivery'); assert.equal(status.closed, true);
+        assert.equal(status.callbacks.missingGuild, 1); assert.equal(status.callbacks.success, 1); assert.equal(status.callbacks.correlationMatches, 0);
+        assert.equal(status.observations.exactSourceTuple, 1);
+        const encoded = JSON.stringify(status);
+        for (const value of [...IDS, SENT, SELF.uid, SELF.uin, SOURCE.peerUid, 'native-completed-resource', 'Original author']) assert.equal(encoded.includes(value), false, value);
+        status.callbacks.success = 999; assert.equal(f.capture.forwardApi.diagnostics()[0].callbacks.success, 1);
+        await assert.rejects(f.probe(), fails('BUSY')); assert.equal(f.calls.filter(call => call.method === 'multiForwardMsgWithComment').length, 1);
+        f.capture.forwardApi.clear(); assert.deepEqual(f.capture.forwardApi.diagnostics(), []);
+    } finally { t.mock.timers.reset(); }
+});
+
+test('merge status shows an unresolved native promise separately from an already matched delivery and records late settlement only as evidence', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    try {
+        const f = fixture(t); let submitted, settle;
+        const dispatched = new Promise(resolve => { submitted = resolve; });
+        f.handlers.submit = (...args) => {
+            f.capture.bus.emit('sent', [{ ...f.root, guildId: args[2].guildId }]); submitted();
+            return new Promise(resolve => { settle = resolve; });
+        };
+        const pending = f.probe({}, { expiresAt: Date.now() + 100 });
+        const rejected = assert.rejects(pending, error => ['TIMEOUT', 'EXPIRED'].includes(error.code));
+        await dispatched; t.mock.timers.tick(100); await rejected;
+        let [status] = f.capture.forwardApi.diagnostics();
+        assert.equal(status.nativePromise, true); assert.equal(status.nativeSettled, false); assert.equal(status.callbacks.correlationMatches, 1);
+        assert.equal(status.phase, 'expired'); assert.equal(status.closed, true);
+        settle({ result: 0 }); await new Promise(resolve => setImmediate(resolve));
+        [status] = f.capture.forwardApi.diagnostics(); assert.equal(status.lateNativeResult, true); assert.equal(status.phase, 'expired');
+        assert.equal(f.calls.some(call => call.method === 'getMultiMsg'), false); assert.equal(f.capture.bus.listenerCount('sent'), 0);
+        assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+    } finally { t.mock.timers.reset(); }
+});
+
+test('merge diagnostics retain early correlated callback evidence without treating a later uncorrelated delivery as success', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    try {
+        const f = fixture(t); let submitted;
+        const dispatched = new Promise(resolve => { submitted = resolve; });
+        f.handlers.submit = (...args) => {
+            f.capture.bus.emit('sendObservation', { callback: 'onAddSendMsg', records: [{ ...f.root, sendStatus: 1, guildId: args[2].guildId }] });
+            f.capture.bus.emit('sent', [{ ...f.root, guildId: '' }]); submitted(); return { result: 0 };
+        };
+        const operation = f.probe({}, { expiresAt: Date.now() + 100 });
+        const rejected = assert.rejects(operation, error => ['TIMEOUT', 'EXPIRED'].includes(error.code));
+        await dispatched; await new Promise(resolve => setImmediate(resolve));
+        t.mock.timers.tick(100); await rejected;
+        const [status] = f.capture.forwardApi.diagnostics();
+        assert.equal(status.observations.correlatedAdded, 1); assert.equal(status.observations.correlatedUpdated, 0);
+        assert.equal(status.observations.correlatedNativeId, true); assert.equal(status.callbacks.correlationMatches, 0);
+        assert.equal(status.phase, 'expired'); assert.equal(status.callbacks.missingGuild, 1);
+        assert.equal(f.calls.some(call => call.method === 'getMultiMsg'), false);
+        assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+        await assert.rejects(f.probe(), fails('BUSY'));
+    } finally { t.mock.timers.reset(); }
 });
 
 test('undefined native acknowledgement requires the same complete delivery and real resource proof', async t => {
@@ -182,7 +297,7 @@ test('cancelled or changed sessions before native submission never dispatch a me
 test('native private core accepts 1 through 20 existing source IDs without enabling any public merge action', async t => {
     for (const count of [1, 20]) {
         const f = fixture(t);
-        f.originals.splice(0, f.originals.length, ...Array.from({ length: count }, (_, index) => ({ ...SOURCE, msgId: String(index + 1), senderUin: '1515564167',
+        f.originals.splice(0, f.originals.length, ...Array.from({ length: count }, (_, index) => ({ ...SOURCE, msgId: String(index + 1), senderUin: '1000000003',
             senderUid: 'u_author', msgTime: '1794614400', sendNickName: 'Real author', elements: [text(' ' + index + '\n')] })));
         const result = await f.probe({ msgIds: f.originals.map(record => record.msgId) }); assert.equal(result.records.length, count);
     }

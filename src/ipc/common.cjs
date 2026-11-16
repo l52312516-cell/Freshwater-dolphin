@@ -7,7 +7,13 @@ const { fault } = require('../errors.cjs');
 const VERSION = 1;
 const LIMIT = 2 * 1024 * 1024;
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'msfCapture']);
+    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport']);
+const READ_ONLY = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo', 'groupMember', 'groupMembers',
+    'history', 'imageInfo', 'socialQuery', 'getMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery']);
+function cancellable(method, params) {
+    return READ_ONLY.has(method) || method === 'groupFiles' && ['group.filesList', 'group.fileInfo'].includes(params?.operation)
+        || method === 'forwardOperation' && params?.kind === 'read';
+}
 
 function privateDirectory(directory) {
     if (!path.isAbsolute(directory)) throw fault('INVALID_CONFIG', 'RPC directory must be absolute');
@@ -72,7 +78,12 @@ function claimOwner(file, metadata) {
     catch (error) { if (error.code === 'EEXIST') throw fault('BUSY', 'Process ownership recovery is already in progress'); throw error; }
     try {
         let previous;
-        try { previous = readJson(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        try { previous = readJson(file); } catch (error) {
+            // Exclusive creation becomes visible before the owner finishes its
+            // JSON write. An incomplete claim is occupied, never stale proof.
+            if (error instanceof SyntaxError) throw fault('BUSY', 'Process ownership metadata is incomplete or needs repair');
+            if (error.code !== 'ENOENT') throw error;
+        }
         if (previous && ownerIsAlive(previous)) throw fault('BUSY', 'A live process already owns this directory');
         if (previous) remove(file);
         try { create(); } catch (error) {
@@ -82,4 +93,4 @@ function claimOwner(file, metadata) {
     } finally { fs.rmdirSync(recovery); }
 }
 
-module.exports = { VERSION, LIMIT, METHODS, privateDirectory, readJson, writeJson, remove, processIdentity, ownerIsAlive, claimOwner };
+module.exports = { VERSION, LIMIT, METHODS, cancellable, privateDirectory, readJson, writeJson, remove, processIdentity, ownerIsAlive, claimOwner };

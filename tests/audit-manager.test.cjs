@@ -186,6 +186,7 @@ test('closing during backup acquisition waits for the writer and leaves stopped 
     const root = temporary(t); let release, finished;
     const config = { id: 'one', nodes: [], desired: 'running' };
     const accounts = { document: { profiles: [config], maintenance: {} }, processes: new Map(), get: () => config,
+        location: () => path.join(root, 'work/accounts/one'),
         maintain: async () => {
             accounts.document.maintenance.one = { operation: 'backup', phase: 'stopping' };
             await new Promise(resolve => { release = resolve; });

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeMergedNodes, MAX_NODES, MAX_SEGMENTS, MAX_TEXT_BYTES, MAX_NAME_BYTES, MAX_IMAGE_BYTES } = require('../src/onebot/merged-nodes.cjs');
 
-const SELF = '2068886823';
+const SELF = '1000000001';
 const PNG = 'base64://iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const text = value => ({ type: 'text', data: { text: value } });
 const image = (file = PNG) => ({ type: 'image', data: { file } });
@@ -31,7 +31,7 @@ test('canonical and legacy aliases normalize without silently changing conflicti
     const legacy = { type: 'node', data: { uin: Number(SELF), name: '  📊 汇总  ', content: [text(' a\n\nb ')] } };
     assert.deepEqual(normalize([legacy]), [{ user_id: SELF, nickname: '  📊 汇总  ', content: [text(' a\n\nb ')] }]);
     assert.equal(normalize([node(undefined, { uin: Number(SELF), name: '延迟检测机器人' })])[0].user_id, SELF);
-    rejects([node(undefined, { uin: '2441760163' })]);
+    rejects([node(undefined, { uin: '3000000002' })]);
     rejects([node(undefined, { name: 'different' })]);
     rejects([node(undefined, { nickname: ' name ', name: 'name' })]);
 });
@@ -50,8 +50,8 @@ test('CQ strings use ordinary escaping while preserving raw text array contents'
 test('a verified exact self author is required and other authors are explicitly unsupported', () => {
     assert.throws(() => normalizeMergedNodes([node()]), { code: 'NOT_READY' });
     assert.throws(() => normalizeMergedNodes([node()], {}), { code: 'NOT_READY' });
-    rejects([node(undefined, { user_id: '2441760163' })], 'UNSUPPORTED');
-    for (const user_id of ['', 0, -1, 1.5, '02068886823', '+2068886823', '2068886823 ', '9e8', 9007199254740992, '9007199254740992', {}, null]) {
+    rejects([node(undefined, { user_id: '3000000002' })], 'UNSUPPORTED');
+    for (const user_id of ['', 0, -1, 1.5, '01000000001', '+1000000001', '1000000001 ', '9e8', 9007199254740992, '9007199254740992', {}, null]) {
         rejects([node(undefined, { user_id })]);
     }
     const missing = node(); delete missing.data.user_id; rejects([missing]);

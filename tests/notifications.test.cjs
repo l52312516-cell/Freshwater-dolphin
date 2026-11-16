@@ -17,7 +17,7 @@ function webhook(overrides = {}) {
     return { id: 'hook-1', name: '值班 Webhook', type: 'webhook', enabled: true,
         url: 'https://notify.example.test/private?key=secret-query', token: 'private-bearer', ...overrides };
 }
-function account(id = 'a', uin = '2068886823') {
+function account(id = 'a', uin = '1000000001') {
     return { id, expectedUin: uin, boundUin: uin, state: 'online', desired: 'running',
         notifications: { enabled: true, channelIds: ['mail-1'] },
         health: { authorized: true, ready: true, online: true, selfId: uin, nickname: '海豚', sessionEpoch: 'first' } };
@@ -110,10 +110,10 @@ test('startup is a silent baseline; a sustained outage sends exactly one offline
     a.state = 'offline'; a.health.online = false; h.worker.observe();
     h.advance(29999); await settle(); assert.equal(h.sent.length, 0);
     h.advance(1); await settle(); assert.equal(h.sent.length, 1);
-    assert.equal(h.sent[0].message.subject, 'offline 2068886823 海豚');
+    assert.equal(h.sent[0].message.subject, 'offline 1000000001 海豚');
     h.worker.observe(); h.advance(60000); await settle(); assert.equal(h.sent.length, 1);
     a.state = 'online'; a.health.online = true; h.worker.observe(); await settle();
-    assert.equal(h.sent.length, 2); assert.equal(h.sent[1].message.subject, 'online 2068886823 海豚');
+    assert.equal(h.sent.length, 2); assert.equal(h.sent[1].message.subject, 'online 1000000001 海豚');
     h.worker.observe(); await settle(); assert.equal(h.sent.length, 2);
 });
 
@@ -168,7 +168,7 @@ test('manual stop, maintenance, bridge removal and explicit suppression cancel p
 
 test('wrong or duplicate QQ identities and account deletion do not notify another account', async t => {
     const h = harness(t); h.worker.update({ offlineDelaySeconds: 1, channels: [email()] });
-    const a = account(), b = account('b', '2441760163'); h.accounts.push(a, b); h.worker.observe();
+    const a = account(), b = account('b', '3000000002'); h.accounts.push(a, b); h.worker.observe();
     a.health.selfId = b.boundUin; a.state = 'account_mismatch'; h.worker.observe();
     b.state = 'duplicate_account'; h.worker.observe(); h.advance(1000); await settle(); assert.equal(h.sent.length, 0);
     h.accounts.splice(0); h.worker.observe(); assert.equal(h.worker.states.size, 0);
@@ -176,8 +176,8 @@ test('wrong or duplicate QQ identities and account deletion do not notify anothe
 
 test('per-account channel selection and disabled channels remain isolated', async t => {
     const h = harness(t); h.worker.update({ offlineDelaySeconds: 0, channels: [email(), email({ id: 'mail-2', enabled: false })] });
-    const a = account(), b = account('b', '2441760163'); b.notifications.channelIds = ['mail-2'];
-    const c = account('c', '3834835490'); c.notifications.enabled = false;
+    const a = account(), b = account('b', '3000000002'); b.notifications.channelIds = ['mail-2'];
+    const c = account('c', '3000000005'); c.notifications.enabled = false;
     h.accounts.push(a, b, c); h.worker.observe();
     for (const item of h.accounts) { item.state = 'offline'; item.health.online = false; } h.worker.observe(); await settle();
     assert.equal(h.sent.length, 1); assert.ok(h.sent[0].message.subject.includes(a.boundUin));

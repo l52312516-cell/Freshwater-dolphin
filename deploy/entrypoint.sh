@@ -8,4 +8,7 @@ export XDG_CONFIG_HOME=/workspace/work/config XDG_DATA_HOME=/workspace/work/data
 export XDG_RUNTIME_DIR=/workspace/work/runtime npm_config_cache=/workspace/work/cache/npm
 mkdir -p "$TEMP" "$HOME" "$XDG_CACHE_HOME/downloads" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR" work/accounts work/control work/logs work/state
 chmod 700 "$TEMP" "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR" work/accounts work/control work/logs work/state
+: "${FWD_MSF_ADDON_PATH:=/workspace/runtime/native/msf-capture.node}"
+export FWD_MSF_ADDON_PATH
+node tools/build-native.cjs --verify
 exec node src/manager/cli.cjs

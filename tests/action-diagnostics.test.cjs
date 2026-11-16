@@ -33,7 +33,7 @@ test('unknown action names remain absent from diagnostic logs even when they loo
 test('forward RPC cannot act without the expected authenticated session epoch', async t => {
     const capture = new Capture({ install: false, qqVersion: TARGET_VERSION });
     t.after(() => capture.close());
-    capture.ready = true; capture.session = {}; capture.self = { uin: '2441760163', uid: 'u_self' };
+    capture.ready = true; capture.session = {}; capture.self = { uin: '3000000002', uid: 'u_self' };
     let dispatched = 0;
     capture.forwardApi.run = async () => { dispatched++; return {}; };
     for (const expectedEpoch of [undefined, 'retired-epoch']) {
@@ -46,7 +46,7 @@ test('forward RPC cannot act without the expected authenticated session epoch', 
 
 test('group-list no_cache requests reach the native refresh boundary and reject string booleans', async () => {
     const calls = [];
-    const state = { ready: true, epoch: 'live', self: { uin: '2441760163', uid: 'u_self' } };
+    const state = { ready: true, epoch: 'live', self: { uin: '3000000002', uid: 'u_self' } };
     const service = new OneBotService({ store: {}, backend: { async call(method, params) {
         calls.push({ method, params }); return method === 'status' ? state : [];
     } } });

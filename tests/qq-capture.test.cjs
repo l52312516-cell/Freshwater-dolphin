@@ -212,6 +212,238 @@ test('send timeout preserves unknown delivery, cleans listeners, and does not re
   } finally { f.capture.close(); }
 });
 
+function correlatedSend(f, timeoutMs = 100) {
+  return f.capture.call('sendMessage', { expectedEpoch: f.capture.epoch, peer: { chatType: 2, peerUid: '200' },
+    elements: [{ elementType: 1, textElement: { content: 'private-body-must-not-enter-diagnostic' } }], timeoutMs });
+}
+function earlyOwn(peer, msgId = '18446744073709551000') {
+  return { ...peer, msgId, senderUin: '123', senderUid: 'u_123', sendStatus: 1 };
+}
+
+test('an early exact correlation binds the native ID for read-only confirmation when later callbacks disappear', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  let sends = 0, early;
+  const queries = [];
+  f.msg.sendMsg = (_zero, peer) => { sends++; early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return { result: 0 }; };
+  f.msg.getMsgsByMsgId = async (...args) => { queries.push(args); return { result: 0, msgList: [{ ...early, guildId: '', sendStatus: 2 }] }; };
+  const record = await correlatedSend(f);
+  assert.equal(record.msgId, '18446744073709551000'); assert.equal(record.guildId, ''); assert.equal(sends, 1);
+  assert.deepEqual(queries, [[{ chatType: 2, peerUid: '200', guildId: '' }, ['18446744073709551000']]]);
+  assert.notEqual(early.guildId, early.msgId);
+  assert.equal(f.capture.bus.listenerCount('sent'), 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('an unrelated readback ID cannot confirm a pinned send and timeout diagnostics contain only bounded metadata', async t => {
+  const diagnostics = [], f = fixture({ log: value => diagnostics.push(value) }); t.after(() => f.capture.close()); f.init()();
+  let sends = 0, early, queries = 0;
+  f.msg.sendMsg = (_zero, peer) => { sends++; early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return { result: 0 }; };
+  f.msg.getMsgsByMsgId = async () => { queries++; return { result: 0, msgList: [{ ...early, msgId: '99', guildId: '', sendStatus: 2 }] }; };
+  await assert.rejects(correlatedSend(f, 35), { code: 'TIMEOUT' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sends, 1); assert.equal(queries, 1);
+  const diagnostic = diagnostics.filter(value => value.code === 'SEND_CONFIRMATION_TIMEOUT'); assert.equal(diagnostic.length, 1);
+  assert.deepEqual(JSON.parse(diagnostic[0].message), { acceptance: 'accepted', acceptanceThenable: false, exactCallbacks: 1,
+    pinned: true, lastStatus: 1, queryCount: 1, queryResult: 'identity-mismatch' });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private-body|18446744073709551000|u_123|peerUid|token|filePath/);
+  assert.equal(f.capture.pending.size, 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('uncorrelated or wrongly owned early callbacks never authorize an exact native query', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  let queries = 0, sends = 0;
+  f.msg.sendMsg = (_zero, peer) => {
+    sends++;
+    for (const record of [earlyOwn({ ...peer, guildId: '' }), { ...earlyOwn(peer), senderUid: 'u_other' },
+      { ...earlyOwn(peer), senderUin: '456' }, { ...earlyOwn(peer), peerUid: '201' }]) f.listeners.msg.onAddSendMsg(record);
+    return { result: 0 };
+  };
+  f.msg.getMsgsByMsgId = async () => { queries++; assert.fail('No exact native identity was proven'); };
+  await assert.rejects(correlatedSend(f, 25), { code: 'TIMEOUT' });
+  assert.equal(sends, 1); assert.equal(queries, 0);
+});
+
+test('an exact own delivery confirms success even when the native acceptance Promise stays pending', async t => {
+  const diagnostics = [], f = fixture({ log: value => diagnostics.push(value) }); t.after(() => f.capture.close()); f.init()();
+  let sends = 0, queries = 0, release;
+  f.msg.sendMsg = (_zero, peer) => {
+    sends++; const record = { ...earlyOwn(peer), sendStatus: 2 };
+    f.listeners.msg.onAddSendMsg(record); f.listeners.msg.onMsgInfoListUpdate([record]);
+    return new Promise(resolve => { release = resolve; });
+  };
+  f.msg.getMsgsByMsgId = async () => { queries++; assert.fail('The exact delivery callback already proves this message'); };
+  const record = await correlatedSend(f, 100);
+  assert.equal(record.msgId, '18446744073709551000'); assert.equal(record.sendStatus, 2);
+  const diagnostic = f.capture.state().sendDiagnostics[0];
+  assert.equal(diagnostic.outcome, 'success'); assert.equal(diagnostic.acceptance, 'pending'); assert.equal(diagnostic.acceptanceThenable, true);
+  assert.equal(diagnostic.exactCallbacks, 2); assert.equal(diagnostic.pinned, true); assert.equal(diagnostic.lastStatus, 2);
+  assert.equal(diagnostics.some(value => value.code === 'SEND_CONFIRMATION_TIMEOUT'), false);
+  assert.equal(sends, 1); assert.equal(queries, 0); release({ result: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queries, 0); assert.equal(f.capture.pending.size, 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('a pending exact readback is cancelled at the request deadline and its late result cannot restart polling', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  let queries = 0, early, release;
+  f.msg.sendMsg = (_zero, peer) => { early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return { result: 0 }; };
+  f.msg.getMsgsByMsgId = () => {
+    queries++; f.listeners.msg.onAddSendMsg(early);
+    return new Promise(resolve => { release = resolve; });
+  };
+  await assert.rejects(correlatedSend(f, 30), { code: 'TIMEOUT' });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(f.capture.pending.size, 0);
+  release({ result: 0, msgList: [{ ...early, guildId: '', sendStatus: 2 }] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queries, 1); assert.equal(f.capture.pending.size, 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('explicit native rejection is never overridden by an early correlated identity', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let queries = 0;
+  f.msg.sendMsg = (_zero, peer) => { f.listeners.msg.onAddSendMsg(earlyOwn(peer)); return { result: 7 }; };
+  f.msg.getMsgsByMsgId = async () => { queries++; assert.fail('A rejected send cannot begin readback confirmation'); };
+  await assert.rejects(correlatedSend(f), { code: 'KERNEL_ERROR' }); assert.equal(queries, 0);
+});
+
+test('an exact readback of sendStatus zero reports failure without repeating submission', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let sends = 0, queries = 0, early;
+  f.msg.sendMsg = (_zero, peer) => { sends++; early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return { result: 0 }; };
+  f.msg.getMsgsByMsgId = async () => { queries++; return { result: 0, msgList: [{ ...early, guildId: '', sendStatus: 0 }] }; };
+  await assert.rejects(correlatedSend(f), { code: 'SEND_FAILED' }); assert.equal(sends, 1); assert.equal(queries, 1);
+});
+
+test('concurrent sends to the same peer retain separate correlation-bound native IDs', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  const records = new Map(), queried = [], sent = [];
+  f.msg.sendMsg = (_zero, peer) => {
+    const record = earlyOwn(peer, (18446744073709550000n + BigInt(peer.guildId)).toString());
+    sent.push(record.msgId); records.set(record.msgId, record); f.listeners.msg.onAddSendMsg(record); return { result: 0 };
+  };
+  f.msg.getMsgsByMsgId = async (_peer, ids) => {
+    queried.push(ids[0]); return { result: 0, msgList: [{ ...records.get(ids[0]), guildId: '', sendStatus: 2 }] };
+  };
+  const responses = await Promise.all([correlatedSend(f), correlatedSend(f)]);
+  assert.equal(new Set(responses.map(record => record.msgId)).size, 2);
+  assert.deepEqual(responses.map(record => record.msgId).sort(), sent.sort()); assert.deepEqual(queried.sort(), sent);
+  assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('bounded status diagnostics survive unavailable console logging and never expose send identities or contents', async t => {
+  const f = fixture({ log() { throw new Error('QQ console redirected'); } }); t.after(() => f.capture.close()); f.init()();
+  let sends = 0, queries = 0;
+  f.msg.sendMsg = (_zero, peer) => {
+    sends++;
+    f.listeners.msg.onAddSendMsg({ ...earlyOwn(peer), guildId: '' });
+    return { result: 0 };
+  };
+  f.msg.getMsgsByMsgId = async () => { queries++; assert.fail('Uncorrelated callbacks cannot authorize queries'); };
+  await assert.rejects(correlatedSend(f, 30), { code: 'TIMEOUT' });
+  const state = await f.capture.call('status'), row = state.sendDiagnostics[0];
+  assert.equal(row.outcome, 'timeout'); assert.equal(row.phase, 'confirmation');
+  assert.equal(row.acceptance, 'accepted'); assert.equal(row.dispatched, true); assert.equal(row.pinned, false);
+  assert.equal(row.callbackCount, 1); assert.equal(row.ownPeerCallbacks, 1); assert.equal(row.nonemptyGuildCallbacks, 0);
+  assert.equal(row.exactCallbacks, 0); assert.equal(row.queryCount, 0); assert.equal(sends, 1); assert.equal(queries, 0);
+  assert.equal(Number.isSafeInteger(row.at), true); assert.equal(Number.isSafeInteger(row.finishedAt), true);
+  assert.doesNotMatch(JSON.stringify(state.sendDiagnostics), /18446744073709551000|u_123|private-body|peerUid|token|filePath/);
+  state.sendDiagnostics[0].phase = 'outside-mutation'; state.sendDiagnostics.push({ untrusted: true });
+  assert.equal(f.capture.state().sendDiagnostics.length, 1); assert.equal(f.capture.state().sendDiagnostics[0].phase, 'confirmation');
+});
+
+test('status diagnostics preserve pending acceptance and ignore its late settlement', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let release;
+  f.msg.sendMsg = (_zero, peer) => {
+    f.listeners.msg.onMsgInfoListUpdate([earlyOwn(peer)]);
+    return new Promise(resolve => { release = resolve; });
+  };
+  await assert.rejects(correlatedSend(f, 25), { code: 'TIMEOUT' });
+  const before = f.capture.state().sendDiagnostics;
+  assert.equal(before[0].acceptance, 'pending'); assert.equal(before[0].outcome, 'timeout'); assert.equal(before[0].pinned, true);
+  release({ result: 0 }); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.capture.state().sendDiagnostics, before);
+});
+
+test('a pinned exact readback proves delivery while the native acceptance Promise is pending', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let early, sends = 0, queries = 0;
+  f.msg.sendMsg = (_zero, peer) => {
+    sends++; early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return new Promise(() => {});
+  };
+  f.msg.getMsgsByMsgId = async (_peer, ids) => {
+    queries++; assert.deepEqual(ids, ['18446744073709551000']);
+    return { result: 0, msgList: [{ ...early, guildId: '', sendStatus: 2 }] };
+  };
+  const record = await correlatedSend(f);
+  assert.equal(record.sendStatus, 2); assert.equal(record.msgId, early.msgId); assert.equal(sends, 1); assert.equal(queries, 1);
+  const evidence = f.capture.state().sendDiagnostics[0]; assert.equal(evidence.acceptance, 'pending'); assert.equal(evidence.outcome, 'success');
+});
+
+test('wrong or incomplete identities cannot promote a pending native Promise to delivery success', async t => {
+  for (const change of [{ peerUid: '201' }, { senderUin: '456' }, { senderUid: 'u_other' }, { senderUid: undefined },
+    { guildId: '999' }, { msgId: 'not-a-native-id' }, { sendStatus: 3 }]) {
+    const f = fixture(); t.after(() => f.capture.close()); f.init()(); let sends = 0;
+    f.msg.sendMsg = (_zero, peer) => {
+      sends++; f.listeners.msg.onMsgInfoListUpdate([{ ...earlyOwn(peer), sendStatus: 2, ...change }]); return new Promise(() => {});
+    };
+    f.msg.getMsgsByMsgId = async () => ({ result: 0, msgList: [] });
+    await assert.rejects(correlatedSend(f, 20), { code: 'TIMEOUT' }); assert.equal(sends, 1);
+  }
+});
+
+test('explicit acceptance rejection known before completion wins over synchronous delivery', async t => {
+  for (const rejectKind of ['result', 'promise', 'throw']) {
+    const f = fixture(); t.after(() => f.capture.close()); f.init()(); let sends = 0;
+    f.msg.sendMsg = (_zero, peer) => {
+      sends++; f.listeners.msg.onMsgInfoListUpdate([{ ...earlyOwn(peer), sendStatus: 2 }]);
+      if (rejectKind === 'throw') throw Object.assign(new Error('Native refused'), { code: 'KERNEL_ERROR' });
+      if (rejectKind === 'promise') return Promise.reject(Object.assign(new Error('Native refused'), { code: 'KERNEL_ERROR' }));
+      return { result: 7 };
+    };
+    await assert.rejects(correlatedSend(f), { code: 'KERNEL_ERROR' }); assert.equal(sends, 1);
+    assert.equal(f.capture.state().sendDiagnostics[0].outcome, 'failed');
+    assert.equal(f.capture.state().sendDiagnostics[0].acceptance, 'rejected');
+  }
+});
+
+test('a late native rejection after proven delivery is observed without mutating the finished evidence', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let rejectNative;
+  f.msg.sendMsg = (_zero, peer) => {
+    f.listeners.msg.onMsgInfoListUpdate([{ ...earlyOwn(peer), sendStatus: 2 }]);
+    return new Promise((_resolve, reject) => { rejectNative = reject; });
+  };
+  await correlatedSend(f);
+  const evidence = f.capture.state().sendDiagnostics;
+  rejectNative(Object.assign(new Error('late transport failure'), { code: 'KERNEL_ERROR' }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.capture.state().sendDiagnostics, evidence); assert.equal(evidence[0].outcome, 'success');
+  assert.equal(f.capture.bus.listenerCount('sent'), 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
+test('delivery arriving after an unconfirmed request timed out cannot revive or resend it', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let record, sends = 0, accept;
+  f.msg.sendMsg = (_zero, peer) => { sends++; record = { ...earlyOwn(peer), sendStatus: 2 }; return new Promise(resolve => { accept = resolve; }); };
+  await assert.rejects(correlatedSend(f, 20), { code: 'TIMEOUT' });
+  const evidence = f.capture.state().sendDiagnostics;
+  f.listeners.msg.onMsgInfoListUpdate([record]); accept({ result: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.capture.state().sendDiagnostics, evidence); assert.equal(evidence[0].outcome, 'timeout'); assert.equal(sends, 1);
+});
+
+test('send status evidence finalizes the preparation phase when the outer deadline expires during a pending native query', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  f.msg.generateMsgUniqueId = () => new Promise(() => {});
+  await assert.rejects(correlatedSend(f, 25), { code: 'TIMEOUT' });
+  await new Promise(resolve => setImmediate(resolve));
+  const row = f.capture.state().sendDiagnostics[0];
+  assert.equal(row.phase, 'correlation'); assert.equal(row.outcome, 'timeout'); assert.equal(row.dispatched, false);
+  assert.equal(row.acceptance, 'not-dispatched'); assert.equal(row.callbackCount, 0);
+});
+
+test('send status evidence is limited to eight entries and cleared on session replacement', async t => {
+  const f = fixture(); t.after(() => f.capture.close()); f.init()();
+  for (let index = 0; index < 12; index++) await correlatedSend(f);
+  const rows = f.capture.state().sendDiagnostics; assert.equal(rows.length, 8);
+  assert.equal(rows.every(row => row.outcome === 'success' && row.acceptance === 'accepted'), true);
+  f.init()(); assert.deepEqual(f.capture.state().sendDiagnostics, []);
+});
+
 test('session switch rejects pending sends and makes previous callbacks passive', async () => {
   const f = fixture();
   try {

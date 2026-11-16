@@ -101,6 +101,7 @@ class Accounts {
         this.operations = new Map();
         this.stopping = new Set();
         this.busy = new Set();
+        this.persistenceBlocked = new Set();
         this.closing = false;
         this.document = read(this.file, { version: 1, profiles: [], maintenance: {} });
         if (this.document.version !== 1 || !Array.isArray(this.document.profiles) || !this.document.maintenance) throw fail('INVALID_CONFIG', 'Invalid account registry');
@@ -121,6 +122,30 @@ class Accounts {
         return item;
     }
     persist() { atomic(this.file, this.document); }
+    commitProfile(id, next, { create = false } = {}) {
+        const before = structuredClone(this.document);
+        const item = create ? next : this.get(id);
+        const previous = create ? null : structuredClone(item);
+        if (create) this.document.profiles.push(item);
+        else Object.assign(item, next);
+        try { this.persist(); this.persistenceBlocked.delete(id); return null; }
+        catch (error) {
+            let durable;
+            try { durable = read(this.file); } catch { /* deny authorization until the registry can be repaired */ }
+            // rename may have committed before fsync reports an error. Keep the
+            // committed state and explicitly return its durability warning.
+            if (durable && JSON.stringify(durable) === JSON.stringify(this.document)) {
+                this.persistenceBlocked.delete(id); return error.code || 'PERSISTENCE_WARNING';
+            }
+            if (create) this.document.profiles = this.document.profiles.filter(value => value !== item);
+            else { for (const key of Object.keys(item)) delete item[key]; Object.assign(item, previous); }
+            if (!durable || JSON.stringify(durable) !== JSON.stringify(before)) {
+                this.persistenceBlocked.add(id); this.states.set(id, 'persistence_failed');
+                try { this.clearGrant(id); } catch { /* keep blocked in memory even if revocation cannot be written */ }
+            }
+            throw error;
+        }
+    }
     list() {
         return this.document.profiles.map(item => ({ ...sanitize(item), state: this.states.get(item.id) || 'stopped',
             health: this.healths.get(item.id) || null, maintenance: this.document.maintenance[item.id] || null }));
@@ -130,9 +155,9 @@ class Accounts {
         if (this.document.profiles.some(old => old.id === item.id)) throw fail('CONFLICT', 'Instance already exists', 409);
         if (this.document.profiles.length >= 32) throw fail('LIMIT', 'At most 32 saved instances are allowed');
         privateDirectory(this.root, path.join('work/accounts', item.id));
-        this.document.profiles.push(item); this.persist();
+        const persistenceWarning = this.commitProfile(item.id, item, { create: true });
         this.states.set(item.id, 'stopped'); this.onChange();
-        return sanitize(item);
+        return { ...sanitize(item), ...(persistenceWarning ? { persistenceWarning } : {}) };
     }
     async update(id, input) {
         return this.operate(id, () => this.updateAccount(id, input));
@@ -140,10 +165,8 @@ class Accounts {
     async updateNotifications(id, input) {
         const selection = notificationSelection(input);
         return this.operate(id, () => {
-            const item = this.get(id), previous = item.notifications, revision = item.revision;
-            item.notifications = selection; item.revision++;
-            try { this.persist(); }
-            catch (error) { item.notifications = previous; item.revision = revision; throw error; }
+            const item = this.get(id);
+            this.commitProfile(id, { notifications: selection, revision: item.revision + 1 });
             this.onChange();
             return selection;
         });
@@ -164,12 +187,22 @@ class Accounts {
         const next = profile(input, item);
         const running = this.processes.has(id);
         if (running) await this.stopAccount(id, { preserveIntent: true });
-        Object.assign(item, next); this.persist();
+        let persistenceWarning;
+        try { persistenceWarning = this.commitProfile(id, next); }
+        catch (error) {
+            // A rejected configuration must not silently leave a previously
+            // running account stopped when its old durable config is intact.
+            if (running && !this.persistenceBlocked.has(id)) {
+                try { await this.startAccount(id, { automatic: true }); }
+                catch { this.states.set(id, 'apply_failed'); }
+            }
+            this.onChange(); throw error;
+        }
         if (running) {
             try { await this.startAccount(id, { automatic: true }); }
             catch (error) { this.states.set(id, 'apply_failed'); this.onChange(); return { ...sanitize(item), saved: true, applied: false, error: error.code }; }
         }
-        this.onChange(); return { ...sanitize(item), saved: true, applied: true };
+        this.onChange(); return { ...sanitize(item), saved: true, applied: true, ...(persistenceWarning ? { persistenceWarning } : {}) };
     }
     async install(id) { return this.changeBridge(id, true); }
     async uninstall(id) { return this.changeBridge(id, false); }
@@ -346,6 +379,7 @@ class Accounts {
     async startAccount(id, { automatic = false } = {}) {
         const item = this.get(id);
         if (this.closing) throw fail('CLOSING', 'Manager is stopping', 503);
+        if (this.persistenceBlocked.has(id)) throw fail('PERSISTENCE_UNAVAILABLE', 'Account registry requires repair before starting', 503);
         if (this.document.maintenance[id]) throw fail('MAINTENANCE', 'Instance is in maintenance', 409);
         const restoreJournal = read(path.join(this.control, 'restore-journal.json'), null);
         if (restoreJournal && (!Array.isArray(restoreJournal.ids) || restoreJournal.ids.includes(id))) throw fail('MAINTENANCE', 'Restore recovery is pending', 409);
@@ -360,12 +394,17 @@ class Accounts {
         if (process.platform !== 'linux' && !this.customPlatform) throw fail('PLATFORM', 'QQ instances require Linux x64', 409);
         this.assertStopped(id);
         this.clearRetry(id);
+        const previousIntent = item.desired;
+        let persistenceWarning;
         try {
             const base = this.location(id), config = this.writeConfig(id);
             this.clearGrant(id);
             const healthFile = path.join(base, 'state/health.json');
             if (fs.existsSync(healthFile)) fs.unlinkSync(healthFile);
             const display = this.allocateDisplay(id);
+            // Commit running intent before any process can become ready. A
+            // rejected write must never leave an unreported live QQ worker.
+            persistenceWarning = this.commitProfile(id, { desired: 'running' });
             const child = this.spawnAccount({ cwd: this.root, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
                 env: { ...process.env, FWD_MANAGER_ROOT: this.root, FWD_ACCOUNT_ROOT: base, FWD_CONFIG: config, FWD_RPC_DIR: path.join(base, 'rpc'),
                     FWD_BRIDGE_ENABLED: item.bridgeInstalled === false ? '0' : '1',
@@ -378,11 +417,18 @@ class Accounts {
             child.stdout?.resume(); child.stderr?.resume();
             child.once('error', () => this.exit(id, child));
             child.once('exit', () => { child.freshwaterExited = true; this.exit(id, child); });
-            item.desired = 'running'; this.persist();
             if (!automatic) this.retries.delete(id);
             this.states.set(id, item.bridgeInstalled === false ? 'qq_only' : 'starting'); this.onChange();
-            return this.list().find(item => item.id === id);
-        } catch (error) { this.clearGrant(id); throw error; }
+            return { ...this.list().find(item => item.id === id), ...(persistenceWarning ? { persistenceWarning } : {}) };
+        } catch (error) {
+            this.clearGrant(id);
+            if (this.get(id).desired !== previousIntent) {
+                try { this.commitProfile(id, { desired: previousIntent }); }
+                catch { this.persistenceBlocked.add(id); this.states.set(id, 'persistence_failed'); }
+            }
+            if (this.processes.has(id)) await this.stopAccount(id, { preserveIntent: true }).catch(() => {});
+            throw error;
+        }
     }
     clearGrant(id) {
         const file = path.join(this.location(id), 'state/authorization.json');
@@ -417,7 +463,7 @@ class Accounts {
     async stopAccount(id, { preserveIntent = false } = {}) {
         const item = this.get(id);
         this.clearRetry(id);
-        if (!preserveIntent) { item.desired = 'stopped'; this.persist(); }
+        if (!preserveIntent) this.commitProfile(id, { desired: 'stopped' });
         this.clearGrant(id);
         const child = this.processes.get(id);
         if (!child) { this.assertStopped(id); this.displays.delete(id); this.healths.delete(id); this.states.set(id, 'stopped'); return; }
@@ -471,6 +517,7 @@ class Accounts {
         this.onChange();
     }
     pollAccount(id, claimed) {
+        if (this.persistenceBlocked.has(id)) { this.clearGrant(id); this.healths.delete(id); this.states.set(id, 'persistence_failed'); return; }
         if (this.get(id).bridgeInstalled === false) {
             this.clearGrant(id); this.healths.delete(id);
             if (!this.stopping.has(id)) this.states.set(id, 'qq_only');
@@ -496,7 +543,7 @@ class Accounts {
         try { old = read(authorization, null); } catch { this.clearGrant(id); old = null; }
         if (!old || old.profileId !== id || old.uin !== uin || old.epoch !== epoch || typeof old.managementToken !== 'string' || old.managementToken.length < 32) atomic(authorization, {
             profileId: id, uin, epoch, managementToken: crypto.randomBytes(32).toString('base64url') });
-        if (!item.boundUin) { item.boundUin = uin; this.persist(); }
+        if (!item.boundUin) this.commitProfile(id, { boundUin: uin });
         this.states.set(id, health.online === true ? 'online' : health.online === false ? 'offline' : 'online_unknown');
     }
     gateway(id) {

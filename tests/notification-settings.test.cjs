@@ -74,8 +74,8 @@ test('notification channel validation fails atomically and omitted credentials s
 test('account notification binding is isolated and hot, preserving QQ process and protocol secrets', async t => {
     const { accounts, request, configure, children, headers } = await fixture(t);
     await configure();
-    accounts.create({ id: 'alpha', expectedUin: '2068886823', nodes: [{ id: 'bot', type: 'wsClient', url: 'ws://127.0.0.1:12345', token: 'node-secret' }] });
-    accounts.create({ id: 'beta', expectedUin: '2441760163' });
+    accounts.create({ id: 'alpha', expectedUin: '1000000001', nodes: [{ id: 'bot', type: 'wsClient', url: 'ws://127.0.0.1:12345', token: 'node-secret' }] });
+    accounts.create({ id: 'beta', expectedUin: '3000000002' });
     await accounts.start('alpha');
     const child = accounts.processes.get('alpha');
     const selection = { enabled: true, channelIds: ['ops.webhook'] };
@@ -152,10 +152,10 @@ test('removing a channel permits retaining or disabling its existing account bin
 test('manager observes only authenticated QQ transitions and suppresses intentional stops', async t => {
     const { accounts, manager, request, configure, deliveries } = await fixture(t);
     await configure();
-    accounts.create({ id: 'alpha', expectedUin: '2068886823' });
+    accounts.create({ id: 'alpha', expectedUin: '1000000001' });
     await accounts.start('alpha');
     await request('PATCH', '/api/accounts/alpha/notifications', { enabled: true, channelIds: ['ops.webhook'] });
-    const health = { selfId: '2068886823', sessionEpoch: 'first', authorized: true, ready: true, online: true, nickname: 'Real QQ nickname' };
+    const health = { selfId: '1000000001', sessionEpoch: 'first', authorized: true, ready: true, online: true, nickname: 'Real QQ nickname' };
     accounts.healths.set('alpha', health); accounts.states.set('alpha', 'online');
     manager.notifications.observe();
     assert.equal(deliveries.length, 0);
@@ -164,7 +164,7 @@ test('manager observes only authenticated QQ transitions and suppresses intentio
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].body.event, 'offline');
-    assert.equal(deliveries[0].body.uin, '2068886823');
+    assert.equal(deliveries[0].body.uin, '1000000001');
     accounts.healths.set('alpha', health); accounts.states.set('alpha', 'online');
     manager.notifications.observe();
     await new Promise(resolve => setImmediate(resolve));
@@ -178,7 +178,7 @@ test('manager observes only authenticated QQ transitions and suppresses intentio
 test('ordinary backup and restore disable account notifications and never embed channel credentials', async t => {
     const { accounts, root, configure } = await fixture(t);
     await configure();
-    accounts.create({ id: 'alpha', expectedUin: '2068886823', notifications: { enabled: true, channelIds: ['ops.webhook'] } });
+    accounts.create({ id: 'alpha', expectedUin: '1000000001', notifications: { enabled: true, channelIds: ['ops.webhook'] } });
     const backups = new Backups(root, accounts);
     const saved = await backups.create({ profileIds: ['alpha'], kind: 'ordinary' });
     const document = await decode(fs.readFileSync(backups.file(saved.id)));

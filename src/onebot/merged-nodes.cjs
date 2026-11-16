@@ -157,4 +157,22 @@ function normalizeMergedNodes(messages, options) {
     return result;
 }
 
-module.exports = { normalizeMergedNodes, MAX_NODES, MAX_SEGMENTS, MAX_TEXT_BYTES, MAX_NAME_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES };
+function existingNodeIds(messages) {
+    let anyId = false, allIds = true;
+    const ids = [];
+    for (const source of array(messages, MAX_NODES, 'nodes')) {
+        const node = record(source, ['type', 'data'], 'node');
+        if (node.type !== 'node') throw problem('UNSUPPORTED', 'Merged messages require node segments');
+        const data = record(node.data, ['id', 'user_id', 'uin', 'nickname', 'name', 'content'], 'node data');
+        if (!Object.hasOwn(data, 'id')) { allIds = false; continue; }
+        anyId = true;
+        if (Object.keys(data).length !== 1 || !['string', 'number'].includes(typeof data.id) || !/^-?[1-9]\d*$/.test(String(data.id)) ||
+            !Number.isInteger(Number(data.id)) || Number(data.id) < -0x80000000 || Number(data.id) > 0x7fffffff) throw problem('INVALID_PARAMS', 'Existing node requires only one nonzero 32-bit message id');
+        ids.push(Number(data.id));
+    }
+    if (anyId && !allIds) throw problem('UNSUPPORTED', 'Existing ID nodes cannot be mixed with custom nodes');
+    if (anyId && (ids.length > 20 || new Set(ids).size !== ids.length)) throw problem('INVALID_PARAMS', 'Existing merged nodes require 1 to 20 distinct message IDs');
+    return anyId ? ids : null;
+}
+
+module.exports = { normalizeMergedNodes, existingNodeIds, MAX_NODES, MAX_SEGMENTS, MAX_TEXT_BYTES, MAX_NAME_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES };

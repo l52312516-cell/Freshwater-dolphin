@@ -7,7 +7,7 @@ const { createMergedSend } = require('../src/qq/merged-send.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const SELF = { uid: 'u_self', uin: '2068886823' }, DEST = { chatType: 2, peerUid: '1103828635' }, EPOCH = 'custom-merge-session';
+const SELF = { uid: 'u_self', uin: '1000000001' }, DEST = { chatType: 2, peerUid: '2000000001' }, EPOCH = 'custom-merge-session';
 const text = content => ({ elementType: 1, textElement: { content, atType: 0 } });
 const fails = code => error => { assert.equal(error.code, code, error.stack); return true; };
 function fixture(t) {

@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
         const base = accounts.location(id);
         for (const name of ['state', 'home', 'data', 'config', 'qq-root/opt/QQ/resources/app']) fs.mkdirSync(path.join(base, name), { recursive: true });
         fs.writeFileSync(path.join(base, 'home/login.dat'), 'login-' + id);
-        fs.writeFileSync(path.join(base, 'data/2068886823.json'), 'message-mapping-' + id);
+        fs.writeFileSync(path.join(base, 'data/1000000001.json'), 'message-mapping-' + id);
         const app = path.join(base, 'qq-root/opt/QQ/resources/app');
         fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ main: 'main.cjs', name: id }) + '\n');
         fs.writeFileSync(path.join(app, 'main.cjs'), 'module.exports = {};\n');
@@ -53,8 +53,8 @@ test('bridge uninstall restores only its owned entry and restarts QQ without del
     assert.deepEqual(fs.readFileSync(path.join(b.app, 'package.json')), originalB);
     assert.equal(f.accounts.processes.get('b'), f.children[1]);
     assert.equal(fs.readFileSync(path.join(a.base, 'home/login.dat'), 'utf8'), 'login-a');
-    assert.equal(fs.readFileSync(path.join(a.base, 'data/2068886823.json'), 'utf8'), 'message-mapping-a');
-    atomic(path.join(a.base, 'state/health.json'), { at: Date.now(), ready: true, online: true, selfId: '2068886823', sessionEpoch: 'stale', gatewayPort: 12000 });
+    assert.equal(fs.readFileSync(path.join(a.base, 'data/1000000001.json'), 'utf8'), 'message-mapping-a');
+    atomic(path.join(a.base, 'state/health.json'), { at: Date.now(), ready: true, online: true, selfId: '1000000001', sessionEpoch: 'stale', gatewayPort: 12000 });
     atomic(path.join(a.base, 'state/authorization.json'), { stale: true });
     f.accounts.poll();
     assert.equal(f.accounts.states.get('a'), 'qq_only'); assert.equal(f.accounts.healths.has('a'), false);
@@ -250,5 +250,5 @@ test('recursive deletion unlinks nested directory links without touching their a
     catch (error) { if (error.code === 'EPERM') { t.skip('Directory links unavailable'); return; } throw error; }
     await f.accounts.remove('a', { confirmId: 'a' });
     assert.equal(fs.readFileSync(path.join(b.base, 'home/login.dat'), 'utf8'), 'login-b');
-    assert.equal(fs.readFileSync(path.join(b.base, 'data/2068886823.json'), 'utf8'), 'message-mapping-b');
+    assert.equal(fs.readFileSync(path.join(b.base, 'data/1000000001.json'), 'utf8'), 'message-mapping-b');
 });

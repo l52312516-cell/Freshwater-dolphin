@@ -11,14 +11,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ROOT = '18446744073709551610';
 const CHILD = '18446744073709551609';
-const SOURCE = { chatType: 2, peerUid: '1103828635' };
+const SOURCE = { chatType: 2, peerUid: '2000000001' };
 const DESTINATION = { chatType: 1, peerUid: 'u_destination' };
-const state = () => ({ ready: true, epoch: 'forward-session', self: { uin: '2068886823', uid: 'u_self' },
+const state = () => ({ ready: true, epoch: 'forward-session', self: { uin: '1000000001', uid: 'u_self' },
     capabilities: { forwardRead: true, forwardExisting: true } });
 const text = value => ({ elementType: 1, textElement: { content: value, atType: 0 } });
 const merged = resId => ({ elementType: 16, multiForwardMsgElement: { resId, fileName: 'MultiMsg', xmlContent: '' } });
 const message = (id = ROOT, elements = [merged('root-resource')]) => ({ msgId: id, ...SOURCE,
-    senderUin: '1515564167', senderUid: 'u_sender', msgTime: '1794614400', sendNickName: 'Real author', elements });
+    senderUin: '1000000003', senderUid: 'u_sender', msgTime: '1794614400', sendNickName: 'Real author', elements });
 const picture = originImageUrl => ({ elementType: 2, elementId: 'native-image-element',
     picElement: { originImageUrl, md5HexStr: '0123456789abcdef0123456789abcdef', fileName: 'pixel.png', fileSize: '70',
         picWidth: 1, picHeight: 1, picSubType: 0, sourcePath: '/private/QQ/cache/never-export-this.png' } });
@@ -260,7 +260,7 @@ test('inspection does not weaken strict carrier validation and keeps diagnostics
 test('forwarding rejects unsafe IDs, duplicate IDs, spoofed peers and unknown fields before native dispatch', async () => {
     const f = fixture();
     for (const extra of [{ msgIds: [Number(ROOT)] }, { msgIds: ['18446744073709551616'] }, { msgIds: ['01'] },
-        { msgIds: [ROOT, ROOT] }, { msgIds: [] }, { destination: { chatType: 1, peerUid: '2068886823' } },
+        { msgIds: [ROOT, ROOT] }, { msgIds: [] }, { destination: { chatType: 1, peerUid: '1000000001' } },
         { source: { ...SOURCE, arbitrary: true } }, { eval: 'bad' }, { msgIds: new Array(51).fill(ROOT) }]) {
         await assert.rejects(f.send(extra), fails('INVALID_PARAMS'));
     }
@@ -317,7 +317,7 @@ test('cancelled or changed session during source validation cannot dispatch', as
 test('native merged reading retains real node authors, original whitespace and long integer identity', async () => {
     const f = fixture(), value = await f.read();
     assert.equal(value.records[0].msgId, CHILD);
-    assert.equal(value.records[0].senderUin, '1515564167');
+    assert.equal(value.records[0].senderUin, '1000000003');
     assert.equal(value.records[0].elements[0].textElement.content, '  original\nmessage  ');
     assert.deepEqual(f.calls[1].args, [{ ...SOURCE, guildId: '' }, ROOT, ROOT]);
 });
@@ -351,12 +351,12 @@ test('changed observed resource cannot be substituted behind a native root ID', 
 test('forward capabilities stay false when unavailable and do not activate an unverified QQ version', async () => {
     const f = fixture();
     f.capture.ready = false;
-    assert.deepEqual(f.forward.capabilities(), { forwardExisting: false, forwardRead: false });
+    assert.deepEqual(f.forward.capabilities(), { forwardExisting: false, forwardRead: false, mergeExistingNative: false });
     f.capture.ready = true; f.capture.qqVersion = 'unknown-build';
-    assert.deepEqual(f.forward.capabilities(), { forwardExisting: false, forwardRead: false });
+    assert.deepEqual(f.forward.capabilities(), { forwardExisting: false, forwardRead: false, mergeExistingNative: false });
     await assert.rejects(f.send(), fails('UNSUPPORTED'));
     f.capture.qqVersion = '3.2.35-54395'; delete f.native.getMultiMsg;
-    assert.deepEqual(f.forward.capabilities(), { forwardExisting: true, forwardRead: false });
+    assert.deepEqual(f.forward.capabilities(), { forwardExisting: true, forwardRead: false, mergeExistingNative: false });
     await assert.rejects(f.read(), fails('UNSUPPORTED'));
 });
 
@@ -379,7 +379,7 @@ test('merged parent cache is cleared on account/session changes and has an enfor
     await read(ROOT); clock += 60001;
     await assert.rejects(read(CHILD), fails('NOT_FOUND'));
     clock = Date.now(); await read(ROOT);
-    f.capture.self = { uid: 'u_other', uin: '2441760163' };
+    f.capture.self = { uid: 'u_other', uin: '3000000002' };
     await assert.rejects(read(CHILD), fails('NOT_FOUND'));
 });
 
@@ -407,7 +407,7 @@ test('observed registry rejects raw resids, expired handles and cross-account/se
     const next = registry.register(s, record, record.elements[0]);
     assert.throws(() => registry.get({ ...s, epoch: 'new-session' }, next), fails('NOT_FOUND'));
     const other = registry.register(s, record, record.elements[0]);
-    assert.throws(() => registry.get({ ...s, self: { uid: 'u_other', uin: '2441760163' } }, other), fails('NOT_FOUND'));
+    assert.throws(() => registry.get({ ...s, self: { uid: 'u_other', uin: '3000000002' } }, other), fails('NOT_FOUND'));
 });
 
 test('registry is bounded and does not accept substituted elements or unknown native roots', () => {
@@ -434,7 +434,7 @@ function protocolFixture() {
         },
         async sessionCall(_state, method, params) {
             calls.push({ method, params });
-            if (method === 'resolve') return { uin: params.uin || '1515564167', uid: params.uid || 'u_destination' };
+            if (method === 'resolve') return { uin: params.uin || '1000000003', uid: params.uid || 'u_destination' };
             assert.equal(method, 'forwardOperation');
             return f.forward.run(params);
         }
@@ -445,9 +445,9 @@ function protocolFixture() {
 
 test('OneBot forward extension resolves a real private UID and has no fabricated message_id', async () => {
     const f = protocolFixture();
-    const value = await f.run('qqapi_message_forward', { message_ids: [1], user_id: '2441760163' });
-    assert.deepEqual(f.protocolCalls[0], { method: 'resolve', params: { uin: '2441760163' } });
-    assert.deepEqual(value.destination, { message_type: 'private', user_id: 2441760163 });
+    const value = await f.run('qqapi_message_forward', { message_ids: [1], user_id: '3000000002' });
+    assert.deepEqual(f.protocolCalls[0], { method: 'resolve', params: { uin: '3000000002' } });
+    assert.deepEqual(value.destination, { message_type: 'private', user_id: 3000000002 });
     assert.equal(value.confirmed, true);
     assert.equal(Object.hasOwn(value, 'message_id'), false);
     assert.equal(f.calls.filter(x => x.method === 'forwardMsg').length, 1);
@@ -456,20 +456,20 @@ test('OneBot forward extension resolves a real private UID and has no fabricated
 test('OneBot forwarding rejects mixed source peers and invalid private mappings without dispatch', async () => {
     const f = protocolFixture();
     f.records.set(2, { ...message(CHILD), peerUid: '1234' });
-    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1, 2], group_id: '1103828635' }), fails('INVALID_PARAMS'));
+    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1, 2], group_id: '2000000001' }), fails('INVALID_PARAMS'));
     const original = f.service.sessionCall;
     f.service.sessionCall = (s, method, p) => method === 'resolve' ? { uid: 'u_wrong', uin: '9999' } : original(s, method, p);
-    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], user_id: '2441760163' }), fails('NOT_FOUND'));
+    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], user_id: '3000000002' }), fails('NOT_FOUND'));
     assert.equal(f.calls.filter(x => x.method === 'forwardMsg').length, 0);
 });
 
 test('get_forward_msg accepts only the observed opaque handle and preserves node author and whitespace', async () => {
     const f = protocolFixture();
     const value = await f.run('qqapi_get_forward_messages', { message_id: 1 });
-    assert.equal(value.messages[0].sender.user_id, 1515564167);
+    assert.equal(value.messages[0].sender.user_id, 1000000003);
     assert.equal(value.messages[0].sender.nickname, 'Real author');
     assert.equal(value.messages[0].content[0].data.text, '  original\nmessage  ');
-    assert.deepEqual(value.message[0], { type: 'node', data: { user_id: '1515564167', nickname: 'Real author', content: value.messages[0].content } });
+    assert.deepEqual(value.message[0], { type: 'node', data: { user_id: '1000000003', nickname: 'Real author', content: value.messages[0].content } });
     const standard = await f.run('get_forward_msg', { id: value.id });
     assert.deepEqual(standard.messages, value.messages);
     await assert.rejects(f.run('get_forward_msg', { id: ROOT }), fails('INVALID_PARAMS'));
@@ -531,6 +531,20 @@ test('merged images with complete official URLs work without a new media-query o
     await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('UNSUPPORTED'));
 });
 
+test('merged NT images with an observed old key still consult the account resolver without changing resource identity', async () => {
+    const f = protocolFixture(), input = 'https://multimedia.nt.qq.com/download?appid=1407&fileid=native-file&spec=0&rkey=old-key';
+    let calls = 0;
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [picture(input)])] });
+    f.service.globalServices = { async resolveImageUrl(observed, isGroup) {
+        calls++; assert.equal(observed, input); assert.equal(isGroup, true);
+        const url = new URL(observed); url.searchParams.set('rkey', 'current-account-key'); return url.href;
+    } };
+    const result = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    const url = new URL(result.messages[0].content[0].data.url);
+    assert.equal(calls, 1); assert.equal(url.searchParams.get('fileid'), 'native-file');
+    assert.equal(url.searchParams.get('rkey'), 'current-account-key'); assert.equal(url.searchParams.get('spec'), '0');
+});
+
 test('merged image resource validation rejects arbitrary hosts, guessed routes and ambiguous file IDs', async () => {
     const f = protocolFixture(); let resolutions = 0;
     f.service.globalServices = { async resolveImageUrl() { resolutions++; throw new Error('must not be called'); } };
@@ -569,9 +583,9 @@ test('unsupported media inside merged messages is an explicit whole-query failur
 test('forward parameter tampering never exposes an arbitrary kernel action or custom merge construction', async () => {
     const f = protocolFixture();
     await assert.rejects(f.run('send_group_forward_msg', { messages: [] }), fails('UNSUPPORTED'));
-    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], group_id: '1103828635', nodes: [] }), fails('INVALID_PARAMS'));
+    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], group_id: '2000000001', nodes: [] }), fails('INVALID_PARAMS'));
     await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1, resId: 'forged' }), fails('INVALID_PARAMS'));
-    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], user_id: '2441760163', group_id: '1103828635' }), fails('INVALID_PARAMS'));
+    await assert.rejects(f.run('qqapi_message_forward', { message_ids: [1], user_id: '3000000002', group_id: '2000000001' }), fails('INVALID_PARAMS'));
     assert.equal(f.calls.length, 0);
 });
 
@@ -584,9 +598,9 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     f.handlers.read = (_peer, root, parent) => {
         assert.equal(root, ROOT);
         return { result: 0, msgList: parent === ROOT ? [{ ...message(CHILD,
-            [text('  first layer\n'), merged('nested-resource')]), senderUin: '2441760163', sendNickName: 'Inner author' }] :
+            [text('  first layer\n'), merged('nested-resource')]), senderUin: '3000000002', sendNickName: 'Inner author' }] :
             [{ ...message(grandchild, [text('second layer\n  '), { elementType: 6, faceElement: { faceIndex: 14, faceType: 1 } }]),
-                senderUin: '2924792522', sendNickName: 'Different author' }] };
+                senderUin: '3000000004', sendNickName: 'Different author' }] };
     };
     const store = new MessageStore({ directory });
     const rootEntry = store.remember(f.capture.self.uin, message());
@@ -600,9 +614,9 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     const mergedResponse = await action('get_forward_msg', { id: rootHandle });
     assert.equal(mergedResponse.status, 'ok', mergedResponse.message);
     assert.equal(mergedResponse.data.message[0].type, 'node');
-    assert.equal(mergedResponse.data.message[0].data.user_id, '2441760163');
+    assert.equal(mergedResponse.data.message[0].data.user_id, '3000000002');
     const inner = mergedResponse.data.messages[0];
-    assert.equal(inner.sender.user_id, 2441760163);
+    assert.equal(inner.sender.user_id, 3000000002);
     assert.equal(inner.sender.nickname, 'Inner author');
     assert.equal(inner.content[0].data.text, '  first layer\n');
     assert.equal(inner.content[1].type, 'forward');
@@ -610,7 +624,7 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     assert.notEqual(nestedHandle, rootHandle);
     const nested = await action('get_forward_msg', { id: nestedHandle });
     assert.equal(nested.status, 'ok', nested.message);
-    assert.equal(nested.data.messages[0].sender.user_id, 2924792522);
+    assert.equal(nested.data.messages[0].sender.user_id, 3000000004);
     assert.equal(nested.data.messages[0].sender.nickname, 'Different author');
     assert.equal(nested.data.messages[0].content[0].data.text, 'second layer\n  ');
     assert.deepEqual(nested.data.messages[0].content[1], { type: 'face', data: { id: '14' } });

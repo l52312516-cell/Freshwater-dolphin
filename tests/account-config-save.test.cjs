@@ -13,15 +13,15 @@ const helper = import('../webui/src/account-config.mjs');
 test('configuration drafts submit only writable account and node fields', async () => {
     const { writableAccountConfig } = await helper;
     const source = {
-        id: 'alpha', label: 'Primary QQ', expectedUin: '2068886823', actionTimeoutMs: 15000,
-        boundUin: '2068886823', bridgeInstalled: true, desired: 'running', revision: 3,
+        id: 'alpha', label: 'Primary QQ', expectedUin: '1000000001', actionTimeoutMs: 15000,
+        boundUin: '1000000001', bridgeInstalled: true, desired: 'running', revision: 3,
         state: 'online', health: { ready: true }, maintenance: null,
         nodes: [{ id: 'listener', label: 'Bot', type: 'httpApi', enabled: false,
             role: 'Universal', heartbeatMs: 30000, maxPending: 16,
             tokenPresent: true, secretPresent: true, state: 'connected', runtime: { connected: true } }]
     };
     assert.deepEqual(writableAccountConfig(source), {
-        label: 'Primary QQ', expectedUin: '2068886823', actionTimeoutMs: 15000,
+        label: 'Primary QQ', expectedUin: '1000000001', actionTimeoutMs: 15000,
         nodes: [{ id: 'listener', label: 'Bot', type: 'httpApi', enabled: false,
             role: 'Universal', heartbeatMs: 30000, maxPending: 16 }]
     });
@@ -80,7 +80,7 @@ test('GET config can disable and re-enable nodes without changing bridge install
         'x-csrf-token': initialized.json().data.csrf
     };
     const created = await app.inject({ method: 'POST', url: '/api/accounts', headers, payload: {
-        id: 'alpha', label: 'QQ', expectedUin: '2068886823', nodes: [
+        id: 'alpha', label: 'QQ', expectedUin: '1000000001', nodes: [
             { id: 'listener', type: 'httpApi', enabled: true, token: 'private-token' },
             { id: 'outgoing', type: 'httpPost', enabled: true, url: 'http://127.0.0.1:17700/events',
                 token: 'outgoing-token', secret: 'private-signing-secret' }

@@ -1,0 +1,26 @@
+[Unit]
+Description=Freshwater workspace Docker daemon
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/freshwater-dolphin
+ExecStart=/usr/bin/bash /opt/freshwater-dolphin/deploy/docker-daemon.sh
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=120
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+TasksMax=infinity
+StandardOutput=append:/opt/freshwater-dolphin/work/logs/docker-daemon.log
+StandardError=append:/opt/freshwater-dolphin/work/logs/docker-daemon.log
+
+[Install]
+WantedBy=multi-user.target

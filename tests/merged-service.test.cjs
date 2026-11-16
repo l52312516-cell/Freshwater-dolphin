@@ -7,7 +7,7 @@ const path = require('node:path');
 const { OneBotService } = require('../src/onebot/service.cjs');
 const { MessageStore } = require('../src/onebot/store.cjs');
 
-const SELF = '2068886823', GROUP = '1103828635', USER = '1515564167';
+const SELF = '1000000001', GROUP = '2000000001', USER = '1000000003';
 const NATIVE_ID = '18446744073709551001';
 const PNG = 'base64://iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const text = value => ({ type: 'text', data: { text: value } });
@@ -180,7 +180,7 @@ test('the sender can query its completed native multimsg Ark root and read actua
 
 test('the complete batch is rejected before imports, preparations, resolution or staging when any node is unsupported', async t => {
     for (const bad of [node([{ type: 'video', data: { file: 'forbidden.mp4' } }]),
-        node([image()], '2441760163'), { type: 'node', data: { id: 1 } },
+        node([image()], '3000000002'), { type: 'node', data: { id: 1 } },
         node([{ type: 'image', data: { file: '/private/QQ/escape.png' } }])]) {
         const f = fixture(t), messages = [...mixed().slice(0, 29), bad];
         const result = await f.service.action(request(messages, true));
@@ -188,7 +188,7 @@ test('the complete batch is rejected before imports, preparations, resolution or
         noSideEffects(f);
     }
     const f = fixture(t), malformed = request(mixed());
-    malformed.params.messages.at(-1).data.uin = '2441760163';
+    malformed.params.messages.at(-1).data.uin = '3000000002';
     assert.equal((await f.service.action(malformed)).retcode, 1400);
     noSideEffects(f);
 });
@@ -206,7 +206,7 @@ test('missing merged capability or required image support never degrades to ordi
 });
 
 test('private UID resolution rejects mismatched, missing or malformed mappings before any media or merge writes', async t => {
-    for (const resolved of [undefined, {}, { uin: '2441760163', uid: 'u_destination' },
+    for (const resolved of [undefined, {}, { uin: '3000000002', uid: 'u_destination' },
         { uin: USER, uid: USER }, { uin: USER, uid: 'u_' }, { uin: USER, uid: 'u_bad/uid' }]) {
         const f = fixture(t); f.handlers.resolve = () => resolved;
         const result = await f.service.action(request([node([image()])], true));
@@ -220,7 +220,7 @@ test('private UID resolution rejects mismatched, missing or malformed mappings b
 test('destination and session boundaries cannot be overridden using alternate parameters', async t => {
     const invalid = [params => { params.user_id = USER; }, params => { params.group_id = '0'; },
         params => { params.group_id = '4294967296'; }, params => { params.group_id = Number.MAX_SAFE_INTEGER; },
-        params => { params.source = { chatType: 1, peerUid: 'u_other' }; }, params => { params.self_id = '2441760163'; }];
+        params => { params.source = { chatType: 1, peerUid: 'u_other' }; }, params => { params.self_id = '3000000002'; }];
     for (const change of invalid) {
         const f = fixture(t), action = request(); change(action.params);
         assert.equal((await f.service.action(action)).retcode, 1400);
@@ -243,7 +243,7 @@ test('strict delivery metadata rejects unknown results, wrong targets, authors, 
         ['missing-record', result => ({ ...result, record: undefined })],
         ['unconfirmed-record', result => ({ ...result, record: { ...result.record, sendStatus: 1 } })],
         ['wrong-sender-uid', result => ({ ...result, record: { ...result.record, senderUid: 'u_other' } })],
-        ['wrong-sender-uin', result => ({ ...result, record: { ...result.record, senderUin: '2441760163' } })],
+        ['wrong-sender-uin', result => ({ ...result, record: { ...result.record, senderUin: '3000000002' } })],
         ['record-other-peer', result => ({ ...result, record: { ...result.record, peerUid: '1234' } })],
         ['record-id-mismatch', result => ({ ...result, record: { ...result.record, msgId: '18446744073709551002' } })],
         ['number-id', result => ({ ...result, messageId: 123, record: { ...result.record, msgId: 123 } })],
@@ -309,7 +309,7 @@ test('session changes during media preparation stop the entire batch before stag
 });
 
 test('two accounts merge concurrently while their preparation paths, confirmations, echoes and persistent mappings stay isolated', { timeout: 3000 }, async t => {
-    const alpha = fixture(t), beta = fixture(t, { selfId: '2441760163' });
+    const alpha = fixture(t), beta = fixture(t, { selfId: '3000000002' });
     let waiting = 0, release;
     const barrier = new Promise(resolve => { release = resolve; });
     for (const f of [alpha, beta]) f.handlers.forwardOperation = async params => {

@@ -176,11 +176,11 @@ test('runtime carries current request timestamps through RPC and reverse WS with
         }
     };
     const state = { epoch: 'request-session', ready: true, readyAt: Date.now() - 1000, online: true,
-        self: { uin: '2068886823', uid: 'u_self' }, capabilities: { messages: true, friendRequests: true } };
+        self: { uin: '1000000001', uid: 'u_self' }, capabilities: { messages: true, friendRequests: true } };
     const backend = new EventEmitter();
     backend.call = async (method, params) => {
         if (method === 'status') return structuredClone(state);
-        if (method === 'resolve') { assert.equal(params.uid, 'u_friend'); return { uid: 'u_friend', uin: '1515564167' }; }
+        if (method === 'resolve') { assert.equal(params.uid, 'u_friend'); return { uid: 'u_friend', uin: '1000000003' }; }
         throw new Error('Unexpected method ' + method);
     };
     server = await startServer({ dir: path.join(root, 'rpc'), backend, pollMs: 5 });
@@ -197,7 +197,7 @@ test('runtime carries current request timestamps through RPC and reverse WS with
         request: { type: 'friend', uid: 'u_friend', flag: 'fwd_req_' + 'a'.repeat(48), comment: 'hello\nfriend' } });
     const request = await waitForFrame(item => item.post_type === 'request');
     assert.equal(request.time, now);
-    assert.equal(request.user_id, 1515564167); assert.equal(request.comment, 'hello\nfriend');
+    assert.equal(request.user_id, 1000000003); assert.equal(request.comment, 'hello\nfriend');
 });
 
 test('built-in status commands consume only new authenticated messages while duplicates, self echoes and disabled commands remain safe', { timeout: 12000 }, async t => {

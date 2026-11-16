@@ -15,12 +15,12 @@ function response({ command = 0x6d8, sub = 3, errorCode = 0, total = 10737418240
 }
 
 test('encodeNativeRequest is the OidbBase envelope with the verified group-file space fields', () => {
-    const top = fields(gfs.encodeNativeRequest(1103828635));
+    const top = fields(gfs.encodeNativeRequest(2000000001));
     assert.equal(Number(unsigned(one(top, 1), 0xffffffffn)), 0x6d8);
     assert.equal(Number(unsigned(one(top, 2), 0xffffffffn)), 3);
     assert.equal(Number(unsigned(one(top, 12), 0xffffffffn)), 1);
     const info = fields(one(fields(one(top, 4).value), 4).value);
-    assert.equal(Number(unsigned(one(info, 1), 0xffffffffn)), 1103828635);
+    assert.equal(Number(unsigned(one(info, 1), 0xffffffffn)), 2000000001);
     assert.equal(Number(unsigned(one(info, 2), 0xffffffffn)), 7, 'appId constant');
     assert.equal(gfs.NATIVE_CMD, 'OidbSvcTrpcTcp.0x6d8_3');
 });

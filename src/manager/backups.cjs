@@ -5,9 +5,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { promisify } = require('node:util');
-const { atomic, read, fail, privateDirectory, identifier, durableRename, syncDirectory } = require('./files.cjs');
+const { atomic, read, fail, privateDirectory, identifier, expectedUin, durableRename, syncDirectory } = require('./files.cjs');
 const { workspacePath } = require('../paths.cjs');
 const { profile } = require('./accounts.cjs');
+const { memoryAvailable } = require('./resources.cjs');
 const derive = promisify(crypto.scrypt);
 const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const MAX = 128 * 1024 * 1024;
@@ -85,7 +86,7 @@ function ordinaryMapping(bytes, account, { strip = false } = {}) {
     }
     return Buffer.from(JSON.stringify(result));
 }
-function gather(directory, kind) {
+function gather(directory, kind, { sizeOnly = false } = {}) {
     const entries = []; let size = 0;
     function visit(relative) {
         safeName(relative);
@@ -97,9 +98,10 @@ function gather(directory, kind) {
             for (const name of fs.readdirSync(target).sort()) visit(relative + '/' + name);
         } else {
             // Ordinary backups contain only the message-ID store, not QQ login/configuration files.
-            if (kind === 'ordinary' && !/^data\/[1-9]\d*\.json$/.test(relative)) return;
+            if (kind === 'ordinary' && !(sizeOnly ? /^data\/[1-9]\d*\.json(?:\.wal)?$/ : /^data\/[1-9]\d*\.json$/).test(relative)) return;
             size += info.size;
             if (size > MAX || entries.length >= 20000 || info.size > 32 * 1024 * 1024) throw fail('BACKUP_LIMIT', 'Backup exceeds state archive limits');
+            if (sizeOnly) { entries.push({ size: info.size }); return; }
             let bytes = fs.readFileSync(target);
             if (kind === 'ordinary') bytes = ordinaryMapping(bytes, path.basename(relative, '.json'), { strip: true });
             entries.push({ name: relative, sha256: hash(bytes), size: bytes.length, data: bytes.toString('base64') });
@@ -107,6 +109,16 @@ function gather(directory, kind) {
     }
     for (const name of ROOTS) if (fs.existsSync(path.join(directory, name))) visit(name);
     return entries;
+}
+function normalizeProfile(config) {
+    if (!config || typeof config !== 'object' || Array.isArray(config) ||
+        config.desired !== undefined && !['running', 'stopped'].includes(config.desired) ||
+        config.revision !== undefined && (!Number.isSafeInteger(config.revision) || config.revision < 0)) {
+        throw fail('INVALID_BACKUP', 'Invalid stored account configuration');
+    }
+    const normalized = profile({}, { ...config, boundUin: expectedUin(config.boundUin) });
+    normalized.revision = config.revision || 0;
+    return normalized;
 }
 function validateArchive(document) {
     if (!document || document.version !== 2 || document.qqVersion !== '3.2.35-54395' || document.architecture !== 'x64' ||
@@ -117,7 +129,8 @@ function validateArchive(document) {
     for (const item of document.profiles) {
         identifier(item.config?.id);
         if (ids.has(item.config.id) || !Array.isArray(item.entries)) throw fail('INVALID_BACKUP', 'Duplicate or invalid account');
-        ids.add(item.config.id); profile({}, item.config);
+        ids.add(item.config.id); item.config = normalizeProfile(item.config);
+        if (document.kind === 'ordinary') for (const node of item.config.nodes) { delete node.token; delete node.secret; }
         const names = new Set();
         for (const entry of item.entries) {
             safeName(entry.name);
@@ -162,7 +175,7 @@ async function encode(document, password) {
         return Buffer.concat([MAGIC, Buffer.from([1]), salt, iv, cipher.getAuthTag(), encrypted]);
     } finally { key?.fill(0); plain.fill(0); }
 }
-async function decode(bytes, password) {
+async function decode(bytes, password, { maxOutputLength = MAX_ARCHIVE } = {}) {
     if (bytes.length > MAX_ARCHIVE || !bytes.subarray(0, MAGIC.length).equals(MAGIC)) throw fail('INVALID_BACKUP', 'Invalid backup file');
     const type = bytes[MAGIC.length]; let compressed;
     if (type === 0) compressed = bytes.subarray(MAGIC.length + 1);
@@ -180,7 +193,7 @@ async function decode(bytes, password) {
     } else throw fail('INVALID_BACKUP', 'Unknown backup encryption format');
     let raw;
     try {
-        try { raw = await gunzip(compressed, { maxOutputLength: MAX_ARCHIVE }); }
+        try { raw = await gunzip(compressed, { maxOutputLength }); }
         catch { throw fail('INVALID_BACKUP', 'Invalid or excessive compressed archive'); }
         const document = validateArchive(JSON.parse(raw.toString('utf8')));
         if ((type === 1) !== (document.kind === 'full')) throw fail('INVALID_BACKUP', 'Backup encryption does not match its kind');
@@ -189,11 +202,12 @@ async function decode(bytes, password) {
 }
 
 class Backups {
-    constructor(root, accounts, { checkpoint = () => {}, previewMs = 300000, now = Date.now } = {}) {
+    constructor(root, accounts, { checkpoint = () => {}, previewMs = 300000, now = Date.now, memory = memoryAvailable } = {}) {
         this.root = root; this.accounts = accounts;
         this.directory = privateDirectory(root, 'work/backups');
         this.journalFile = path.join(privateDirectory(root, 'work/control'), 'restore-journal.json');
         this.checkpoint = checkpoint;
+        this.memory = memory;
         this.previewMs = previewMs; this.now = now; this.previewTimer = null;
         this.previews = new Map(); this.downloads = new Map(); this.locked = false;
         this.downloadStreams = new Set();
@@ -207,6 +221,14 @@ class Backups {
     }
     clearPreviews() {
         clearTimeout(this.previewTimer); this.previewTimer = null; this.previews.clear();
+    }
+    admit(bytes = 0) {
+        const free = this.memory().free;
+        const reserve = 128 * 1024 * 1024;
+        if (!Number.isFinite(free) || free < reserve + Math.max(64 * 1024 * 1024, bytes * 8)) {
+            throw fail('LOW_MEMORY', 'Insufficient memory for a consistent backup; stop unused accounts or reduce its size', 503);
+        }
+        return Math.max(1, Math.min(MAX_ARCHIVE, Math.floor((free - reserve) / 6)));
     }
     assertOpen() { if (this.closed) throw fail('CLOSING', 'Backup service is stopping', 503); }
     track(operation) {
@@ -381,12 +403,32 @@ class Backups {
         if (!Array.isArray(profileIds) || !profileIds.length || new Set(profileIds).size !== profileIds.length || !['ordinary', 'full'].includes(kind)) throw fail('INVALID_PARAMS', 'Select accounts and a backup kind');
         if (kind === 'full' && (typeof password !== 'string' || password.length < 12 || password.length > 1024)) throw fail('INVALID_PASSWORD', 'Backup password requires 12 to 1024 characters');
         for (const id of profileIds) this.accounts.get(id);
+        let estimated = 0;
+        for (const id of profileIds) for (const entry of gather(this.accounts.location(id), kind, { sizeOnly: true })) estimated += entry.size;
+        if (estimated > MAX) throw fail('BACKUP_LIMIT', 'Selected accounts exceed the total backup size limit');
+        // Metadata preflight needs little memory; the larger allocation check
+        // runs after selected QQ writers have released their memory.
+        this.admit();
         this.locked = true;
         const existingMaintenance = new Map(profileIds.map(id => [id, this.accounts.document.maintenance[id]]));
         try {
             // Both kinds stop writers, so ID mappings and account configuration describe one point in time.
             await this.accounts.maintain(profileIds, 'backup');
             this.assertOpen();
+            for (const id of profileIds) {
+                const data = path.join(this.accounts.location(id), 'data');
+                if (fs.existsSync(data)) {
+                    const { checkpointDirectory } = require('../onebot/store.cjs');
+                    if (typeof checkpointDirectory === 'function') checkpointDirectory(data);
+                    else if (fs.readdirSync(data).some(name => /\.json\.wal$/.test(name) && fs.statSync(path.join(data, name)).size)) {
+                        throw fail('CHECKPOINT_REQUIRED', 'Message journal requires a compatible checkpoint implementation', 409);
+                    }
+                }
+            }
+            estimated = 0;
+            for (const id of profileIds) for (const entry of gather(this.accounts.location(id), kind, { sizeOnly: true })) estimated += entry.size;
+            if (estimated > MAX) throw fail('BACKUP_LIMIT', 'Selected accounts exceed the total backup size limit');
+            this.admit(estimated);
             const document = { version: 2, architecture: 'x64', qqVersion: '3.2.35-54395', kind, at: Date.now(), profiles: profileIds.map(id => {
                 const config = structuredClone(this.accounts.get(id));
                 if (kind === 'ordinary') {
@@ -408,12 +450,14 @@ class Backups {
     preview(options) { return this.track(() => this.previewBackup(options)); }
     async previewBackup({ backupId, password } = {}) {
         if (this.locked) throw fail('BUSY', 'Another backup operation is running', 409);
+        this.clearPreviews();
         this.ensureRecovered();
         const [{ file, stat }] = this.checkedFiles(backupId);
         if (!stat) throw fail('NOT_FOUND', 'Backup archive not found', 404);
+        const maxOutputLength = this.admit(stat.size);
         this.locked = true;
         try {
-            const document = await decode(fs.readFileSync(file), password);
+            const document = await decode(fs.readFileSync(file), password, { maxOutputLength });
             this.assertOpen();
             this.clearPreviews();
             const id = crypto.randomBytes(24).toString('base64url');
@@ -422,16 +466,18 @@ class Backups {
             // document on expiry even if no later API request arrives.
             this.previewTimer = setTimeout(() => this.clearPreviews(), this.previewMs);
             this.previewTimer.unref?.();
-            return { previewId: id, kind: document.kind, qqVersion: document.qqVersion,
+            return { previewId: id, backupId, kind: document.kind, qqVersion: document.qqVersion,
                 profiles: document.profiles.map(item => ({ id: item.config.id, label: item.config.label, uin: item.config.boundUin || item.config.expectedUin,
                     files: item.entries.length, existing: this.accounts.document.profiles.some(old => old.id === item.config.id) })) };
         } finally { this.locked = false; }
     }
-    apply(previewId) { return this.track(() => this.applyBackup(previewId)); }
-    async applyBackup(previewId) {
+    apply(previewId, backupId) { return this.track(() => this.applyBackup(previewId, backupId)); }
+    async applyBackup(previewId, backupId) {
         if (this.locked) throw fail('BUSY', 'Another backup operation is running', 409);
         const preview = this.previews.get(previewId); this.clearPreviews();
         if (!preview || preview.expires <= this.now()) throw fail('PREVIEW_EXPIRED', 'Preview expired; inspect the backup again');
+        if (backupId !== undefined && preview.backupId !== backupId) throw fail('PREVIEW_MISMATCH', 'Selected backup does not match the validated preview', 409);
+        this.admit(preview.document.profiles.reduce((total, item) => total + item.entries.reduce((size, entry) => size + entry.size, 0), 0));
         this.ensureRecovered();
         const document = preview.document, ids = document.profiles.map(item => item.config.id);
         const relative = 'work/temp/restore-' + crypto.randomBytes(16).toString('hex');

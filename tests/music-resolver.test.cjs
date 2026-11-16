@@ -121,16 +121,21 @@ test('invalid platform IDs fail before any external request', async () => {
     assert.equal(c.requests.length, 0);
 });
 
-test('one deadline bounds both official requests even if a JSON client ignores its timeout', async () => {
+test('one deadline bounds both official requests even if a JSON client ignores its timeout', async t => {
     const requests = [];
-    const started = performance.now();
+    // Advance the monotonic budget explicitly: a busy CI machine may schedule
+    // a 25ms sleep after the entire 70ms deadline, legitimately sending only
+    // the first request. That does not exercise the second-request budget.
+    let clock = 1000;
+    t.mock.method(performance, 'now', () => clock);
+    const started = Date.now();
     await assert.rejects(resolveMusic({ type: '163', id: '29005614' }, { timeoutMs: 70, requestJson: async (url, _options, timeout) => {
         requests.push({ url, timeout });
-        if (requests.length === 1) { await new Promise(resolve => setTimeout(resolve, 25)); return netease; }
+        if (requests.length === 1) { clock += 25; return netease; }
         return new Promise(() => {});
     } }), { code: 'TIMEOUT' });
     assert.equal(requests.length, 2); assert.ok(requests[1].timeout < requests[0].timeout);
-    assert.ok(performance.now() - started < 500);
+    assert.ok(Date.now() - started < 1000);
     const c = { timeoutMs: 20, requestJson: () => new Promise(() => {}) };
     await assert.rejects(resolveMusic({ type: 'qq', id: qqSong.mid }, c), { code: 'TIMEOUT' });
 });

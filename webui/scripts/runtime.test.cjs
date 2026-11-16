@@ -172,3 +172,74 @@ test('logging out removes private message drafts, action parameters and password
     assert.equal(value.messages.actionParams, '{}'); assert.equal(value.messages.form.segments.includes('private'), false);
     assert.equal(value.settings.passwords.currentPassword, ''); assert.equal(value.backup.form.password, '');
 });
+
+test('changing the selected backup invalidates an old preview and a late validation response', async t => {
+    const pending = deferred(); const { value } = await app(t, () => pending.promise);
+    value.backup.restore.backupId = 'first'; value.backup.restore.password = 'first-password';
+    const request = value.previewRestore();
+    value.backup.restore.backupId = 'second'; value.backup.restore.password = 'new-password';
+    pending.resolve({ backupId: 'first', previewId: 'old-preview', profiles: [] }); await request;
+    assert.equal(value.backup.restore.previewId, ''); assert.equal(value.backup.restore.preview, null);
+    assert.equal(value.backup.restore.password, 'new-password');
+});
+
+test('failed validation removes the previous restore preview instead of leaving apply enabled', async t => {
+    const { value } = await app(t, async () => { throw new Error('incorrect backup password'); });
+    value.backup.restore.backupId = 'first'; value.backup.restore.previewId = 'old'; value.backup.restore.preview = { backupId: 'first' };
+    await value.previewRestore();
+    assert.equal(value.backup.restore.previewId, ''); assert.equal(value.backup.restore.preview, null);
+    assert.ok(value.error.value);
+});
+
+test('a restore confirmation cannot apply after selection changes, even when switching back', async t => {
+    const calls = []; const { value } = await app(t, async (url, method, payload) => { calls.push([url, method, payload]); return overview(); });
+    value.backup.restore.backupId = 'first'; value.backup.restore.previewId = 'preview'; value.backup.restore.preview = { backupId: 'first' };
+    value.applyRestore(); value.backup.restore.backupId = 'second'; value.backup.restore.backupId = 'first';
+    await value.confirmedAction(); assert.equal(calls.length, 0);
+});
+
+test('a validated restore submits the captured archive and preview together', async t => {
+    const calls = []; const { value } = await app(t, async (url, method, payload) => { calls.push([url, method, payload]); return url === '/overview' ? overview() : {}; });
+    value.backup.restore.backupId = 'first'; value.backup.restore.previewId = 'preview'; value.backup.restore.preview = { backupId: 'first' };
+    value.applyRestore(); await value.confirmedAction();
+    assert.equal(calls[0][0], '/backups/restore/apply'); assert.equal(calls[0][2].backupId, 'first'); assert.equal(calls[0][2].previewId, 'preview');
+    assert.equal(value.backup.restore.previewId, '');
+});
+
+test('runtime and service settings drafts survive page changes and explicit reload needs confirmation', async t => {
+    const calls = []; const { value } = await app(t, async url => { calls.push(url); return { maxAccounts: 2, publicBaseUrl: '', statusCommand: { enabled: true, trigger: '#fd' }, musicSignUrl: '', rkey: { fallbackServers: [] } }; });
+    value.applySettings({ maxAccounts: 2, publicBaseUrl: '', musicSignUrl: '', rkey: { fallbackServers: [] } });
+    value.settings.publicBaseUrl = 'https://draft.example'; value.settings.musicSignKey = 'private-unsaved';
+    value.tab.value = 'settings'; await vue.nextTick(); value.tab.value = 'overview'; await vue.nextTick(); value.tab.value = 'settings'; await vue.nextTick();
+    assert.equal(calls.length, 0); assert.equal(value.settings.musicSignKey, 'private-unsaved');
+    await value.loadSettings(); assert.equal(calls.length, 0); assert.ok(value.confirmDialog.value);
+    await value.confirmedAction(); assert.equal(calls[0], '/settings'); assert.equal(value.settings.publicBaseUrl, '');
+});
+
+test('settings edited during a reload retain their new draft when the earlier server response arrives', async t => {
+    const pending = deferred(); const { value } = await app(t, () => pending.promise);
+    const loading = value.loadSettings(); value.settings.publicBaseUrl = 'https://typed-during-request.example';
+    value.settings.musicSignKey = 'new-secret'; pending.resolve({ maxAccounts: 2, publicBaseUrl: '', rkey: { fallbackServers: [] }, musicSignUrl: '' });
+    await loading; assert.equal(value.settings.publicBaseUrl, 'https://typed-during-request.example'); assert.equal(value.settings.musicSignKey, 'new-secret');
+    assert.equal(value.settingsDirty.value, true);
+});
+
+test('the log console renders a bounded page while preserving access to all filtered records', async () => {
+    const [, , logs] = await dependencies;
+    const source = fs.readFileSync(path.join(__dirname, '../src/components/LogConsole.vue'), 'utf8');
+    const script = compileScript(parse(source).descriptor, { id: 'audit-log-window' });
+    const code = ts.transpileModule(script.content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const module = { exports: {} };
+    vm.runInNewContext(code, { module, exports: module.exports, console, require(name) {
+        if (name === 'vue') return vue;
+        if (name === '../log-key.mjs') return logs;
+        if (name.endsWith('.vue')) return { default: {} };
+        throw new Error('Unexpected log component dependency: ' + name);
+    } });
+    const props = vue.reactive({ records: Array.from({ length: 1000 }, (_, index) => ({ id: 'row-' + index, profileId: 'a', event: 'ready', time: new Date(index).toISOString() })), accounts: [], paused: false, connected: true, busy: false });
+    const value = module.exports.default.setup(props, { expose() {}, emit() {} });
+    assert.equal(value.filtered.value.length, 1000); assert.equal(value.visible.value.length, 100); assert.equal(value.pageCount.value, 10);
+    value.showPage(10); assert.equal(value.visible.value[0].id, 'row-900'); assert.equal(value.autoScroll.value, false);
+    props.records = props.records.slice(-3); await vue.nextTick();
+    assert.equal(value.page.value, 1); assert.equal(value.visible.value.length, 3);
+});

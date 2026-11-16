@@ -8,8 +8,8 @@ const { OneBotService } = require('../src/onebot/service.cjs');
 const { MessageStore } = require('../src/onebot/store.cjs');
 const codec = require('../src/onebot/codec.cjs');
 
-const SELF = '2068886823', SELF_UID = 'u_yOIJFv8EazZyn60AgZ9JAg';
-const PEER = '2441760163', PEER_UID = 'u_tuFT9TXJhn7b5BsDkkm3lg';
+const SELF = '1000000001', SELF_UID = 'u_fixture_self';
+const PEER = '3000000002', PEER_UID = 'u_fixture_peer';
 const peer = { chatType: 1, peerUid: PEER_UID };
 const text = content => ({ elementType: 1, textElement: { content, atType: 0 } });
 function original(overrides = {}) {

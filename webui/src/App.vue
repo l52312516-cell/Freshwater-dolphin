@@ -64,6 +64,11 @@ const messages = reactive<MessageState>({
   actionName: 'get_status', actionParams: '{}', actionResult: null, uploadedImage: '',
 });
 const settings = reactive<SettingsState>({ text: '{}', maxAccounts: 2, publicBaseUrl: '', statusCommand: { enabled: true, trigger: '#fd' }, rkey: { fallbackServers: [] }, musicSignUrl: '', musicSignKey: '', hasMusicSignKey: false, clearMusicSignKey: false, passwords: { currentPassword: '', newPassword: '', confirm: '' } });
+const savedSettings = reactive({ runtime: '', global: '' });
+const settingsLoaded = ref(false);
+function runtimeDraft() { return JSON.stringify([settings.maxAccounts, settings.publicBaseUrl, settings.statusCommand]); }
+function globalDraft() { return JSON.stringify([settings.rkey.fallbackServers, settings.musicSignUrl, settings.musicSignKey, settings.clearMusicSignKey]); }
+const settingsDirty = computed(() => settingsLoaded.value && (runtimeDraft() !== savedSettings.runtime || globalDraft() !== savedSettings.global));
 const storage = ref<StorageSnapshot | null>(null);
 const storageResult = ref<StorageCleanup | null>(null);
 const backup = reactive<BackupState>({
@@ -78,6 +83,14 @@ let stream: EventSource | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
 const accountRequests = createRequestScope();
 const overviewRequests = createRequestScope();
+const restoreRequests = createRequestScope();
+let clearingRestorePassword = false;
+function invalidateRestore() {
+  restoreRequests.invalidate(); backup.restore.previewId = ''; backup.restore.preview = null;
+}
+watch(() => [backup.restore.backupId, backup.restore.password], () => {
+  if (!clearingRestorePassword) invalidateRestore();
+}, { flush: 'sync' });
 let taskRevision = 0;
 let pendingPageLoad: Tab | null = null;
 
@@ -99,7 +112,7 @@ function flushPageLoad() {
   const value = pendingPageLoad; pendingPageLoad = null;
   if (value === 'nodes' && !draft.value) void loadConfig();
   if (value === 'logs') void loadLogs();
-  if (value === 'settings') void loadSettings();
+  if (value === 'settings' && !settingsLoaded.value) void loadSettings();
 }
 
 async function task(name: string, action: () => Promise<void>, success = '') {
@@ -118,7 +131,7 @@ async function task(name: string, action: () => Promise<void>, success = '') {
 
 function unauthorized() {
   taskRevision++; busy.value = ''; pendingPageLoad = null;
-  accountRequests.invalidate(); overviewRequests.invalidate();
+  accountRequests.invalidate(); overviewRequests.invalidate(); invalidateRestore();
   auth.value.authenticated = false; setCsrf(''); stream?.close(); stream = undefined; streamConnected.value = false;
   confirmDialog.value = null; selectedId.value = '';
   overview.value = { accounts: [], resources: { totalMemory: 0, freeMemory: 0 }, version: '', maxAccounts: 2 };
@@ -136,6 +149,7 @@ function unauthorized() {
   settings.musicSignKey = ''; settings.hasMusicSignKey = false; settings.clearMusicSignKey = false;
   settings.statusCommand = { enabled: true, trigger: '#fd' };
   settings.passwords.currentPassword = ''; settings.passwords.newPassword = ''; settings.passwords.confirm = '';
+  settingsLoaded.value = false; savedSettings.runtime = ''; savedSettings.global = '';
   storage.value = null; storageResult.value = null;
 }
 
@@ -440,27 +454,47 @@ async function uploadBackup(file: File) {
 }
 
 async function previewRestore() {
+  const backupId = backup.restore.backupId, password = backup.restore.password;
+  invalidateRestore();
+  const ticket = restoreRequests.capture();
   await task('验证备份', async () => {
     try {
-      const value = await api<Json>('/backups/restore/preview', 'POST', { backupId: backup.restore.backupId, password: backup.restore.password || undefined });
+      const value = await api<Json>('/backups/restore/preview', 'POST', { backupId, password: password || undefined }, {}, ticket.signal);
+      ticket.assertCurrent();
+      if (value.backupId !== backupId || typeof value.previewId !== 'string' || !value.previewId) throw new Error('备份预览与当前选择不一致，请重新验证');
       backup.restore.previewId = String(value.previewId || ''); backup.restore.preview = value;
-    } finally { backup.restore.password = ''; }
+    } finally {
+      if (backup.restore.password === password) {
+        clearingRestorePassword = true; backup.restore.password = ''; clearingRestorePassword = false;
+      }
+    }
   });
 }
 
 function applyRestore() {
+  const { backupId, previewId, preview } = backup.restore;
+  if (!previewId || !preview || (preview as Json).backupId !== backupId) { error.value = '请先验证当前选择的备份'; return; }
+  const ticket = restoreRequests.capture();
   confirm('确认恢复数据', '将停止并替换预览中列出的账号状态，保留回滚数据。恢复后账号保持停止，需要你明确启动。', async () => {
-    await api('/backups/restore/apply', 'POST', { previewId: backup.restore.previewId });
-    backup.restore.previewId = ''; backup.restore.preview = null; await refreshOverview();
+    ticket.assertCurrent();
+    if (backup.restore.backupId !== backupId || backup.restore.previewId !== previewId) throw new Error('备份选择已改变，请重新验证');
+    invalidateRestore();
+    await api('/backups/restore/apply', 'POST', { previewId, backupId });
+    await refreshOverview();
   });
 }
 
-function applySettings(value: Json, scope: 'all' | 'runtime' | 'global' = 'all') {
+function applySettings(value: Json, scope: 'all' | 'runtime' | 'global' = 'all', expected?: { runtime?: string; global?: string }) {
+  const keepRuntime = expected?.runtime !== undefined && expected.runtime !== runtimeDraft()
+    ? { maxAccounts: settings.maxAccounts, publicBaseUrl: settings.publicBaseUrl, statusCommand: { ...settings.statusCommand } } : null;
+  const keepGlobal = expected?.global !== undefined && expected.global !== globalDraft()
+    ? { rkey: { fallbackServers: [...settings.rkey.fallbackServers] }, musicSignUrl: settings.musicSignUrl, musicSignKey: settings.musicSignKey, clearMusicSignKey: settings.clearMusicSignKey } : null;
   if (scope !== 'global') {
     settings.maxAccounts = Number(value.maxAccounts) || 2;
     settings.publicBaseUrl = String(value.publicBaseUrl || '');
     const command = value.statusCommand && typeof value.statusCommand === 'object' && !Array.isArray(value.statusCommand) ? value.statusCommand as Json : {};
     settings.statusCommand = { enabled: command.enabled !== false, trigger: typeof command.trigger === 'string' ? command.trigger : '#fd' };
+    savedSettings.runtime = runtimeDraft();
   }
   if (scope !== 'runtime') {
     const rkey = value.rkey && typeof value.rkey === 'object' && !Array.isArray(value.rkey) ? value.rkey as Json : {};
@@ -468,14 +502,26 @@ function applySettings(value: Json, scope: 'all' | 'runtime' | 'global' = 'all')
     settings.musicSignUrl = String(value.musicSignUrl || '');
     settings.hasMusicSignKey = value.hasMusicSignKey === true;
     settings.musicSignKey = ''; settings.clearMusicSignKey = false;
+    savedSettings.global = globalDraft();
   }
   // Service URLs may carry private query parameters. Keep them in their own
   // authenticated editor rather than the general runtime summary.
   settings.text = JSON.stringify({ maxAccounts: value.maxAccounts, publicBaseUrl: value.publicBaseUrl, statusCommand: value.statusCommand, needsRestart: value.needsRestart }, null, 2);
+  settingsLoaded.value = true;
+  if (keepRuntime) Object.assign(settings, keepRuntime);
+  if (keepGlobal) Object.assign(settings, keepGlobal);
 }
 
 async function loadSettings() {
-  await task('读取设置', async () => { applySettings(await api<Json>('/settings')); });
+  const reload = async () => {
+    const expected = { runtime: runtimeDraft(), global: globalDraft() };
+    applySettings(await api<Json>('/settings'), 'all', expected);
+  };
+  if (settingsDirty.value) {
+    confirm('重新读取设置', '存在尚未保存的运行或全局配置。重新读取将丢弃这些修改。', reload);
+    return;
+  }
+  await task('读取设置', reload);
 }
 
 function saveSettings() {
@@ -486,9 +532,11 @@ function saveSettings() {
     if (!trigger || [...trigger].length > 32 || /\s/u.test(trigger)) throw new Error('状态指令触发词需为 1–32 个字符，不能包含内部空白');
     statusCommand = { enabled: settings.statusCommand.enabled, trigger };
   } catch (value) { error.value = value instanceof Error ? value.message : '状态指令配置无效'; return; }
+  const payload = { maxAccounts: settings.maxAccounts, publicBaseUrl: settings.publicBaseUrl, statusCommand };
+  const expected = { runtime: runtimeDraft() };
   confirm('保存系统设置', '将更新运行上限、对外资源链接地址与内置状态指令。状态指令对所有账号即时生效，无需重启 QQ；启用后任何人均可在私聊或群聊触发。降低运行上限前请先停止多余账号。', async () => {
-    const value = await api<Json>('/settings', 'PATCH', { maxAccounts: settings.maxAccounts, publicBaseUrl: settings.publicBaseUrl, statusCommand });
-    applySettings(value, 'runtime'); await refreshOverview();
+    const value = await api<Json>('/settings', 'PATCH', payload);
+    applySettings(value, 'runtime', expected); await refreshOverview();
   });
 }
 
@@ -512,8 +560,9 @@ function saveGlobalSettings() {
     if (settings.clearMusicSignKey) payload.clearMusicSignKey = true;
     else if (settings.musicSignKey) payload.musicSignKey = settings.musicSignKey;
   } catch (value) { error.value = value instanceof Error ? value.message : '全局配置无效'; return; }
+  const expected = { global: globalDraft() };
   confirm('保存全局配置', '将更新所有账号共用的 rkey 回退服务器和音乐卡片签名设置，无需重启 QQ。服务地址留空会禁用对应服务；密钥留空保留，只有明确勾选才清除。此操作不会试连服务或发送消息。', async () => {
-    applySettings(await api<Json>('/settings', 'PATCH', payload), 'global');
+    applySettings(await api<Json>('/settings', 'PATCH', payload), 'global', expected);
   });
 }
 
@@ -739,6 +788,7 @@ function downloadBackup(id: string) {
           :overview="overview"
           :busy="!!busy"
           :settings="settings"
+          :settings-dirty="settingsDirty"
           :backup="backup"
           :storage="storage"
           :storage-result="storageResult"

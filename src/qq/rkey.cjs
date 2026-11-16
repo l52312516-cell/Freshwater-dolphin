@@ -1,17 +1,9 @@
 'use strict';
 
-// Native QQ download-rkey acquisition over the kernel's own SSO channel.
-//
-// Verified on QQ 3.2.35-54395 (x64): the request must be the BARE NTV2RichMediaReq
-// proto sent to `OidbSvc.0x9067_202` (the command number lives in the cmd name, so
-// wrapping it in an OidbBase envelope yields `[oidb] invalid pkg`). The head scene
-// {101:2,102:1,200:0} is required for the kernel parser to accept the package.
-//
-// On this build the kernel returns an empty stub (command echo 0/2, errorCode 253,
-// no body) instead of rkey entries; decodeResponse rejects that cleanly so callers
-// fall back rather than fabricate a key. errorCode 253 (0xfd01) is a normal OidbBase
-// constant, NOT the success signal — a real rkey response carries errorCode 0 and a
-// bounded NTV2RichMediaResp body (field numbers per QQApi op2-handlers / NapCat).
+// QQ download-rkey protocol. The verified native MSF route uses a complete
+// OidbBase envelope and the TrpcTcp command. The older JS SSO route uses the
+// bare request and can return an empty stub on this QQ build; both responses
+// must pass the same envelope and business-result checks.
 
 const COMMAND = 0x9067;
 const SUBCOMMAND = 202;
@@ -19,7 +11,7 @@ const CMD = `OidbSvc.0x${COMMAND.toString(16)}_${SUBCOMMAND}`;
 // Native MSF channel uses the TrpcTcp prefix and a full OidbBase envelope body
 // (verbatim real-device capture, LLBot build9067202). Verified errorCode 0.
 const NATIVE_CMD = `OidbSvcTrpcTcp.0x${COMMAND.toString(16)}_${SUBCOMMAND}`;
-// NTV2 download-rkey types requested by QQApi/NapCat: 10 group, 20 private, 2 misc.
+// NTV2 download-rkey types: 10 private (appid 1406), 20 group (appid 1407), 2 misc.
 const REQUEST_TYPES = [10, 20, 2];
 const MAX_ENTRIES = 128;
 const MAX_RKEY_BYTES = 8192;
@@ -56,9 +48,10 @@ function readVarint(buffer, offset) {
     do {
         if (offset >= buffer.length) throw problem('INVALID_RESPONSE', 'Truncated rkey response');
         byte = buffer[offset++];
+        if (shift === 63n && byte > 1) throw problem('INVALID_RESPONSE', 'Oversized rkey varint');
         value |= BigInt(byte & 0x7f) << shift;
         shift += 7n;
-        if (shift > 63n) throw problem('INVALID_RESPONSE', 'Oversized rkey varint');
+        if (shift > 70n) throw problem('INVALID_RESPONSE', 'Oversized rkey varint');
     } while (byte & 0x80);
     return { value, offset };
 }
@@ -68,16 +61,19 @@ function fields(buffer) {
     while (i < buffer.length) {
         const tag = readVarint(buffer, i); i = tag.offset;
         const field = Number(tag.value >> 3n), wire = Number(tag.value & 7n);
-        if (field === 0) throw problem('INVALID_RESPONSE', 'Invalid rkey field number');
+        if (field === 0 || field > 0x1fffffff) throw problem('INVALID_RESPONSE', 'Invalid rkey field number');
         let entry;
         if (wire === 0) { const v = readVarint(buffer, i); i = v.offset; entry = { wire, value: v.value }; }
         else if (wire === 2) {
             const len = readVarint(buffer, i); i = len.offset;
+            if (len.value > BigInt(buffer.length - i)) throw problem('INVALID_RESPONSE', 'Truncated rkey bytes');
             const end = i + Number(len.value);
-            if (end > buffer.length) throw problem('INVALID_RESPONSE', 'Truncated rkey bytes');
             entry = { wire, value: buffer.subarray(i, end) }; i = end;
-        } else if (wire === 5) { entry = { wire, value: buffer.subarray(i, i + 4) }; i += 4; }
-        else if (wire === 1) { entry = { wire, value: buffer.subarray(i, i + 8) }; i += 8; }
+        } else if (wire === 5 || wire === 1) {
+            const size = wire === 5 ? 4 : 8;
+            if (i + size > buffer.length) throw problem('INVALID_RESPONSE', 'Truncated rkey fixed-width field');
+            entry = { wire, value: buffer.subarray(i, i + size) }; i += size;
+        }
         else throw problem('INVALID_RESPONSE', `Unsupported rkey wire ${wire}`);
         out.set(field, [...(out.get(field) || []), entry]);
     }
@@ -147,11 +143,24 @@ function decodeResponse(buffer) {
     if (command !== BigInt(COMMAND) || subCommand !== BigInt(SUBCOMMAND)) {
         throw problem('QUERY_FAILED', 'QQ download-rkey command mismatch (kernel returned a stub)');
     }
-    const errorCode = unsigned(one(envelope, 3), 0xffffffffn) ?? 0n;
+    const error = one(envelope, 3);
+    if (error && unsigned(error, 0xffffffffn) === null) throw problem('INVALID_RESPONSE', 'Invalid download-rkey envelope result');
+    const errorCode = unsigned(error, 0xffffffffn) ?? 0n;
     if (errorCode !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the download-rkey query');
     const body = one(envelope, 4);
     if (!body || body.wire !== 2 || body.value.length === 0) throw problem('QUERY_FAILED', 'QQ returned no download-rkey body');
-    const download = one(fields(body.value), 4);
+    const contents = fields(body.value), header = one(contents, 1);
+    if (header) {
+        if (header.wire !== 2) throw problem('INVALID_RESPONSE', 'Invalid download-rkey business header');
+        // NTV2RichMediaResp.head (field 1).retCode (field 2), per the
+        // current QQApi and NTV2RichMediaResp protocol definitions.
+        const result = one(fields(header.value), 2);
+        if (result && (result.wire !== 0 || result.value > 0xffffffffn)) {
+            throw problem('INVALID_RESPONSE', 'Invalid download-rkey business result');
+        }
+        if (result && result.value !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the download-rkey business query');
+    }
+    const download = one(contents, 4);
     if (!download || download.wire !== 2) throw problem('QUERY_FAILED', 'QQ returned no download-rkey payload');
     const entries = fields(download.value).get(1) || [];
     if (!entries.length || entries.length > MAX_ENTRIES || entries.some(item => item.wire !== 2)) {
@@ -165,17 +174,16 @@ async function fetchRkeys(capture, params = {}) {
     const service = capture.service('msg');
     if (typeof service.sendSsoCmdReqByContend !== 'function') throw problem('UNSUPPORTED', 'QQ lacks the SSO download-rkey channel');
     const timeoutMs = Math.min(Math.max(Number(params.timeoutMs) || 6000, 1), 8000);
-    const cmd = typeof params.cmd === 'string' && params.cmd.length <= 64 ? params.cmd : CMD;
-    let resolved;
+    let resolved, timer;
     try {
         resolved = await Promise.race([
-            Promise.resolve(service.sendSsoCmdReqByContend(cmd, latin1(encodeRequest()))),
-            new Promise((_, reject) => setTimeout(() => reject(problem('TIMEOUT', 'QQ download-rkey query timed out')), timeoutMs))
+            Promise.resolve(service.sendSsoCmdReqByContend(CMD, latin1(encodeRequest()))),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(problem('TIMEOUT', 'QQ download-rkey query timed out')), timeoutMs); })
         ]);
     } catch (error) {
         if (error.code) throw error;
         throw problem('QUERY_FAILED', 'QQ download-rkey query failed');
-    }
+    } finally { clearTimeout(timer); }
     if (!resolved || typeof resolved !== 'object') throw problem('INVALID_RESPONSE', 'QQ download-rkey response is absent');
     if (resolved.result !== 0) throw problem('QUERY_FAILED', 'QQ download-rkey transport failed');
     const buffer = toBuffer(resolved.rspbuffer ?? resolved.rsp ?? resolved.data);

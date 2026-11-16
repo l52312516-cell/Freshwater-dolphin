@@ -30,6 +30,45 @@ test('RPC reports real backend errors without converting to success', async t =>
     await assert.rejects(client.call('status'), { code: 'NOT_READY' });
 });
 
+test('a backend ENOENT is delivered once instead of being mistaken for a missing response file', async t => {
+    let calls = 0;
+    const { client } = await fixture(t, async () => {
+        calls++; throw Object.assign(new Error('Account resource does not exist'), { code: 'ENOENT' });
+    });
+    await assert.rejects(client.call('recordExport', {}), { code: 'ENOENT', message: 'Account resource does not exist' });
+    assert.equal(calls, 1);
+    assert.equal(client.pending, 0);
+});
+
+test('client cancellation reaches a claimed read-only operation even when all server slots are occupied', async t => {
+    let entered, cancelled;
+    const entry = new Promise(resolve => { entered = resolve; });
+    const cancellation = new Promise(resolve => { cancelled = resolve; });
+    const { client } = await fixture(t, (_method, _params, context) => {
+        entered(); context.signal.addEventListener('abort', cancelled, { once: true });
+        return new Promise(() => {});
+    }, { maxPending: 1 });
+    const controller = new AbortController();
+    const pending = client.call('nativeRkey', {}, { signal: controller.signal });
+    await entry; controller.abort();
+    await assert.rejects(pending, { code: 'ABORTED' });
+    await Promise.race([cancellation, new Promise((_, reject) => setTimeout(() => reject(new Error('claimed query was not cancelled')), 1000))]);
+});
+
+test('cancelling a caller never claims that a dispatched write was cancelled in QQ', async t => {
+    let entered, signal;
+    const entry = new Promise(resolve => { entered = resolve; });
+    const { client } = await fixture(t, (method, _params, context) => {
+        if (method === 'status') return true;
+        signal = context.signal; entered(); return new Promise(() => {});
+    });
+    const controller = new AbortController();
+    const pending = client.call('sendMessage', {}, { signal: controller.signal });
+    await entry; controller.abort(); await assert.rejects(pending, { code: 'ABORTED' });
+    assert.equal(await client.call('status'), true);
+    assert.equal(signal.aborted, false);
+});
+
 test('RPC times out once and never retries a side effect', async t => {
     let sends = 0, entered, release, completed;
     const entry = new Promise(resolve => { entered = resolve; });

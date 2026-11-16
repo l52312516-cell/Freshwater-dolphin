@@ -158,3 +158,15 @@ test('an existing recovery mutex prevents deleting another recovery owner', t =>
     assert.throws(() => claimOwner(file, { instance: 'new-owner' }), { code: 'BUSY' });
     assert.deepEqual(readJson(file), previous);
 });
+
+test('an incomplete concurrently published ownership claim stays occupied and unchanged', t => {
+    const directory = fs.mkdtempSync(path.join(temporary, 'ownership-partial-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const file = path.join(directory, 'owner.json');
+    for (const bytes of ['', '{', '{"pid":']) {
+        fs.writeFileSync(file, bytes, { mode: 0o600 });
+        assert.throws(() => claimOwner(file, { instance: 'contender' }), { code: 'BUSY' });
+        assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+        assert.equal(fs.existsSync(file + '.recovery'), false);
+    }
+});
