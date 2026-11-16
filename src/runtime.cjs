@@ -10,6 +10,7 @@ const { OneBotService } = require('./onebot/service.cjs');
 const { acquireLock } = require('./lock.cjs');
 const { GlobalServices } = require('./global-services.cjs');
 const { StatusCommand } = require('./status-command.cjs');
+const { LifecycleClient } = require('./manager/lifecycle.cjs');
 
 async function run(config, log) {
     let stopped = false;
@@ -18,10 +19,13 @@ async function run(config, log) {
     const release = acquireLock(config.dataDirectory);
     const globalServices = new GlobalServices({ root: config.root,
         nativeRkey: (kind, options) => backend.call('nativeRkey', { kind, ...options }, { timeoutMs: options.timeoutMs }) });
+    const lifecycleClient = config.lifecycleEndpointFile && config.authorizationFile ? new LifecycleClient({ root: config.root,
+        profileId: config.profileId, authorizationFile: config.authorizationFile, endpointFile: config.lifecycleEndpointFile, logger: log }) : null;
     const service = new OneBotService({ backend, store, logger: log, actionTimeoutMs: config.actionTimeoutMs,
         mediaActionTimeoutMs: config.mediaActionTimeoutMs,
         mediaDirectory: config.mediaDirectory,
         globalServices,
+        lifecycleClient,
         profileId: config.profileId, mediaBaseUrl: config.mediaBaseUrl, mediaSigningKeyFile: config.mediaSigningKeyFile,
         authorizeSession: state => !stopped && authorized({ uin: String(state.self?.uin || ''), epoch: state.epoch }) });
     let lastStatus = { ready: false, online: null, self: null }, connectedSelf = null, sessionEpoch = null;

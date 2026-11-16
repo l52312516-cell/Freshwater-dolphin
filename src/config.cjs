@@ -84,6 +84,7 @@ function loadConfig({ root = path.resolve(__dirname, '..'), file, env = process.
         gatewayPort: integer(value.gatewayPort, 0, 0, 65535, 'gatewayPort'),
         nodes,
         ...(value.authorizationFile !== undefined ? { authorizationFile: location('authorizationFile', value.authorizationFile) } : {}),
+        ...(value.lifecycleEndpointFile !== undefined ? { lifecycleEndpointFile: location('lifecycleEndpointFile', value.lifecycleEndpointFile) } : {}),
         ...(value.mediaSigningKeyFile !== undefined ? { mediaSigningKeyFile: location('mediaSigningKeyFile', value.mediaSigningKeyFile) } : {}),
         actionTimeoutMs: integer(value.actionTimeoutMs, 10000, 100, 120000, 'actionTimeoutMs'),
         mediaActionTimeoutMs: integer(value.mediaActionTimeoutMs, 60000, 100, 60000, 'mediaActionTimeoutMs'),

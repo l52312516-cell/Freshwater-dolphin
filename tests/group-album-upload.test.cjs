@@ -152,12 +152,28 @@ test('HTTP upload JSON and slice configuration have strict byte, integer and req
 });
 
 test('upload ACK alone never succeeds when native readback is missing, belongs to another account or loses the video cover', async t => {
-    const absent = fixture(t); absent.state.overrides.native = (request, value) => request.operation === 'album.media' ? { ...value, mediaList: [] } : value;
-    await rejects(absent.upload('image', undefined, { expiresAt: Date.now() + 60 }), 'EXPIRED'); assert.equal(absent.state.controls.length, 1); assert.equal(absent.state.slices.length, 1);
+    const absent = fixture(t), absentCancel = new AbortController(); let absentReadbacks = 0;
+    absent.state.overrides.native = (request, value) => {
+        if (request.operation !== 'album.media') return value;
+        if (absent.state.slices.length && ++absentReadbacks === 2) absentCancel.abort();
+        return { ...value, mediaList: [] };
+    };
+    // Cancel only after a complete upload and one unsuccessful confirmation
+    // poll, so unrelated scheduling cannot expire the preparation phase.
+    await rejects(absent.upload('image', undefined, { signal: absentCancel.signal }), 'EXPIRED'); assert.equal(absent.state.controls.length, 1); assert.equal(absent.state.slices.length, 1);
+    assert.equal(absentReadbacks, 2);
     const other = fixture(t); other.state.overrides.native = (request, value) => { if (request.operation === 'album.media') value.mediaList.forEach(item => { item.uploader = '22222'; }); return value; };
     await rejects(other.upload(), 'INVALID_RESPONSE'); assert.equal(other.state.slices.length, 1);
-    const cover = fixture(t); cover.state.overrides.native = (request, value) => { if (request.operation === 'album.media') value.mediaList.forEach(item => { if (item.video) item.video.cover.lloc = 'other-cover'; }); return value; };
-    await rejects(cover.upload('video', 'base64://' + MP4.toString('base64'), { expiresAt: Date.now() + 60 }), 'EXPIRED'); assert.equal(cover.state.controls.length, 2);
+    const cover = fixture(t), coverCancel = new AbortController(); let coverReadbacks = 0;
+    cover.state.overrides.native = (request, value) => {
+        if (request.operation === 'album.media') {
+            value.mediaList.forEach(item => { if (item.video) item.video.cover.lloc = 'other-cover'; });
+            if (cover.state.slices.length === 2 && ++coverReadbacks === 2) coverCancel.abort();
+        }
+        return value;
+    };
+    await rejects(cover.upload('video', 'base64://' + MP4.toString('base64'), { signal: coverCancel.signal }), 'EXPIRED'); assert.equal(cover.state.controls.length, 2);
+    assert.equal(coverReadbacks, 2);
 });
 
 test('album target/name validation precedes uploads and cancellation/session changes never retry later slices', async t => {

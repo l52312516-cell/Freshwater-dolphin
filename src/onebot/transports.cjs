@@ -8,6 +8,7 @@ const { executeQuickOperation } = require('./quick-operation.cjs');
 const { MAX_ACTION_BYTES } = require('./limits.cjs');
 const { decodeHttpParameter } = require('./parameter-schema.cjs');
 const streaming = require('./streaming.cjs');
+const { responseCompletion } = require('./response-completion.cjs');
 
 const MAX_BODY = 1024 * 1024;
 const failure = (retcode, message, request) => ({ status: 'failed', retcode, data: null, message, wording: message,
@@ -190,7 +191,7 @@ class TransportHub {
         if (!request || typeof request !== 'object' || Array.isArray(request) || typeof request.action !== 'string') return failure(1400, 'Invalid action request', request);
         if (node.pending.size >= (node.config.maxPending || 16) || !this.rateLimit(node)) return finish(failure(1503, 'Node is busy', request));
         if (streamed && typeof options.streamSink?.send !== 'function') return finish(failure(1404, 'A streaming transport sink is required', request));
-        const actionOptions = { signal: options.signal, ...(streamed ? { streamSink: { send: async data => {
+        const actionOptions = { signal: options.signal, ...(typeof options.afterResponse === 'function' ? { afterResponse: options.afterResponse } : {}), ...(streamed ? { streamSink: { send: async data => {
             if (!this.current(session) || options.signal?.aborted) throw Object.assign(new Error('Stream session closed'), { code: 'EXPIRED' });
             await options.streamSink.send(streaming.frame(data, request));
             if (!this.current(session) || options.signal?.aborted) throw Object.assign(new Error('Stream session closed'), { code: 'EXPIRED' });
@@ -281,16 +282,20 @@ class TransportHub {
     async dispatchHttp(node, action, session, request, response) {
         const streamed = streaming.STREAMED_ACTIONS.has(action.action), controller = new AbortController();
         const current = () => this.current(session) && !controller.signal.aborted;
+        const completion = responseCompletion({ signal: controller.signal, onError: () => this.diagnostic(node, 'response_completion_failed') });
+        let responseSuccess = false;
+        response.once('finish', () => { void completion.settle(responseSuccess && current()); });
         const abort = () => controller.abort();
         request.once('aborted', abort); response.once('close', abort); this.streams.add(controller);
         try {
             if (streamed) { response.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.flushHeaders(); }
-            const result = await this.dispatch(node, action, session, { signal: controller.signal,
+            const result = await this.dispatch(node, action, session, { signal: controller.signal, afterResponse: completion.afterResponse,
                 ...(streamed ? { streamSink: { send: value => streaming.writeHttp(response, value, { signal: controller.signal, current }) } } : {}) });
+            responseSuccess = result.status === 'ok' && current();
             if (streamed) { if (!controller.signal.aborted && (current() || result.status === 'failed')) { await streaming.writeHttp(response, result, { signal: controller.signal, current: () => !controller.signal.aborted && (this.current(session) || result.status === 'failed') }); response.end(); } else response.destroy(); }
             else if (!controller.signal.aborted) reply(response, 200, current() || result.status === 'failed' ? result : failure(1503, 'Account session changed', action));
             else response.destroy();
-        } catch (_) { response.destroy(); }
+        } catch (_) { await completion.settle(false); response.destroy(); }
         finally { this.streams.delete(controller); request.removeListener('aborted', abort); response.removeListener('close', abort); }
     }
 
@@ -345,17 +350,23 @@ class TransportHub {
             catch (_) { this.sendClient(socket, failure(1400, 'Invalid JSON')); return; }
             const current = () => this.current(session) && !controller.signal.aborted && node.clients.get(socket) === context;
             const streamed = streaming.STREAMED_ACTIONS.has(request?.action);
-            this.dispatch(node, request, session, { signal: controller.signal,
+            const completion = responseCompletion({ signal: controller.signal, onError: () => this.diagnostic(node, 'response_completion_failed') });
+            this.dispatch(node, request, session, { signal: controller.signal, afterResponse: completion.afterResponse,
                 ...(streamed ? { streamSink: { send: value => streaming.sendSocket(socket, value, { signal: controller.signal, current }) } } : {}) }).then(async result => {
-                if (current()) { if (streamed) await streaming.sendSocket(socket, result, { signal: controller.signal, current }); else this.sendClient(socket, result); }
-            }).catch(() => this.diagnostic(node, 'action_failed'));
+                if (current()) {
+                    if (streamed) await streaming.sendSocket(socket, result, { signal: controller.signal, current });
+                    else if (!await new Promise(resolve => this.sendClient(socket, result, resolve))) return;
+                    await completion.settle(result.status === 'ok' && current());
+                }
+            }).catch(() => this.diagnostic(node, 'action_failed')).finally(() => completion.settle(false));
         });
     }
 
-    sendClient(socket, value) {
-        if (socket.readyState !== WebSocket.OPEN) return;
-        if (socket.bufferedAmount > 2 * MAX_BODY) { socket.terminate(); return; }
-        socket.send(JSON.stringify(value), error => { if (error) socket.terminate(); });
+    sendClient(socket, value, completed = () => {}) {
+        if (socket.readyState !== WebSocket.OPEN) { completed(false); return; }
+        if (socket.bufferedAmount > 2 * MAX_BODY) { socket.terminate(); completed(false); return; }
+        try { socket.send(JSON.stringify(value), error => { if (error) socket.terminate(); completed(!error); }); }
+        catch (_) { socket.terminate(); completed(false); }
     }
 
     meta(type, extra) {

@@ -20,6 +20,7 @@ const { LogReader } = require('./logs.cjs');
 const { ManagementEvents } = require('./events.cjs');
 const { AvatarCache } = require('./avatars.cjs');
 const { Storage } = require('./storage.cjs');
+const { ManagerLifecycle } = require('./lifecycle.cjs');
 const { publicSettings, validateGlobalSettingsPatch } = require('../global-services.cjs');
 const { MAX_ACTION_BYTES } = require('../onebot/limits.cjs');
 const media = require('../qq/media.cjs');
@@ -35,6 +36,7 @@ function secureHeaders(reply) {
 async function createManager({ root = path.resolve(__dirname, '../..'), accounts: providedAccounts, remote: providedRemote, https, startAccounts = true, notificationOptions = {} } = {}) {
     const directory = privateDirectory(root, 'work/control');
     const releaseOwner = acquireLock(directory);
+    let lifecycle;
     try {
     const auth = new Auth(directory);
     const settingsFile = path.join(directory, 'settings.json');
@@ -391,6 +393,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         const type = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.ico': 'image/x-icon' }[path.extname(file)] || 'application/octet-stream';
         return reply.type(type).send(fs.createReadStream(file));
     });
+    lifecycle = await new ManagerLifecycle(root, accounts).open();
     if (startAccounts) await accounts.initialize();
     storage.start();
     const previousAccountChange = accounts.onChange;
@@ -406,6 +409,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
             const errors = [];
             const clean = async operation => { try { await operation(); } catch (error) { errors.push(error); } };
             clearInterval(notificationTimer); accounts.onChange = previousAccountChange;
+            await clean(() => lifecycle.close());
             await clean(() => notifications.close());
             await clean(() => events.close()); await clean(() => auth.close());
             await clean(() => logReader.close()); await clean(() => avatars.close()); await clean(() => storage.close());
@@ -421,7 +425,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         finally { releaseOwner(); } })();
         return closingPromise;
     }
-    return { app, auth, accounts, remote, backups, storage, settings, notifications, overview, close };
-    } catch (error) { releaseOwner(); throw error; }
+    return { app, auth, accounts, remote, backups, storage, settings, notifications, lifecycle, overview, close };
+    } catch (error) { try { await lifecycle?.close(); } finally { releaseOwner(); } throw error; }
 }
 module.exports = { createManager };

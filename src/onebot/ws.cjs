@@ -5,6 +5,7 @@ const { MAX_ACTION_BYTES } = require('./limits.cjs');
 const { EventEmitter } = require('node:events');
 const WebSocket = require('ws');
 const streaming = require('./streaming.cjs');
+const { responseCompletion } = require('./response-completion.cjs');
 
 class ReverseWebSocket extends EventEmitter {
     constructor({ config, action, status, logger = () => {}, maxEvents = 1000, maxAgeMs = 60000, isAuthorized = () => true }) {
@@ -80,19 +81,21 @@ class ReverseWebSocket extends EventEmitter {
                 this.send(streaming.STREAMED_ACTIONS.has(request?.action) ? streaming.terminal(error, request) : error); return;
             }
             const streamed = streaming.STREAMED_ACTIONS.has(request?.action);
-            const options = { signal: controller.signal, ...(streamed ? { streamSink: { send: value => streaming.sendSocket(socket, value, { signal: controller.signal, current }) } } : {}) };
+            const completion = responseCompletion({ signal: controller.signal, onError: () => this.log('response_completion_failed') });
+            const options = { signal: controller.signal, afterResponse: completion.afterResponse, ...(streamed ? { streamSink: { send: value => streaming.sendSocket(socket, value, { signal: controller.signal, current }) } } : {}) };
             const task = Promise.resolve().then(() => current() ? this.action(request, options) : undefined).then(async response => {
                 // Results belong to the requesting connection; never send on a replacement socket.
                 if (current() && response !== undefined) {
                     if (streamed) await streaming.sendSocket(socket, response.stream === 'stream-action' ? response : streaming.terminal(response, request), { signal: controller.signal, current });
-                    else this.send(response);
+                    else if (!await new Promise(resolve => this.send(response, resolve))) return;
+                    await completion.settle(response.status === 'ok' && current());
                 }
             }).catch(() => {
                 if (current()) { const error = { status: 'failed', retcode: 1500, data: null, message: 'Action failed',
                     ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) };
                     this.send(streamed ? streaming.terminal(error, request) : error);
                 }
-            });
+            }).finally(() => completion.settle(false));
             this.inflight.add(task);
             task.finally(() => this.inflight.delete(task));
         });
@@ -135,11 +138,11 @@ class ReverseWebSocket extends EventEmitter {
                 good: Boolean(status.ready && status.online === true) } });
     }
 
-    send(value) {
-        if (!this.connected || !this.isAuthorized()) return false;
-        if (this.socket.bufferedAmount > 2 * 1024 * 1024) { this.log('websocket_backpressure'); this.socket.terminate(); return false; }
-        try { this.socket.send(JSON.stringify(value), error => { if (error) this.log('websocket_send_failed'); }); return true; }
-        catch (_) { this.socket.terminate(); return false; }
+    send(value, completed = () => {}) {
+        if (!this.connected || !this.isAuthorized()) { completed(false); return false; }
+        if (this.socket.bufferedAmount > 2 * 1024 * 1024) { this.log('websocket_backpressure'); this.socket.terminate(); completed(false); return false; }
+        try { this.socket.send(JSON.stringify(value), error => { if (error) this.log('websocket_send_failed'); completed(!error); }); return true; }
+        catch (_) { this.socket.terminate(); completed(false); return false; }
     }
 
     event(value) {

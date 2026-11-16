@@ -170,7 +170,7 @@ static napi_value Send(napi_env e,napi_callback_info info) {
     pthread_mutex_lock(&mutex);uintptr_t self=instance;int captured=have_template;pthread_mutex_unlock(&mutex);
     if(!captured||!self||!base)return fail(e,"Native session not captured");
     napi_value a[2];size_t n=2,cl=0,hl=0;napi_get_cb_info(e,info,&n,a,NULL,NULL);
-    if(n!=2||napi_get_value_string_utf8(e,a[0],NULL,0,&cl)!=napi_ok||!cl||cl>=128||napi_get_value_string_utf8(e,a[1],NULL,0,&hl)!=napi_ok||!hl||hl%2||hl>MAX_BODY*2)return fail(e,"Invalid native request arguments");
+    if(n!=2||napi_get_value_string_utf8(e,a[0],NULL,0,&cl)!=napi_ok||!cl||cl>=128||napi_get_value_string_utf8(e,a[1],NULL,0,&hl)!=napi_ok||hl%2||hl>MAX_BODY*2)return fail(e,"Invalid native request arguments");
     struct request *r=calloc(1,sizeof(*r));char *h=malloc(hl+1);if(!r||!h){free(r);free(h);return fail(e,"Native request allocation failed");}
     napi_get_value_string_utf8(e,a[0],r->command,sizeof(r->command),&cl);napi_get_value_string_utf8(e,a[1],h,hl+1,&hl);
     /* Only the verified whole system-face directory needs a larger reply.

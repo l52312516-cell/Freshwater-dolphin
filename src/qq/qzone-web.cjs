@@ -7,7 +7,9 @@ const sameAccount = (value, uin) => typeof value === 'string' && /^o?\d{1,15}$/.
 const hash = value => { let result = 5381; for (const char of value) result = (Math.imul(result, 33) + char.charCodeAt(0)) | 0; return String(result & 0x7fffffff); };
 function createWeb(capture, fetchImpl, purpose = 'qzone', { onDiagnostic } = {}) {
     const fixed = { qzone: { domain: 'qzone.qq.com', checkHost: 'ptlogin2.qzone.qq.com', hosts: ['h5.qzone.qq.com', 'user.qzone.qq.com', 'up.qzone.qq.com'] },
-        friendDress: { domain: 'vip.qq.com', checkHost: 'ptlogin2.vip.qq.com', hosts: ['zb.vip.qq.com'] } }[purpose];
+        friendDress: { domain: 'vip.qq.com', checkHost: 'ptlogin2.vip.qq.com', hosts: ['zb.vip.qq.com'] },
+        modelShow: { domain: 'vip.qq.com', checkHost: 'ptlogin2.vip.qq.com', hosts: ['proxy.vip.qq.com'] },
+        anonymousBan: { domain: 'qqweb.qq.com', checkHost: 'ptlogin2.qqweb.qq.com', hosts: ['qqweb.qq.com'] } }[purpose];
     if (!fixed) fail('UNSUPPORTED', 'Unknown fixed QQ Web purpose');
     async function request(target, options, scope, maximum = 2 * 1024 * 1024) {
         scope.active(); const href = String(target);
@@ -47,7 +49,7 @@ function createWeb(capture, fetchImpl, purpose = 'qzone', { onDiagnostic } = {})
         integer(ticket.keyIndex, 0xffffffff, 0, 'INVALID_RESPONSE');
         // Each purpose has one exact existing landing page. VIP has no
         // account-specific Qzone infocenter route; its cookie domain stays VIP.
-        const destination = purpose === 'qzone' ? 'https://user.qzone.qq.com/' + uin + '/infocenter' : 'https://vip.qq.com/';
+        const destination = purpose === 'qzone' ? 'https://user.qzone.qq.com/' + uin + '/infocenter' : purpose === 'anonymousBan' ? 'https://qqweb.qq.com/' : 'https://vip.qq.com/';
         current.search = new URLSearchParams({ ptlang: '1033', clientuin: uin, clientkey: ticket.clientKey, u1: destination, keyindex: ticket.keyIndex }).toString();
         const jar = new Map(), visited = new Set();
         const select = target => {
@@ -98,7 +100,11 @@ function createWeb(capture, fetchImpl, purpose = 'qzone', { onDiagnostic } = {})
             }
             diagnose(response);
             if (![301, 302, 303, 307, 308].includes(response.status)) {
-                if (response.status !== 200 || current.href !== destination) loginFail('AUTH_FAILED', 'Qzone login did not reach its fixed destination'); break;
+                // QQ Web has no public root page (404). For its anonymous-ban
+                // purpose the exact root may end the login chain, but the same
+                // account and domain cookie checks below are still mandatory.
+                const reached = response.status === 200 || purpose === 'anonymousBan' && response.status === 404;
+                if (!reached || current.href !== destination) loginFail('AUTH_FAILED', 'Qzone login did not reach its fixed destination'); break;
             }
             const location = response.headers.get('location'); if (step >= 4 || !location || location.length > 8192) loginFail('INVALID_RESPONSE', 'Qzone login redirect limit exceeded');
             let next; try { next = new URL(location, current); } catch { loginFail('INVALID_RESPONSE', 'Invalid Qzone login redirect'); }
@@ -116,8 +122,9 @@ function createWeb(capture, fetchImpl, purpose = 'qzone', { onDiagnostic } = {})
             fallback = result.domainPskeyMap.get(fixed.domain); if (!credential(fallback)) loginFail('AUTH_FAILED', 'QQ supplied no valid QQ domain key');
         }
         const p_skey = values.p_skey || fallback;
-        return { key: hash(p_skey || values.skey), skey: values.skey, p_skey: p_skey || '', cookie(target) {
-            const url = new URL(target); if (!fixed.hosts.includes(url.hostname) || url.protocol !== 'https:') fail('INVALID_PARAMS', 'QQ cookies are limited to their fixed business hosts');
+        return { key: hash(p_skey || values.skey), skey: values.skey, p_skey: p_skey || '',
+            domainCookie() { return header({ ...values, ...(fallback ? { p_skey: fallback } : {}) }); }, cookie(target) {
+            const url = new URL(target); if (!fixed.hosts.includes(url.hostname) || url.protocol !== 'https:' || url.port || url.username || url.password) fail('INVALID_PARAMS', 'QQ cookies are limited to their fixed business hosts');
             const selected = select(url); if (fallback) selected.p_skey = fallback;
             if (![selected.uin, selected.p_uin].some(value => sameAccount(value, uin)) || [selected.uin, selected.p_uin].some(value => value !== undefined && !sameAccount(value, uin)) || selected.skey !== values.skey || p_skey && selected.p_skey !== p_skey) loginFail('AUTH_FAILED', 'Qzone cookies do not authorize the fixed business destination');
             return header(selected);

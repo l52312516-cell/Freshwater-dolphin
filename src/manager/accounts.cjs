@@ -365,6 +365,7 @@ class Accounts {
         atomic(file, { profileId: id, expectedUin: item.expectedUin || item.boundUin || undefined,
             rpcDirectory: path.join(base, 'rpc'), dataDirectory: path.join(base, 'data'), logDirectory: path.join(base, 'logs'),
             healthFile: path.join(base, 'state/health.json'), authorizationFile: path.join(base, 'state/authorization.json'),
+            lifecycleEndpointFile: path.join(this.control, 'lifecycle-endpoint.json'),
             mediaDirectory: path.join(base, 'media'), mediaSigningKeyFile: keyFile,
             ...(settings.publicBaseUrl ? { mediaBaseUrl: settings.publicBaseUrl.replace(/\/$/, '') + '/media/' + id } : {}),
             gatewayPort: 0, actionTimeoutMs: item.actionTimeoutMs, nodes: item.nodes });

@@ -25,6 +25,8 @@ QQAPI 扩展研究参考了 SnowLuma 2.4.2（提交 `5dcbfa6f297b9dd112d859c2793
 
 本项目独立编写运行模块、编解码、账号与会话约束及测试，没有整段引入上述项目的实现源码、原生二进制或依赖包。协议字段、兼容名称与合成测试向量不表示引入了其运行实现；离线对照使用的参考编译器和本地参考快照也不进入源码交付。第三方原项目仍适用各自声明，本项目许可不对其重新授权。
 
+原 18 项剩余入口的固定协议字段与历史行为另参考 [MiraiGo](https://github.com/Mrs4s/MiraiGo) 的型号展示、网址信誉与匿名管理协议、[LagrangeGo](https://github.com/LagrangeDev/LagrangeGo) 的网址信誉协议，以及 [OICQ](https://github.com/takayama-lily/oicq) 的匿名开关和匿名标识契约。来源文件及本项目独立实现的差异分别列于 `docs/model-show.md`、`docs/url-safety.md`、`docs/anonymous-actions.md` 与 `docs/qqapi-remaining-20261116.md`；未将这些参考仓库加入运行依赖。
+
 ## ws — MIT
 
 Copyright (c) 2011 Einar Otto Stangvik &lt;einaros@gmail.com&gt;

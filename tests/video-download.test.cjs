@@ -146,12 +146,26 @@ test('cancellation is bounded even when fetch ignores AbortSignal and never sett
     await assert.rejects(downloadVideo(options({ expiresAt: Date.now() + 15, fetchImpl: () => new Promise(() => {}) })), { code: 'TIMEOUT' });
 });
 
-test('deadline bounds a stalled stream, cancels its reader and never exposes signed URLs', async () => {
-    let cancelled = false;
-    await assert.rejects(downloadVideo(options({ expiresAt: Date.now() + 15, fetchImpl: async () => new Response(new ReadableStream({
-        pull() { return new Promise(() => {}); }, cancel() { cancelled = true; }
-    })) })), error => error.code === 'TIMEOUT' && !String(error).includes('PRIVATE'));
-    assert.equal(cancelled, true);
+test('deadline bounds a stalled stream, cancels its reader and never exposes signed URLs', async t => {
+    // Advance the deadline only after read() has entered the stalled source.
+    // A wall-clock 15 ms limit can expire before fetch under suite contention,
+    // which tests an unfetched request instead of reader cancellation.
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+    try {
+        let cancelled = false, requestSignal, enterStream;
+        const entered = new Promise(resolve => { enterStream = resolve; });
+        const rejected = assert.rejects(downloadVideo(options({ expiresAt: Date.now() + 15, fetchImpl: async (_url, init) => {
+            requestSignal = init.signal;
+            return new Response(new ReadableStream({
+                pull() { enterStream(); return new Promise(() => {}); }, cancel() { cancelled = true; }
+            }, { highWaterMark: 0 }));
+        } })), error => error.code === 'TIMEOUT' && !String(error).includes('PRIVATE'));
+        await entered;
+        assert.equal(cancelled, false); assert.equal(requestSignal.aborted, false);
+        t.mock.timers.tick(15);
+        await rejected;
+        assert.equal(cancelled, true); assert.equal(requestSignal.aborted, true);
+    } finally { t.mock.timers.reset(); }
     await assert.rejects(downloadVideo(options({ fetchImpl: () => { throw Object.assign(new Error(source), { code: 'INVALID_RESPONSE' }); } })),
         error => error.code === 'QUERY_FAILED' && !String(error).includes('PRIVATE') && !error.cause);
     await assert.rejects(downloadVideo(options({ fetchImpl: async () => new Response(new ReadableStream({

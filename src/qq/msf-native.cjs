@@ -9,8 +9,9 @@ const { setTimeout: pause } = require('node:timers/promises');
 const FIXED_PROTOCOLS = Object.freeze({ fixedExtended: './fixed-oidb.cjs', fixedQuery2: './query2-oidb.cjs',
     fixedShare: './share-oidb.cjs', fixedAdmin: './admin-oidb.cjs', fixedCustomFace: './custom-face-protocol.cjs',
     fixedContactExtra: './contact-extra-protocol.cjs', fixedGroupAlbum: './group-album-protocol.cjs', fixedMiscExtra: './misc-extra-protocol.cjs',
-    fixedFlashTransfer: './flash-transfer-protocol.cjs', fixedForwardUpload: './forward-upload-protocol.cjs', fixedVoiceExtra: './voice-extra-protocol.cjs' });
-const OPS = new Set(['fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', ...Object.keys(FIXED_PROTOCOLS)]);
+    fixedFlashTransfer: './flash-transfer-protocol.cjs', fixedForwardUpload: './forward-upload-protocol.cjs', fixedVoiceExtra: './voice-extra-protocol.cjs',
+    fixedDbKey: './db-key-protocol.cjs', fixedUrlSafety: './url-safety-protocol.cjs', fixedAnonymous: './anonymous-protocol.cjs' });
+const OPS = new Set(['rawPacket', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', ...Object.keys(FIXED_PROTOCOLS)]);
 const MAX_QUEUED = 32;
 let addon = null;
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
@@ -37,6 +38,7 @@ function success(value) { return value === true || value === 'true'; }
 // Test dependencies cannot be selected through RPC parameters.
 function createChannel({ loadNative = load, now = () => performance.now(), sleep = ms => pause(ms), pollMs = 30 } = {}) {
     const waiting = [];
+    const statistics = require('./packet-statistics.cjs').createPacketStatistics();
     let current = null, lastSession = null;
     function pump() {
         if (current || !waiting.length) return;
@@ -48,6 +50,11 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
     }
     function run(capture, params = {}) {
         if (!OPS.has(params.op)) return Promise.reject(problem('INVALID_PARAMS', 'Unsupported fixed native operation'));
+        let raw;
+        if (params.op === 'rawPacket') {
+            try { raw = require('./raw-packet.cjs').prepare(params); }
+            catch (error) { return Promise.reject(error); }
+        }
         const timeoutMs = params.timeoutMs ?? 10000;
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) return Promise.reject(problem('INVALID_PARAMS', 'Invalid native deadline'));
         if (waiting.length + (current ? 1 : 0) >= MAX_QUEUED) return Promise.reject(problem('BUSY', 'Native operation queue is full'));
@@ -75,7 +82,11 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
             }
             check();
             let command, request, decode, allowEmptyResponse = false;
-            if (Object.hasOwn(FIXED_PROTOCOLS, params.op)) {
+            if (raw) {
+                command = raw.command; request = raw.body;
+                decode = body => ({ responseHex: body.toString('hex') });
+                allowEmptyResponse = true;
+            } else if (Object.hasOwn(FIXED_PROTOCOLS, params.op)) {
                 const proto = require(FIXED_PROTOCOLS[params.op]);
                 const prepared = proto.prepare(params.operation, params.request);
                 command = prepared.name; request = prepared.body; decode = body => proto.decode(body, prepared);
@@ -108,13 +119,18 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
             check();
             const sent = native.send(command, request.toString('hex'));
             if (!success(sent.ok) || !/^[1-9]\d*$/.test(String(sent.requestId))) throw problem('QUERY_FAILED', 'Native MSF query could not be submitted');
+            statistics.record('submitted', request.length);
             const id = String(sent.requestId);
             try {
+                // Submission is the complete contract for rsp=false. It says
+                // nothing about the server accepting the requested business action.
+                if (raw?.rsp === false) { check(); return { submitted: true, via: 'native-msf' }; }
                 while (true) {
                     check();
                     const response = native.readResponse(id);
                     if (String(response.requestId) !== id) throw problem('INVALID_RESPONSE', 'Native response request ID mismatch');
                     if (response.count > 0) {
+                        statistics.record('response', response.body?.length || 0);
                         if (BigInt(response.result) !== 0n) throw problem('QUERY_FAILED', 'QQ native query returned a transport error');
                         if (!response.body?.length) {
                             const size = /^(0|[1-9]\d{0,19})$/.test(String(response.responseBytes)) ? String(response.responseBytes) : 'unknown';
@@ -133,6 +149,7 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
             const settle = (error, value) => {
                 if (settled) return;
                 settled = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
+                statistics.record(!error ? 'succeeded' : params.signal?.aborted ? 'cancelled' : ['TIMEOUT', 'EXPIRED'].includes(error.code) ? 'timed_out' : 'failed');
                 if (error) reject(error); else resolve(value);
             };
             const entry = { execute, started: false, resolve: value => settle(null, value), reject: error => settle(error) };
@@ -147,14 +164,20 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
             signal.addEventListener('abort', abort, { once: true });
             timer = setTimeout(() => controller.abort(problem('TIMEOUT', 'Native operation exceeded its total deadline')), timeoutMs);
             waiting.push(entry);
+            statistics.record('queued');
             if (signal.aborted) abort(); else pump();
         });
     }
-    return { run };
+    return { run, statistics: () => ({ ...statistics.snapshot(), queued: waiting.length, active: current !== null }) };
 }
 const channel = createChannel();
 function status() {
     const value = load().status();
     return { protocolVersion: 2, installed: Boolean(value.installed), targetVerified: available(), liveRequests: Number(value.liveRequests) };
 }
-module.exports = { run: channel.run, OPS, available, createChannel, status };
+function packetStatus() {
+    let native = { installed: false, targetVerified: false, liveRequests: 0 };
+    try { native = status(); } catch {}
+    return { ...channel.statistics(), native };
+}
+module.exports = { run: channel.run, OPS, available, createChannel, status, packetStatus };

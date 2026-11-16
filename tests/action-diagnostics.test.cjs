@@ -4,13 +4,14 @@ const assert = require('node:assert/strict');
 const { OneBotService } = require('../src/onebot/service.cjs');
 const { Capture, TARGET_VERSION } = require('../src/qq/capture.cjs');
 
-test('known unavailable actions retain their fixed name without dispatching a backend operation', async () => {
+test('known unavailable actions retain their fixed name without dispatching a business operation', async () => {
     let calls = 0;
     const logs = [];
-    const service = new OneBotService({ backend: { call() { calls++; throw new Error('must not run'); } },
+    const state = { ready: true, epoch: 'live', self: { uin: '3000000002', uid: 'u_self' }, capabilities: {} };
+    const service = new OneBotService({ backend: { call(method) { if (method === 'status') return state; calls++; throw new Error('must not run'); } },
         store: {}, logger: (event, details) => logs.push({ event, ...details }) });
-    for (const action of ['get_msg_emoji_likes', 'set_group_anonymous_ban', 'bot_exit', 'send_packet']) {
-        const response = await service.action({ action, params: {}, echo: { action } });
+    for (const [action, params] of [['get_msg_emoji_likes', { message_id: 1 }], ['set_group_anonymous_ban', {}], ['bot_exit', {}], ['send_packet', { cmd: 'Test.Request' }]]) {
+        const response = await service.action({ action, params, echo: { action } });
         assert.equal(response.retcode, 1404);
         assert.deepEqual(response.echo, { action });
         assert.equal(logs.at(-1).action, action);

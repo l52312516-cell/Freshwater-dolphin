@@ -62,6 +62,7 @@ function createGroupWeb(capture, { fetchImpl = globalThis.fetch } = {}) {
         }
     }
     async function authenticate(domain, context, state) {
+        if (!['qun.qq.com', 'web.qun.qq.com'].includes(domain)) throw failure('INVALID_PARAMS', 'Unsupported fixed QQ group credential domain');
         if (!supported()) throw failure('UNSUPPORTED', 'QQ has no verified Web ticket service');
         const ticket = await capture.invoke('ticket', 'forceFetchClientKey', ['']); active(context, state);
         if (ticket?.result !== 0 || !credential(ticket.clientKey) || typeof ticket.keyIndex !== 'string' ||
@@ -210,6 +211,6 @@ function createGroupWeb(capture, { fetchImpl = globalThis.fetch } = {}) {
         });
         return { groupId: data.groupId, type: data.type, members };
     }
-    return { supported, execute };
+    return { supported, execute, authenticate };
 }
 module.exports = { createGroupWeb };

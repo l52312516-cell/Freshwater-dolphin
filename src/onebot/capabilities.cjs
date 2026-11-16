@@ -24,6 +24,15 @@ const { EXTENSION_REQUIREMENTS: FRIEND_DRESS_REQUIREMENTS } = require('./friend-
 const { REASONS: UNSUPPORTED_REASONS } = require('./unsupported-actions.cjs');
 const { EXTENSION_REQUIREMENTS: FORWARD_EXTRA_REQUIREMENTS } = require('./forward-extra-actions.cjs');
 const { EXTENSION_REQUIREMENTS: VOICE_EXTRA_REQUIREMENTS } = require('./voice-extra-actions.cjs');
+const { EXTENSION_REQUIREMENTS: WORD_SLICE_REQUIREMENTS } = require('./word-slices-actions.cjs');
+const { EXTENSION_REQUIREMENTS: RAW_PACKET_REQUIREMENTS } = require('./raw-packet-actions.cjs');
+const { EXTENSION_REQUIREMENTS: AUTH_REQUIREMENTS } = require('./auth-extra-actions.cjs');
+const { REQUIREMENTS: LIFECYCLE_REQUIREMENTS } = require('./lifecycle-actions.cjs');
+const { EXTENSION_REQUIREMENTS: MODEL_SHOW_REQUIREMENTS } = require('./model-show-actions.cjs');
+const { EXTENSION_REQUIREMENTS: URL_SAFETY_REQUIREMENTS } = require('./url-safety-actions.cjs');
+const { EXTENSION_REQUIREMENTS: COLLECTION_CREATE_REQUIREMENTS } = require('./collection-create-actions.cjs');
+const { EXTENSION_REQUIREMENTS: EMOJI_SUMMARY_REQUIREMENTS } = require('./emoji-summary-actions.cjs');
+const { ACTION_REQUIREMENTS: ANONYMOUS_REQUIREMENTS } = require('./anonymous-actions.cjs');
 const STANDARD_ACTIONS = Object.freeze([
     'send_private_msg', 'send_group_msg', 'send_msg', 'delete_msg', 'get_msg', 'get_forward_msg',
     'send_like', 'set_group_kick', 'set_group_ban', 'set_group_anonymous_ban', 'set_group_whole_ban',
@@ -45,7 +54,10 @@ const ACTION_REQUIREMENTS = Object.freeze({
     get_group_member_list: 'groupMembers', get_status: null, get_version_info: null,
     can_send_image: null, can_send_record: null, get_image: 'imageReceive', get_record: 'recordExport', ...EXTENDED_STANDARD, set_group_name: 'groupName', set_group_ban: 'groupMemberBan',
     set_group_whole_ban: 'groupWholeBan', set_group_leave: 'groupLeave', set_group_card: 'groupCard', set_group_admin: 'groupAdmin', set_group_kick: 'groupKick',
-    set_friend_add_request: 'friendRequests', set_group_add_request: 'groupRequests', send_like: 'profileLike'
+    set_friend_add_request: 'friendRequests', set_group_add_request: 'groupRequests', send_like: 'profileLike',
+    get_cookies: AUTH_REQUIREMENTS.get_cookies, get_csrf_token: AUTH_REQUIREMENTS.get_csrf_token,
+    get_credentials: AUTH_REQUIREMENTS.get_credentials, set_restart: LIFECYCLE_REQUIREMENTS.set_restart, clean_cache: LIFECYCLE_REQUIREMENTS.clean_cache,
+    ...ANONYMOUS_REQUIREMENTS
 });
 const EXTENSION_REQUIREMENTS = Object.freeze({ get_capabilities: null, get_group_msg_history: 'history', get_friend_msg_history: 'history',
     upload_group_file: 'file', upload_private_file: 'file', set_friend_remark: 'friendRemark', get_friends_with_category: 'friendCategories',
@@ -60,7 +72,9 @@ const EXTENSION_REQUIREMENTS = Object.freeze({ get_capabilities: null, get_group
     send_private_forward_msg: 'mergeCustom', send_group_forward_msg: 'mergeCustom', ...GROUP_FILE_REQUIREMENTS, ...EXTENDED_REQUIREMENTS,
     ...GROUP_QUERY_REQUIREMENTS, ...COLLECTION_REQUIREMENTS, ...ACCOUNT_QUERY_REQUIREMENTS, ...COMPAT_REQUIREMENTS, ...QUERY2_REQUIREMENTS, ...RKEY_REQUIREMENTS, ...SHARE_REQUIREMENTS,
     ...ADMIN_REQUIREMENTS, ...CUSTOM_FACE_REQUIREMENTS, ...EMOJI_PAGINATION_REQUIREMENTS, ...CONTACT_EXTRA_REQUIREMENTS, ...SINGLE_FORWARD_REQUIREMENTS,
-    ...FLASH_REQUIREMENTS, ...QZONE_REQUIREMENTS, ...GROUP_ALBUM_REQUIREMENTS, ...MISC_EXTRA_REQUIREMENTS, ...STREAM_REQUIREMENTS, ...FRIEND_DRESS_REQUIREMENTS, ...FORWARD_EXTRA_REQUIREMENTS, ...VOICE_EXTRA_REQUIREMENTS });
+    ...FLASH_REQUIREMENTS, ...QZONE_REQUIREMENTS, ...GROUP_ALBUM_REQUIREMENTS, ...MISC_EXTRA_REQUIREMENTS, ...STREAM_REQUIREMENTS, ...FRIEND_DRESS_REQUIREMENTS, ...FORWARD_EXTRA_REQUIREMENTS, ...VOICE_EXTRA_REQUIREMENTS, ...WORD_SLICE_REQUIREMENTS, ...RAW_PACKET_REQUIREMENTS,
+    get_clientkey: AUTH_REQUIREMENTS.get_clientkey, request_decrypt_key: AUTH_REQUIREMENTS.request_decrypt_key,
+    bot_exit: LIFECYCLE_REQUIREMENTS.bot_exit, ...MODEL_SHOW_REQUIREMENTS, ...URL_SAFETY_REQUIREMENTS, ...COLLECTION_CREATE_REQUIREMENTS, ...EMOJI_SUMMARY_REQUIREMENTS });
 const EXTENSION_ACTIONS = Object.freeze(Object.keys(EXTENSION_REQUIREMENTS));
 const IMPLEMENTED_ACTIONS = new Set([...Object.keys(ACTION_REQUIREMENTS), ...EXTENSION_ACTIONS]);
 // Diagnostics retain only fixed, recognized protocol names. Unknown strings
@@ -114,7 +128,7 @@ function capabilities(status = {}) {
                 name === 'meta_event' ? ['lifecycle', 'heartbeat'] : ['friend', 'group'] })),
         notes: ['Availability checks the current session and method presence; new kernel operations still require target QQ validation.',
             'Files and H.264 MP4 videos use single-segment sends. Canonical base64 voice/video/file inputs have a combined 10 MiB message limit, are validated and temporarily staged inside the account, then use the same native preparers. Share sending is disabled because target QQ clients could not render the fixed news template; its remaining generator is an offline experiment. Inbound Ark JSON retains validated data. Observed native merged forwards can be read; existing-message forwarding returns a kernel acknowledgment without a destination message ID. Custom merged sending accepts 1 to 100 self-authored text/base64-image nodes, stages fresh self-chat messages and requires complete destination-resource readback. The native existing-ID merge variant is disabled on QQ 3.2.35-54395: real delivery was observed but callbacks omit a provable request-to-message correlation. Formal existing-ID requests fail before dispatch; custom text/image merging remains available. Voice export accepts account-observed resources; compressed formats require project FFmpeg. Generic JSON/XML sending and remote input URLs remain unavailable.',
-            'Group names, cards, administrator roles, member bans, whole-group bans, confirmed member removal and leaving are implemented; social requests use expiring account-session flags. Fixed poke/reaction/essence/category/notice/honor/title actions require their own current-session capabilities and verified acknowledgments; unavailable native contracts stay disabled. Credential APIs remain unavailable.']
+            'Credential APIs return only current-account authenticated QQ tickets and fixed-domain cookies to authorized callers. Raw packets use the bounded correlated native queue. Packet statistics cover adapter-native SSO only. Reaction summaries use matching fresh message-record directories and complete user pages; unavailable last-reaction timestamps are null. Account exit/restart is asynchronously committed after the transport response; cache cleanup touches inactive registered stream files. Legacy model and anonymous protocols still require current QQ service validation.']
     };
 }
 

@@ -37,6 +37,15 @@ const { ACTIONS: STREAM_ACTIONS, runStreamActions } = require('./file-stream-act
 const { ACTIONS: FRIEND_DRESS_ACTIONS, runFriendDress } = require('./friend-dress-actions.cjs');
 const { ACTIONS: FORWARD_EXTRA_ACTIONS, runForwardExtra } = require('./forward-extra-actions.cjs');
 const { ACTIONS: VOICE_EXTRA_ACTIONS, runVoiceExtra } = require('./voice-extra-actions.cjs');
+const { ACTIONS: WORD_SLICE_ACTIONS, runWordSlices } = require('./word-slices-actions.cjs');
+const { ACTIONS: RAW_PACKET_ACTIONS, runRawPacket } = require('./raw-packet-actions.cjs');
+const { ACTIONS: AUTH_EXTRA_ACTIONS, runAuthExtra } = require('./auth-extra-actions.cjs');
+const { ACTIONS: LIFECYCLE_ACTIONS, runLifecycleActions } = require('./lifecycle-actions.cjs');
+const { ACTIONS: MODEL_SHOW_ACTIONS, runModelShow } = require('./model-show-actions.cjs');
+const { ACTIONS: URL_SAFETY_ACTIONS, runUrlSafety } = require('./url-safety-actions.cjs');
+const { ACTIONS: COLLECTION_CREATE_ACTIONS, runCollectionCreate } = require('./collection-create-actions.cjs');
+const { ACTIONS: EMOJI_SUMMARY_ACTIONS, runEmojiSummary } = require('./emoji-summary-actions.cjs');
+const { ACTIONS: ANONYMOUS_ACTIONS, runAnonymous } = require('./anonymous-actions.cjs');
 const { decodeInlineMedia, stageInlineMedia } = require('./media-input.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
@@ -67,7 +76,7 @@ const returnCodes = { INVALID_REQUEST: 1400, UNSUPPORTED: 1404, NOT_FOUND: 1404,
 
 class OneBotService {
     constructor({ backend, store, logger = () => {}, actionTimeoutMs = 10000, mediaActionTimeoutMs = 60000, authorizeSession = () => true, mediaDirectory = null,
-        mediaBaseUrl = null, mediaSigningKeyFile = null, profileId = 'default', globalServices = null } = {}) {
+        mediaBaseUrl = null, mediaSigningKeyFile = null, profileId = 'default', globalServices = null, lifecycleClient = null } = {}) {
         if (!backend || typeof backend.call !== 'function' || !store) throw new TypeError('OneBotService needs backend and store');
         this.backend = backend;
         this.store = store;
@@ -84,6 +93,7 @@ class OneBotService {
         this.mediaSigningKeyFile = mediaSigningKeyFile;
         this.profileId = profileId;
         this.globalServices = globalServices;
+        this.lifecycleClient = lifecycleClient;
         this.deadlines = new AsyncLocalStorage();
         this.messageLogs = new AsyncLocalStorage();
         this.operation = new AsyncLocalStorage();
@@ -110,6 +120,8 @@ class OneBotService {
     async capabilities(current) {
         const status = current || await this.status();
         return capabilities({ ...status, capabilities: { ...status.capabilities,
+            managerLifecycle: this.lifecycleClient?.available() === true,
+            cleanCache: Boolean(this.mediaDirectory),
             streamFiles: Boolean(this.mediaDirectory),
             music: status.capabilities?.music === true && this.globalServices?.musicEnabled() === true,
             image: status.capabilities?.image === true && Boolean(this.mediaDirectory),
@@ -261,6 +273,15 @@ class OneBotService {
         if (FRIEND_DRESS_ACTIONS.has(action)) return runFriendDress(this, state, action, params);
         if (FORWARD_EXTRA_ACTIONS.has(action)) return runForwardExtra(this, state, action, params);
         if (VOICE_EXTRA_ACTIONS.has(action)) return runVoiceExtra(this, state, action, params);
+        if (WORD_SLICE_ACTIONS.has(action)) return runWordSlices(this, state, action, params);
+        if (RAW_PACKET_ACTIONS.has(action)) return runRawPacket(this, state, action, params);
+        if (AUTH_EXTRA_ACTIONS.has(action)) return runAuthExtra(this, state, action, params);
+        if (LIFECYCLE_ACTIONS.has(action)) return runLifecycleActions(this, state, action, params);
+        if (MODEL_SHOW_ACTIONS.has(action)) return runModelShow(this, state, action, params);
+        if (URL_SAFETY_ACTIONS.has(action)) return runUrlSafety(this, state, action, params);
+        if (COLLECTION_CREATE_ACTIONS.has(action)) return runCollectionCreate(this, state, action, params);
+        if (EMOJI_SUMMARY_ACTIONS.has(action)) return runEmojiSummary(this, state, action, params);
+        if (ANONYMOUS_ACTIONS.has(action)) return runAnonymous(this, state, action, params);
         if (STREAM_ACTIONS.has(action)) return runStreamActions(this, { ...state, capabilities: {
             ...state.capabilities, streamFiles: Boolean(this.mediaDirectory) } }, action, params);
         switch (action) {

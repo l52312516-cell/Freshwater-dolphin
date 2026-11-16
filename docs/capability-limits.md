@@ -32,14 +32,14 @@
 | 群名、全群禁言、成员禁言、退群 | 使用类型明确的普通 kernel 方法，参数和真实成员权限校验后等待结果；解散群未实现。 |
 | 群名片、管理员 | 原生方法返回 void，因此先装成员等待者，再调用一次变更并刷新成员；只有当前 group/UID/UIN 和期望值匹配才成功。超时不自动重试。 |
 | 踢人 `set_group_kick` | 使用已核实签名的普通 `kickMember`，不猜测 V2 标记。调用前核对完整强制刷新成员快照、真实 UID/UIN 和角色权限；只派发一次，再读取完整强制刷新快照确认该成员由存在变为缺席。void、请求编号和其他完成信息均不代表成功；明确非零错误拒绝，缺席未确认则失败或超时。目标原本不在群时返回未找到，不冒充本次成功。当前新增实现已离线验证，Freshwater 云端行为需另行验证，不能继承 QQApi 的结果。 |
-| 专属头衔、匿名群能力 | 专属头衔新增固定 OIDB 永久设置（duration 省略或 -1），受当前账号能力与群主权限限制；真实目标测试另记。匿名群能力仍不支持。 |
+| 专属头衔、匿名群能力 | 专属头衔新增固定 OIDB 永久设置（duration 省略或 -1），受当前账号能力与群主权限限制；真实目标测试另记。匿名群开关与匿名成员禁言已实现固定历史 OIDB / QQ Web 协议，能力标记只表示传输通道具备；当前 QQ 服务端是否仍开放及实际群修改结果尚未云验，详见 [群匿名操作](anonymous-actions.md)。 |
 | 资料点赞 | `send_like` 先将真实 UIN 转换成 UID，固定一次 `setBuddyProfileLike` 调用；只在明确成功且实际次数精确匹配时返回成功，部分成功或未知结果不补发。当前会话须具备实际 profileLike 服务。 |
 | `@全体`额度 | `get_group_at_all_remain` 从真实 group 服务返回权限和群／账号剩余次数，保留零额度和官方提示。 |
 | 群文件列表和详情 | 支持根目录、指定目录分页与精确文件详情；列表需真实请求编号和匹配回调，保留分页和 uint64 文件大小。目录条目不计入 QQ 返回的文件总数。新增真实文件计数、根文件夹创建、文件夹和文件改名、文件移动/删除/转存及文件夹删除，严格核验嵌套业务回执及批量完整结果。`get_group_file_url` 经原生 MSF 通道（`OidbSvcTrpcTcp.0x6d6_2`）返回真实官方 `ftn_handler` 下载 URL，仅接受 `*.qq.com` 官方域；下载令牌短期有效，按次实时获取、不缓存。`get_group_file_system_info` 经原生通道（`OidbSvcTrpcTcp.0x6d8_3`）返回真实 `total_space`/`used_space`（uint64，超出安全整数以十进制字符串表示）；不含 `file_count`（用 `get_group_file_count`），不能把请求编号当容量。真机结果以接口云测报告为准。 |
 | 自身资料及群备注 | `set_qq_profile` 支持昵称与签名，`set_group_remark` 修改本账号群备注。先读取真实原值，修改后按身份、目标与请求字段核对回读；昵称和签名在共同的十秒期限内每 250ms 只读确认，确认前一字段后才发送后一字段。未知结果不自动重发或回滚，组合修改部分完成如实报错。 |
 | 群荣誉 | 新增固定官方 Web 查询 talkative/performer/legend/emotion；从当前登录账号取得票据，只在桥内使用 Cookie，校验账号、域、业务码和真实集合。all/strong_newbie 尚未提供；云测结果另记。 |
-| cookies、CSRF、credentials | 暂不导出账号凭据，不把会话初始化数据、登录票据或诊断日志作为协议返回。 |
-| 重启与缓存清理 | 不允许 OneBot 远程请求任意进程操作或删除登录数据。受控的应用管理由管理进程承担，标准 `set_restart`/`clean_cache` 目前不实现。 |
+| clientKey、cookies、CSRF、credentials、数据库密钥 | 对应接口交付当前账号真实结果，仅允许固定认证域；数据库路径限定受管理账号的 QQ 根目录。会话对象、原生内存和带凭据的诊断内容不导出；数据库解密密钥不作为 QQ 通信密钥。详见 [鉴权与数据库契约](auth-extra.md)。 |
+| 退出、重启与缓存清理 | `bot_exit`/`set_restart` 使用当前账号的管理器锁、授权和进程所有权流程，成功响应后异步 commit；响应至 commit 的崩溃窗口可能使操作未执行。`clean_cache` 仅清理本账号 manifest 登记的非活动临时文件，保留登录数据、消息映射及恢复日志。详见 [生命周期与缓存契约](lifecycle-actions.md)。 |
 
 好友/群请求处理、备注、分组、最近联系人和已读能力由独立 social 模块维护，其实时状态以生成的能力矩阵和 `get_capabilities` 为准。审核先安装绑定真实申请的等待者，操作完成后主动只读刷新对应申请列表；刷新请求成功仍不能代替实际申请状态确认，超时后同一 flag 不重复派发。不能确认参数语义、请求有效性或最终状态时必须返回不支持/失败，不能假定执行成功。
 
@@ -96,3 +96,7 @@ QQ `3.2.35-54395` 的最终版本另外关闭六个真实未闭环的入口：AI
 `record/video/file` 新增 canonical base64 输入，单消息全部内联媒体解码总量最多 10 MiB，先整批验证再进入账号私有暂存；成功、失败或超时均清理暂存。任意 URL/宿主文件输入仍拒绝。`get_record` 返回本地格式导出路径，不能把容器内路径当作跨容器下载 URL。
 
 能力目录为 `send_group_forward_msg` 分别列出 `variants.custom_text_image_nodes` 和 `variants.existing_message_id_nodes`；当前目标 QQ 的后者固定为 false。保留的 `existing_scope: same-source-group-plain-text-1..20` 描述实验实现范围，不代表启用。顶层 `available` 可由自定义文字/图片节点独立满足，调用前仍须查看所需变体；私聊 action 只有自定义节点变体。目录方法存在性、离线测试和对应账号的真实业务验收继续分开记录。
+
+## 后续剩余入口补充索引
+
+上一轮剩余入口的后续实现、当前门控及验证证据统一见 [后续完善记录](qqapi-remaining-20261116.md)。分项契约见 [鉴权与数据库](auth-extra.md)、[原始 SSO 与统计](raw-packet.md)、[生命周期与缓存](lifecycle-actions.md)、[分词](word-slices.md)、[型号展示](model-show.md)、[URL 安全](url-safety.md)、[收藏创建](collection-create.md)、[群匿名操作](anonymous-actions.md) 及 [完整表情回应汇总](emoji-summary.md)。上一轮 [扩展验证记录](qqapi-expansion-20261116.md) 已归档，其中计数和未支持列表只描述对应历史快照，不代替当前能力目录。

@@ -34,6 +34,12 @@ const { createForwardUpload } = require('./forward-upload.cjs');
 const { createVoiceExtra } = require('./voice-extra.cjs');
 const { createGroupAlbum } = require('./group-album.cjs');
 const { createMiscExtra } = require('./misc-extra.cjs');
+const { createAuthExtra } = require('./auth-extra.cjs');
+const { createModelShow } = require('./model-show.cjs');
+const { createUrlSafety } = require('./url-safety.cjs');
+const { createCollectionCreate } = require('./collection-create.cjs');
+const { createEmojiSummary } = require('./emoji-summary.cjs');
+const { createAnonymous } = require('./anonymous.cjs');
 const { createRecordExporter } = require('./record-export.cjs');
 const { integer: profileInteger, groupFields, memberFields, userFields } = require('./profile-fields.cjs');
 
@@ -42,7 +48,7 @@ const MAX_IDENTITIES = 20000;
 const SERVICES = Object.freeze({ msg: 'getMsgService', profile: 'getProfileService',
   group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService', collection: 'getCollectionService', ticket: 'getTicketService', tipOff: 'getTipOffService' });
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'adminAction', 'customFaceQuery', 'customFaceAction', 'contactExtra', 'flashTransfer', 'qzoneQuery', 'qzoneAction', 'voiceExtra', 'forwardUpload', 'friendDressQuery', 'groupAlbumQuery', 'groupAlbumAction', 'miscExtra', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
+  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'rawPacket', 'packetStatus', 'authQuery', 'modelShow', 'urlSafetyQuery', 'urlSafetyNativeQuery', 'collectionCreate', 'emojiSummaryQuery', 'anonymousAction', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'adminAction', 'customFaceQuery', 'customFaceAction', 'contactExtra', 'flashTransfer', 'qzoneQuery', 'qzoneAction', 'voiceExtra', 'forwardUpload', 'friendDressQuery', 'groupAlbumQuery', 'groupAlbumAction', 'miscExtra', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numeric(value, label = 'QQ number') {
@@ -189,6 +195,14 @@ class Capture extends EventEmitter {
     this.voiceExtraApi = createVoiceExtra(this);
     this.groupAlbumApi = createGroupAlbum(this);
     this.miscExtraApi = createMiscExtra(this);
+    this.modelShowApi = createModelShow(this);
+    this.urlSafetyApi = createUrlSafety(this);
+    this.collectionCreateApi = createCollectionCreate(this);
+    this.emojiSummaryApi = createEmojiSummary(this);
+    this.anonymousApi = createAnonymous(this);
+    const accountRoot = this.processObject.env?.FWD_ACCOUNT_ROOT;
+    this.authExtraApi = createAuthExtra(this, { databaseRoots: typeof accountRoot === 'string' && path.isAbsolute(accountRoot) ?
+      [path.join(accountRoot, 'config/QQ'), path.join(accountRoot, 'home/.config/QQ')] : [] });
     if (options.install !== false) this.install();
   }
 
@@ -210,6 +224,8 @@ class Capture extends EventEmitter {
       sendDiagnostics: this.sendDiagnostics.map(value => ({ ...value })),
       forwardDiagnostics: this.forwardApi.diagnostics?.() || [],
       capabilities: { compatible, messages: messageEvents, text, at: text && member,
+        wordSlices: typeof Intl.Segmenter === 'function', packetStatus: compatible && this.ready,
+        rawPacket: compatible && this.ready && require('./msf-native.cjs').available(),
         reply: text && (this.hasMethods('msg', ['getMsgsByMsgId']) || this.hasMethods('msg', ['getSingleMsg'])),
         resolve, user: resolve && this.hasMethods('profile', ['getCoreAndBaseInfo']),
         friends: compatible && this.ready && this.hasMethods('buddy', ['getBuddyListV2']) && this.hasMethods('profile', ['getCoreAndBaseInfo']),
@@ -248,7 +264,7 @@ class Capture extends EventEmitter {
           ...this.collectionQueries.capabilities(), ...this.accountQueriesApi.capabilities(), ...this.extendedQueries2Api.capabilities(),
           ...this.shareQueriesApi.capabilities(), ...this.adminQueriesApi.capabilities(), ...this.customFaceApi.capabilities(),
           ...this.contactExtraApi.capabilities(), ...this.flashTransferApi.capabilities(), ...this.qzoneApi.capabilities(),
-          ...this.groupAlbumApi.capabilities(), ...this.miscExtraApi.capabilities(), ...this.friendDressApi.capabilities(), ...this.forwardUploadApi.capabilities(), ...this.voiceExtraApi.capabilities() } : {}) } };
+          ...this.groupAlbumApi.capabilities(), ...this.miscExtraApi.capabilities(), ...this.friendDressApi.capabilities(), ...this.forwardUploadApi.capabilities(), ...this.voiceExtraApi.capabilities(), ...this.authExtraApi.capabilities(), ...this.modelShowApi.capabilities(), ...this.urlSafetyApi.capabilities(), ...this.collectionCreateApi.capabilities(), ...this.emojiSummaryApi.capabilities(), ...this.anonymousApi.capabilities() } : {}) } };
   }
   publish(event) { this.emit('event', { ...event, epoch: this.epoch, selfUin: this.self?.uin || null }); }
   publishState() { this.publish({ kind: 'state', status: this.state() }); }
@@ -349,7 +365,7 @@ class Capture extends EventEmitter {
     this.groupQueriesApi.clear();
     this.extendedQueries2Api.clear();
     this.contactExtraApi.clear();
-    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear(); this.authExtraApi.clear(); this.modelShowApi.clear(); this.urlSafetyApi.clear(); this.collectionCreateApi.clear(); this.emojiSummaryApi.clear(); this.anonymousApi.clear();
     this.ready = false;
     this.readyAt = null;
     this.online = null;
@@ -425,7 +441,7 @@ class Capture extends EventEmitter {
     this.groupQueriesApi.clear();
     this.extendedQueries2Api.clear();
     this.contactExtraApi.clear();
-    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear(); this.authExtraApi.clear(); this.modelShowApi.clear(); this.urlSafetyApi.clear(); this.collectionCreateApi.clear(); this.emojiSummaryApi.clear(); this.anonymousApi.clear();
     clearInterval(this.observerTimer); this.observerTimer = null;
     this.rejectPending(error);
     this.detach();
@@ -1072,6 +1088,22 @@ class Capture extends EventEmitter {
     if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Native status belongs to another QQ session');
     return require('./msf-native.cjs').status();
   }
+  async packetStatus(params) {
+    if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Packet status belongs to another QQ session');
+    return require('./msf-native.cjs').packetStatus();
+  }
+  async authQuery(params, context = {}) { return this.authExtraApi.query(params, context); }
+  async modelShow(params, context = {}) { return this.modelShowApi.execute(params, context); }
+  async urlSafetyQuery(params, context = {}) { return this.urlSafetyApi.query(params, context); }
+  async urlSafetyNativeQuery(params, context = {}) { return this.urlSafetyApi.nativeQuery(params, context); }
+  async collectionCreate(params, context = {}) { return this.collectionCreateApi.action(params, context); }
+  async emojiSummaryQuery(params, context = {}) { return this.emojiSummaryApi.query(params, context); }
+  async anonymousAction(params, context = {}) { return this.anonymousApi.execute(params, context); }
+  async rawPacket(params, context = {}) {
+    if (params.expectedEpoch !== this.epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Raw packet must be bound to the current QQ session');
+    return require('./msf-native.cjs').run(this, { ...params, op: 'rawPacket', signal: context.signal,
+      timeoutMs: Math.min(params.timeoutMs ?? 10000, Math.max(1, (context.expiresAt ?? Date.now() + 10000) - Date.now())) });
+  }
   async nativePrivateFileUrl(params, context = {}) {
     const epoch = this.epoch;
     if (params.expectedEpoch !== epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Private file lookup must be bound to the QQ session');
@@ -1662,7 +1694,7 @@ class Capture extends EventEmitter {
     this.groupQueriesApi.clear();
     this.extendedQueries2Api.clear();
     this.contactExtraApi.clear();
-    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear(); this.authExtraApi.clear(); this.modelShowApi.clear(); this.urlSafetyApi.clear(); this.collectionCreateApi.clear(); this.emojiSummaryApi.clear(); this.anonymousApi.clear();
     if (this.processObject.dlopen === this.dlopenHook) this.processObject.dlopen = this.originalDlopen;
     for (const restore of this.restorations.reverse()) { try { restore(); } catch (error) { this.diagnostic(error); } }
     this.restorations.length = 0;

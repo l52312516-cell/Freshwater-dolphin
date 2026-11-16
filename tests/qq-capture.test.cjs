@@ -1079,19 +1079,25 @@ test('an early timer rearms until the wall-clock deadline and does not reject a 
   assert.equal(calls, 1);
 });
 
-test('a synchronous native result after the wall-clock deadline cannot race its timer into success', async () => {
+test('a synchronous native result after the wall-clock deadline cannot race its timer into success', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let clock = 1800000000000;
+  t.mock.method(Date, 'now', () => clock);
   const f = fixture();
   try {
     f.init()();
+    const expiresAt = clock + 10;
     let calls = 0;
     f.group.modifyGroupName = () => {
       calls++;
-      const end = Date.now() + 30;
-      while (Date.now() < end) { /* A synchronous native call blocks timer dispatch. */ }
+      assert.ok(clock < expiresAt);
+      // Cross the deadline inside native work without dispatching its timer.
+      clock = expiresAt + 1;
       return { result: 0 };
     };
     await assert.rejects(f.capture.call('groupAction', { groupId: '200', operation: 'name', name: 'Test', expectedEpoch: f.capture.epoch },
-      { expiresAt: Date.now() + 10 }), { code: 'TIMEOUT' });
+      { expiresAt }), { code: 'TIMEOUT' });
     assert.equal(calls, 1);
+    assert.equal(f.capture.pending.size, 0);
   } finally { f.capture.close(); }
 });

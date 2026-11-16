@@ -1,7 +1,7 @@
 {
   "version": "0.2.0-alpha.3",
   "context": "offline-source-inventory",
-  "generated_at": "2026-11-16T11:27:02.885Z",
+  "generated_at": "2026-11-16T12:11:34.747Z",
   "schema_version": 1,
   "qq_version": "3.2.35-54395",
   "ready": false,
@@ -62,10 +62,9 @@
     },
     {
       "name": "set_group_anonymous_ban",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Reference acknowledges a placeholder without banning an anonymous participant."
+      "verification": "offline-tested"
     },
     {
       "name": "set_group_whole_ban",
@@ -81,10 +80,9 @@
     },
     {
       "name": "set_group_anonymous",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Reference acknowledges a placeholder without changing anonymous group settings."
+      "verification": "offline-tested"
     },
     {
       "name": "set_group_card",
@@ -172,24 +170,21 @@
     },
     {
       "name": "get_cookies",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Raw QQ authentication material is not exposed by the public adapter."
+      "verification": "offline-tested"
     },
     {
       "name": "get_csrf_token",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Raw QQ authentication material is not exposed by the public adapter."
+      "verification": "offline-tested"
     },
     {
       "name": "get_credentials",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Raw QQ authentication material is not exposed by the public adapter."
+      "verification": "offline-tested"
     },
     {
       "name": "get_record",
@@ -229,17 +224,15 @@
     },
     {
       "name": "set_restart",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Reference does not support restart; use the account manager lifecycle controls."
+      "verification": "offline-tested"
     },
     {
       "name": "clean_cache",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Reference performs no cache cleanup; account data must not be deleted by a placeholder."
+      "verification": "offline-tested"
     }
   ],
   "extensions": [
@@ -1235,81 +1228,76 @@
       "verification": "offline-tested"
     },
     {
-      "name": "_get_model_show",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Reference synthesizes model variants; no verified QQ model query is available."
-    },
-    {
-      "name": "_set_model_show",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Reference returns success without changing a QQ model."
-    },
-    {
       "name": ".get_word_slices",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Reference does not implement word segmentation."
-    },
-    {
-      "name": "bot_exit",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "An account-scoped persistent shutdown contract is required by the multi-account manager."
-    },
-    {
-      "name": "check_url_safely",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Reference returns a constant safety level without checking a URL."
-    },
-    {
-      "name": "create_collection",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Reference does not implement collection creation."
-    },
-    {
-      "name": "get_clientkey",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Raw QQ authentication material is not exposed by the public adapter."
-    },
-    {
-      "name": "get_msg_emoji_likes",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "No verified complete message reaction summary or last reaction time is available; per-emoji paging is separate."
-    },
-    {
-      "name": "nc_get_packet_status",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Reference returns null without packet statistics."
-    },
-    {
-      "name": "request_decrypt_key",
-      "implemented": false,
-      "available": false,
-      "verification": "unsupported",
-      "reason": "Raw protocol decryption keys are not exposed by the public adapter."
+      "verification": "offline-tested"
     },
     {
       "name": "send_packet",
-      "implemented": false,
+      "implemented": true,
       "available": false,
-      "verification": "unsupported",
-      "reason": "Caller-selected raw SSO requests are not exposed; only fixed business protocols are supported."
+      "verification": "offline-tested"
+    },
+    {
+      "name": ".send_packet",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "nc_get_packet_status",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_clientkey",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "request_decrypt_key",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "bot_exit",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "_get_model_show",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "_set_model_show",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "check_url_safely",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "create_collection",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_msg_emoji_likes",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
     }
   ],
   "segments": [
@@ -1511,6 +1499,6 @@
   "notes": [
     "Availability checks the current session and method presence; new kernel operations still require target QQ validation.",
     "Files and H.264 MP4 videos use single-segment sends. Canonical base64 voice/video/file inputs have a combined 10 MiB message limit, are validated and temporarily staged inside the account, then use the same native preparers. Share sending is disabled because target QQ clients could not render the fixed news template; its remaining generator is an offline experiment. Inbound Ark JSON retains validated data. Observed native merged forwards can be read; existing-message forwarding returns a kernel acknowledgment without a destination message ID. Custom merged sending accepts 1 to 100 self-authored text/base64-image nodes, stages fresh self-chat messages and requires complete destination-resource readback. The native existing-ID merge variant is disabled on QQ 3.2.35-54395: real delivery was observed but callbacks omit a provable request-to-message correlation. Formal existing-ID requests fail before dispatch; custom text/image merging remains available. Voice export accepts account-observed resources; compressed formats require project FFmpeg. Generic JSON/XML sending and remote input URLs remain unavailable.",
-    "Group names, cards, administrator roles, member bans, whole-group bans, confirmed member removal and leaving are implemented; social requests use expiring account-session flags. Fixed poke/reaction/essence/category/notice/honor/title actions require their own current-session capabilities and verified acknowledgments; unavailable native contracts stay disabled. Credential APIs remain unavailable."
+    "Credential APIs return only current-account authenticated QQ tickets and fixed-domain cookies to authorized callers. Raw packets use the bounded correlated native queue. Packet statistics cover adapter-native SSO only. Reaction summaries use matching fresh message-record directories and complete user pages; unavailable last-reaction timestamps are null. Account exit/restart is asynchronously committed after the transport response; cache cleanup touches inactive registered stream files. Legacy model and anonymous protocols still require current QQ service validation."
   ]
 }

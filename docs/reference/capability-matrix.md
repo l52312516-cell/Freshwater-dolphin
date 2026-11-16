@@ -17,10 +17,10 @@
 | send_like | 是 | offline-tested |
 | set_group_kick | 是 | offline-tested |
 | set_group_ban | 是 | offline-tested |
-| set_group_anonymous_ban | 否 | unsupported |
+| set_group_anonymous_ban | 是 | offline-tested |
 | set_group_whole_ban | 是 | offline-tested |
 | set_group_admin | 是 | offline-tested |
-| set_group_anonymous | 否 | unsupported |
+| set_group_anonymous | 是 | offline-tested |
 | set_group_card | 是 | offline-tested |
 | set_group_name | 是 | offline-tested |
 | set_group_leave | 是 | offline-tested |
@@ -35,17 +35,17 @@
 | get_group_member_info | 是 | offline-tested |
 | get_group_member_list | 是 | offline-tested |
 | get_group_honor_info | 是 | offline-tested |
-| get_cookies | 否 | unsupported |
-| get_csrf_token | 否 | unsupported |
-| get_credentials | 否 | unsupported |
+| get_cookies | 是 | offline-tested |
+| get_csrf_token | 是 | offline-tested |
+| get_credentials | 是 | offline-tested |
 | get_record | 是 | offline-tested |
 | get_image | 是 | offline-tested |
 | can_send_image | 是 | offline-tested |
 | can_send_record | 是 | offline-tested |
 | get_status | 是 | offline-tested |
 | get_version_info | 是 | offline-tested |
-| set_restart | 否 | unsupported |
-| clean_cache | 否 | unsupported |
+| set_restart | 是 | offline-tested |
+| clean_cache | 是 | offline-tested |
 
 ## 扩展动作
 
@@ -211,17 +211,18 @@
 | get_ai_record | 是 | offline-tested |
 | send_group_ai_record | 是 | offline-tested |
 | fetch_ptt_text | 是 | offline-tested |
-| _get_model_show | 否 | unsupported |
-| _set_model_show | 否 | unsupported |
-| .get_word_slices | 否 | unsupported |
-| bot_exit | 否 | unsupported |
-| check_url_safely | 否 | unsupported |
-| create_collection | 否 | unsupported |
-| get_clientkey | 否 | unsupported |
-| get_msg_emoji_likes | 否 | unsupported |
-| nc_get_packet_status | 否 | unsupported |
-| request_decrypt_key | 否 | unsupported |
-| send_packet | 否 | unsupported |
+| .get_word_slices | 是 | offline-tested |
+| send_packet | 是 | offline-tested |
+| .send_packet | 是 | offline-tested |
+| nc_get_packet_status | 是 | offline-tested |
+| get_clientkey | 是 | offline-tested |
+| request_decrypt_key | 是 | offline-tested |
+| bot_exit | 是 | offline-tested |
+| _get_model_show | 是 | offline-tested |
+| _set_model_show | 是 | offline-tested |
+| check_url_safely | 是 | offline-tested |
+| create_collection | 是 | offline-tested |
+| get_msg_emoji_likes | 是 | offline-tested |
 
 ## 标准消息段
 

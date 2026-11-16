@@ -11,7 +11,7 @@ const HTTP_PARAMETER_TYPES = Object.freeze(Object.fromEntries([
         'chunk_index', 'total_chunks', 'file_retention', 'chunk_size'].map(key => [key, 'integer']),
     ...['auto_escape', 'no_cache', 'approve', 'enable', 'reject_add_request', 'is_dismiss', 'reverse_order',
         'reverseOrder', 'reverse', 'asface', 'isSet', 'is_set', 'set', 'block', 'both', 'refresh', 'visible', 'need_short_url',
-        'allow_member_upload_album', 'allow_member_temporary_session', 'allow_member_create_group', 'is_complete', 'reset', 'verify_only', 'error'].map(key => [key, 'boolean']),
+        'allow_member_upload_album', 'allow_member_temporary_session', 'allow_member_create_group', 'is_complete', 'reset', 'verify_only', 'error', 'rsp'].map(key => [key, 'boolean']),
     ...['messages', 'message_ids', 'files', 'words', 'target_uins', 'images'].map(key => [key, 'array']),
     ...['context', 'operation', 'anonymous', 'params', 'headers'].map(key => [key, 'object']),
     ['message', 'message'], ['echo', 'json']
