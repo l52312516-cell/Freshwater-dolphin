@@ -20,7 +20,7 @@ import AccountsPage from './pages/AccountsPage.vue';
 import SocialPage from './pages/SocialPage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import { useToast } from './toast';
-import type { Account, AccountConfig, AuthState, BackupState, Json, MessageState, Overview, SettingsState, SocialState, StorageCleanup, StorageCleanupRequest, StorageSnapshot } from './types';
+import type { Account, AccountConfig, AuthState, BackupState, CapabilityCatalogue, CapabilityState, Json, MessageState, Overview, SettingsState, SocialState, StorageCleanup, StorageCleanupRequest, StorageSnapshot } from './types';
 
 const tabs: { id: 'overview' | 'accounts' | 'nodes' | 'social' | 'logs' | 'settings'; icon: IconName; title: string; caption: string }[] = [
   { id: 'overview', icon: 'grid', title: '运行总览', caption: '服务与连接' },
@@ -63,6 +63,11 @@ const messages = reactive<MessageState>({
   form: { type: 'private', recipient: '', text: '', at: '', reply: '', advanced: false, segments: '[\n  { "type": "text", "data": { "text": "" } }\n]' },
   actionName: 'get_status', actionParams: '{}', actionResult: null, uploadedImage: '',
 });
+const capabilityState = reactive<CapabilityState>({ catalogue: null, loading: false, error: '' });
+const capabilitySession = computed(() => {
+  const account = overview.value.accounts.find(item => item.id === selectedId.value);
+  return JSON.stringify([selectedId.value, account?.desired, account?.bridgeInstalled, account?.health?.sessionEpoch, account?.health?.ready, account?.health?.authorized]);
+});
 const settings = reactive<SettingsState>({ text: '{}', maxAccounts: 2, publicBaseUrl: '', statusCommand: { enabled: true, trigger: '#fd' }, rkey: { fallbackServers: [] }, musicSignUrl: '', musicSignKey: '', hasMusicSignKey: false, clearMusicSignKey: false, passwords: { currentPassword: '', newPassword: '', confirm: '' } });
 const savedSettings = reactive({ runtime: '', global: '' });
 const settingsLoaded = ref(false);
@@ -82,6 +87,7 @@ const { push: toast, clear: clearToasts } = useToast();
 let stream: EventSource | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
 const accountRequests = createRequestScope();
+const capabilityRequests = createRequestScope();
 const overviewRequests = createRequestScope();
 const restoreRequests = createRequestScope();
 let clearingRestorePassword = false;
@@ -132,6 +138,7 @@ async function task(name: string, action: () => Promise<void>, success = '') {
 function unauthorized() {
   taskRevision++; busy.value = ''; pendingPageLoad = null;
   accountRequests.invalidate(); overviewRequests.invalidate(); invalidateRestore();
+  resetCapabilities();
   auth.value.authenticated = false; setCsrf(''); stream?.close(); stream = undefined; streamConnected.value = false;
   confirmDialog.value = null; selectedId.value = '';
   overview.value = { accounts: [], resources: { totalMemory: 0, freeMemory: 0 }, version: '', maxAccounts: 2 };
@@ -333,6 +340,53 @@ async function invoke(action: string, params: unknown, context = accountContext(
   const response = await accountApi<Json>(context, '/action', 'POST', { action, params });
   if (response.status === 'failed') throw new Error(String(response.message || response.wording || 'QQ 操作失败') + ' (' + String(response.retcode) + ')');
   return response;
+}
+
+function resetCapabilities() {
+  capabilityRequests.invalidate();
+  capabilityState.catalogue = null; capabilityState.loading = false; capabilityState.error = '';
+}
+
+function validateCapabilities(value: unknown): CapabilityCatalogue {
+  const object = (item: unknown): item is Json => Boolean(item) && typeof item === 'object' && !Array.isArray(item);
+  const strings = (item: unknown): item is string[] => Array.isArray(item) && item.every(entry => typeof entry === 'string');
+  const action = (item: unknown) => {
+    if (!object(item) || typeof item.name !== 'string' || typeof item.implemented !== 'boolean' || typeof item.available !== 'boolean' || typeof item.verification !== 'string') return false;
+    if (item.variants !== undefined && (!object(item.variants) || typeof item.variants.custom_text_image_nodes !== 'boolean' || typeof item.variants.existing_message_id_nodes !== 'boolean' || typeof item.variants.existing_scope !== 'string')) return false;
+    const target = item.target_validation;
+    return target === undefined || object(target) && ['qq_version', 'platform', 'date', 'reference'].every(key => typeof target[key] === 'string') && strings(target.scopes);
+  };
+  const segment = (item: unknown) => object(item) && typeof item.name === 'string' && typeof item.implemented === 'boolean' && typeof item.send === 'boolean' && typeof item.receive === 'boolean' && typeof item.verification === 'string' &&
+    (item.receive_scope === undefined || typeof item.receive_scope === 'string') && (item.send_contexts === undefined || strings(item.send_contexts)) && (item.receive_contexts === undefined || strings(item.receive_contexts));
+  if (!object(value) || value.schema_version !== 1 || typeof value.ready !== 'boolean' || !(value.qq_version === null || typeof value.qq_version === 'string') ||
+      !Array.isArray(value.actions) || !value.actions.every(action) || !Array.isArray(value.extensions) || !value.extensions.every(action) ||
+      !Array.isArray(value.segments) || !value.segments.every(segment) || !Array.isArray(value.segment_extensions) || !value.segment_extensions.every(segment) ||
+      !Array.isArray(value.events) || !value.events.every(item => object(item) && typeof item.name === 'string' && typeof item.implemented === 'boolean' && typeof item.available === 'boolean' && strings(item.subtypes)) || !strings(value.notes)) {
+    throw new Error('账号能力响应格式无效，请刷新后重试');
+  }
+  return value as unknown as CapabilityCatalogue;
+}
+
+async function loadCapabilities() {
+  if (!selectedId.value || !auth.value.authenticated) return;
+  resetCapabilities();
+  const context = accountContext(), ticket = capabilityRequests.capture();
+  capabilityState.loading = true;
+  try {
+    const value = await accountApi<unknown>(context, '/capabilities');
+    ticket.assertCurrent();
+    capabilityState.catalogue = validateCapabilities(value);
+  } catch (value) {
+    if (ticket.isCurrent() && !isStaleRequest(value)) capabilityState.error = value instanceof Error ? value.message : '无法读取当前账号能力';
+  } finally {
+    if (ticket.isCurrent()) capabilityState.loading = false;
+  }
+}
+
+function selectCapability(name: string) {
+  const catalogue = capabilityState.catalogue;
+  if (busy.value || !catalogue || ![...catalogue.actions, ...catalogue.extensions].some(item => item.name === name)) return;
+  messages.actionName = name; messages.actionResult = null;
 }
 
 async function queryInfo() {
@@ -622,13 +676,17 @@ function settingsSubnav(id: string) {
   if (id === 'backup' && !backup.list.length) void loadBackups();
 }
 
-watch(selectedId, () => accountRequests.invalidate(), { flush: 'sync' });
+watch(selectedId, () => { accountRequests.invalidate(); resetCapabilities(); }, { flush: 'sync' });
+watch(capabilitySession, resetCapabilities, { flush: 'sync' });
+watch(() => [tab.value, social.tab, selectedId.value, capabilitySession.value], () => {
+  if (tab.value === 'social' && social.tab === 'messages' && selectedId.value) void loadCapabilities();
+});
 watch(tab, value => {
   error.value = '';
   queuePageLoad(value);
 });
 
-function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value) { event.preventDefault(); event.returnValue = ''; } }
+function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value || settingsDirty.value) { event.preventDefault(); event.returnValue = ''; } }
 
 onMounted(() => {
   window.addEventListener('freshwater:unauthorized', unauthorized);
@@ -640,6 +698,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   taskRevision++; pendingPageLoad = null;
   accountRequests.invalidate(); overviewRequests.invalidate(); setCsrf('');
+  resetCapabilities();
   stream?.close(); stream = undefined;
   if (timer) clearInterval(timer);
   window.removeEventListener('freshwater:unauthorized', unauthorized);
@@ -762,6 +821,7 @@ function downloadBackup(id: string) {
           :busy="!!busy"
           :social="social"
           :messages="messages"
+          :capability-state="capabilityState"
           @select="selectAccount"
           @load-contacts="loadContacts"
           @query-info="queryInfo"
@@ -769,6 +829,8 @@ function downloadBackup(id: string) {
           @upload-image="uploadImage"
           @upload-file="uploadFile"
           @execute-action="executeAction"
+          @load-capabilities="loadCapabilities"
+          @select-capability="selectCapability"
         />
 
         <LogConsole

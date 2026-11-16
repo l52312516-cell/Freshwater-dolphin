@@ -1,6 +1,6 @@
 # Freshwater-dolphin 能力矩阵
 
-版本：0.2.0-alpha.2
+版本：0.2.0-alpha.3
 
 此文件由源码清单生成，不含账号信息，不代表 QQ 已登录。verification 保留完整参数面证据等级；部分目标样本的真实验证另列 target_validation。实际 available 状态请调用当前账户 get_capabilities。
 
@@ -104,6 +104,12 @@
 | get_ai_characters | 是 | offline-tested |
 | get_system_face_list | 是 | offline-tested |
 | get_system_face | 是 | offline-tested |
+| get_group_detail_info | 是 | offline-tested |
+| get_group_info_ex | 是 | offline-tested |
+| get_group_shut_list | 是 | offline-tested |
+| get_collection_list | 是 | offline-tested |
+| get_profile_like | 是 | offline-tested |
+| get_emoji_likes | 是 | offline-tested |
 
 ## 标准消息段
 

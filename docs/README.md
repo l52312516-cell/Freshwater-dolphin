@@ -13,12 +13,14 @@
 - [能力边界](capability-limits.md)
 - [能力矩阵](reference/capability-matrix.md)及 [JSON 目录](reference/capability-matrix.json)
 - [资料互动及群文件查询](query-extensions.md)
+- [新增 QQAPI 只读扩展及分页边界](qqapi-extensions.md)
 - [历史消息分页](history-pagination.md)
 
 能力矩阵是源码清单，`implemented` 表示存在实现；实际账号的 `available` 必须通过 `get_capabilities` 查询。目录不将未验证的 QQ 方法或参数变体标为真实业务通过。
 
 ## 验证与发布
 
+- [0.2.0-alpha.3 验证摘要](releases/0.2.0-alpha.3.md)
 - [0.2.0-alpha.2 发布说明与验证摘要](releases/0.2.0-alpha.2.md)
 - [原生 rkey、文件及合并读取验收](native-validation-20261116.md)
 - [验证流程](verification.md)

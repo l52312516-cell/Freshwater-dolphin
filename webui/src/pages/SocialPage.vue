@@ -7,9 +7,10 @@ import UploadField from '../components/UploadField.vue';
 import Icon from '../components/Icon.vue';
 import type { IconName } from '../components/Icon.vue';
 import ResultBlock from '../components/ResultBlock.vue';
-import type { Account, Json, MessageState, SocialState } from '../types';
+import CapabilityBrowser from '../components/CapabilityBrowser.vue';
+import type { Account, CapabilityState, Json, MessageState, SocialState } from '../types';
 
-const props = defineProps<{ accounts: Account[]; selectedId: string; busy: boolean; social: SocialState; messages: MessageState }>();
+const props = defineProps<{ accounts: Account[]; selectedId: string; busy: boolean; social: SocialState; messages: MessageState; capabilityState: CapabilityState }>();
 const emit = defineEmits<{
   select: [id: string];
   loadContacts: [];
@@ -18,6 +19,8 @@ const emit = defineEmits<{
   uploadImage: [file: File];
   uploadFile: [file: File];
   executeAction: [];
+  loadCapabilities: [];
+  selectCapability: [name: string];
 }>();
 const account = computed(() => props.accounts.find(value => value.id === props.selectedId));
 const filteredContacts = computed(() => props.social.contacts.filter(value => JSON.stringify(value).toLocaleLowerCase().includes(props.social.search.toLocaleLowerCase())));
@@ -114,6 +117,7 @@ watch(() => props.social.kind, () => { props.social.contacts = []; props.social.
     <section class="panel">
       <h2>OneBot 接口调试</h2>
       <p>读取接口直接查询，产生副作用的接口需再次确认。</p>
+      <CapabilityBrowser :key="selectedId" :state="capabilityState" :busy="busy" @refresh="emit('loadCapabilities')" @select="emit('selectCapability', $event)" />
       <form @submit.prevent="emit('executeAction')">
         <fieldset :disabled="busy">
           <label>接口名称<input v-model="messages.actionName" required list="actions" />

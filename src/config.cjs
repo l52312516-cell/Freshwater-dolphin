@@ -45,7 +45,7 @@ function nodeConfig(value, index) {
         reconnectMinMs: integer(value.reconnectMinMs, 1000, 10, 30000, 'node reconnectMinMs'),
         reconnectMaxMs: integer(value.reconnectMaxMs, 30000, 10, 30000, 'node reconnectMaxMs') };
     if (value.secret !== undefined) result.secret = value.secret;
-    result.quickOperations = value.quickOperations !== false;
+    result.quickOperations = value.quickOperations === true;
     if (result.reconnectMaxMs < result.reconnectMinMs) throw fault('INVALID_CONFIG', 'Invalid reconnect range');
     const role = value.role === undefined ? 'Universal' : value.role;
     if (!['Universal', 'Api', 'Event'].includes(role)) throw fault('INVALID_CONFIG', 'Invalid node role');

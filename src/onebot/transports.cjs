@@ -187,7 +187,7 @@ class TransportHub {
         const operation = Promise.resolve().then(async () => {
             if (!this.current(session)) return failure(1503, 'Account session changed', request);
             if (['.handle_quick_operation', '.handle_quick_operation_async'].includes(request.action)) {
-                if (node.config.quickOperations === false) return failure(1404, 'Quick operations are disabled for this node', request);
+                if (node.config.quickOperations !== true) return failure(1404, 'Quick operations are disabled for this node', request);
                 try {
                     const context = request.params?.context;
                     if (String(context?.self_id) !== session.uin) return failure(1400, 'Quick operation belongs to another account', request);
@@ -216,6 +216,7 @@ class TransportHub {
     }
 
     async quick(node, context, operation, session) {
+        if (node.config.quickOperations !== true) throw Object.assign(new Error('Quick operations are disabled for this node'), { code: 'UNSUPPORTED' });
         const task = executeQuickOperation(context, operation, request => {
             if (!node.active || !this.current(session)) return failure(1503, 'Account session changed', request);
             return this.action(request, session);
@@ -397,7 +398,7 @@ class TransportHub {
                 const body = await readBody(response.body, MAX_BODY);
                 node.lastDeliveryAt = Date.now();
                 node.lastError = null;
-                if (node.config.quickOperations !== false && body.trim() && ((response.headers.get('content-type') || '').includes('application/json') || body.trim().startsWith('{'))) {
+                if (node.config.quickOperations === true && body.trim() && ((response.headers.get('content-type') || '').includes('application/json') || body.trim().startsWith('{'))) {
                     try {
                         const operation = JSON.parse(body);
                         if (this.current(item.session)) await this.quick(node, item.event, operation, item.session);

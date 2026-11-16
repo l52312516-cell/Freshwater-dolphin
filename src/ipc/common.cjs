@@ -7,9 +7,9 @@ const { fault } = require('../errors.cjs');
 const VERSION = 1;
 const LIMIT = 2 * 1024 * 1024;
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport']);
+    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 const READ_ONLY = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo', 'groupMember', 'groupMembers',
-    'history', 'imageInfo', 'socialQuery', 'getMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery']);
+    'history', 'imageInfo', 'socialQuery', 'getMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'groupQuery', 'collectionQuery', 'accountQuery']);
 function cancellable(method, params) {
     return READ_ONLY.has(method) || method === 'groupFiles' && ['group.filesList', 'group.fileInfo'].includes(params?.operation)
         || method === 'forwardOperation' && params?.kind === 'read';

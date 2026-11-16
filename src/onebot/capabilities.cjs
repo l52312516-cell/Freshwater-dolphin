@@ -3,6 +3,9 @@
 // A catalogue is a compatibility inventory, not a claim that every entry works.
 const { ACTION_REQUIREMENTS: GROUP_FILE_REQUIREMENTS } = require('./group-files.cjs');
 const { STANDARD_REQUIREMENTS: EXTENDED_STANDARD, EXTENSION_REQUIREMENTS: EXTENDED_REQUIREMENTS } = require('./extended-actions.cjs');
+const { REQUIREMENTS: GROUP_QUERY_REQUIREMENTS } = require('./group-queries.cjs');
+const { ACTION_REQUIREMENTS: COLLECTION_REQUIREMENTS } = require('./collection-queries.cjs');
+const { EXTENSION_REQUIREMENTS: ACCOUNT_QUERY_REQUIREMENTS } = require('./account-queries.cjs');
 const STANDARD_ACTIONS = Object.freeze([
     'send_private_msg', 'send_group_msg', 'send_msg', 'delete_msg', 'get_msg', 'get_forward_msg',
     'send_like', 'set_group_kick', 'set_group_ban', 'set_group_anonymous_ban', 'set_group_whole_ban',
@@ -36,7 +39,8 @@ const EXTENSION_REQUIREMENTS = Object.freeze({ get_capabilities: null, get_group
     get_private_file_url: 'privateFileUrl',
     set_qq_profile: 'selfProfile', set_group_remark: 'groupRemark',
     qqapi_get_forward_messages: 'forwardRead', qqapi_message_forward: 'forwardExisting',
-    send_private_forward_msg: 'mergeCustom', send_group_forward_msg: 'mergeCustom', ...GROUP_FILE_REQUIREMENTS, ...EXTENDED_REQUIREMENTS });
+    send_private_forward_msg: 'mergeCustom', send_group_forward_msg: 'mergeCustom', ...GROUP_FILE_REQUIREMENTS, ...EXTENDED_REQUIREMENTS,
+    ...GROUP_QUERY_REQUIREMENTS, ...COLLECTION_REQUIREMENTS, ...ACCOUNT_QUERY_REQUIREMENTS });
 const EXTENSION_ACTIONS = Object.freeze(Object.keys(EXTENSION_REQUIREMENTS));
 const IMPLEMENTED_ACTIONS = new Set([...Object.keys(ACTION_REQUIREMENTS), ...EXTENSION_ACTIONS]);
 // Diagnostics retain only fixed, recognized protocol names. Unknown strings

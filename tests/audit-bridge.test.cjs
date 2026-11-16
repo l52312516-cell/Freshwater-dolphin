@@ -32,15 +32,28 @@ function captureFixture(t) {
 
 for (const cancellation of ['abort', 'deadline']) {
     test(`a shared group query survives one caller's ${cancellation}`, async t => {
+        // Establish both waiters before advancing either deadline. A real
+        // 50ms timer can expire before setImmediate runs on a loaded runner,
+        // making a transient waiters===2 condition impossible to observe.
+        t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
         const { capture, calls } = captureFixture(t);
         const controller = new AbortController();
         const early = capture.call('groupInfo', { groupId: '200' }, { signal: controller.signal,
             expiresAt: Date.now() + (cancellation === 'deadline' ? 50 : 2000) });
-        early.catch(() => {});
+        const earlyRejected = assert.rejects(early, error => ['EXPIRED', 'TIMEOUT'].includes(error.code));
         const late = capture.call('groupInfo', { groupId: '200' }, { expiresAt: Date.now() + 2000 });
-        await until(() => calls.length === 1 && capture.queries.get('group:200')?.waiters === 2);
+        let lateSettled = false;
+        late.then(() => { lateSettled = true; }, () => { lateSettled = true; });
+        // The native dispatch and both coalesced waiter registrations are
+        // microtasks; one real immediate drains them without consuming time.
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(calls.length, 1);
+        assert.equal(capture.queries.get('group:200')?.waiters, 2);
         if (cancellation === 'abort') controller.abort();
-        await assert.rejects(early, error => ['EXPIRED', 'TIMEOUT'].includes(error.code));
+        else t.mock.timers.tick(50);
+        await earlyRejected;
+        assert.equal(lateSettled, false);
+        assert.equal(capture.queries.get('group:200')?.waiters, 1);
         assert.equal(capture.bus.listenerCount('groupInfo'), 1);
         capture.bus.emit('groupInfo', { groupCode: '200', groupName: 'Still waiting' });
         assert.equal((await late).group_name, 'Still waiting');

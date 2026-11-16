@@ -31,13 +31,14 @@ HTTP API 和正向 WS 对外使用 `/onebot/<profileId>/<nodeId>` 前缀，下�
 
 桥目录必须为当前用户私有的绝对路径。请求原子写入 `requests/<id>.json`，结果写入 `responses/<id>.json`。请求包含 `version: 1`、`id`、固定 `method`、对象 `params`、绝对毫秒期限 `expiresAt`；响应为 `{version,id,ok:true,result}` 或 `{version,id,ok:false,error:{code,message}}`。
 
-当前白名单包含 32 个操作，以 `src/ipc/common.cjs` 的固定目录为准：
+当前白名单包含 35 个操作，以 `src/ipc/common.cjs` 的固定目录为准：
 
 - 状态与资料：`status`、`resolve`、`user`、`friends`、`groups`、`groupInfo`、`groupMember`、`groupMembers`。
 - 消息与媒体：`getMessage`、`history`、`recall`、`prepareMedia`、`prepareMusic`、`prepareShare`、`receiveMedia`、`imageInfo`、`sendMessage`、`forwardOperation`。
 - 管理与互动：`groupAction`、`socialQuery`、`socialAction`、`interaction`、`groupFiles`。
 - 固定原生查询：`nativeRkey`、`nativeGroupFileUrl`、`nativeGroupFileSpace`、`nativePrivateFileUrl`、`nativeStatus`。
 - 固定扩展与导出：`extendedQuery`、`extendedAction`、`recordExport`。
+- QQAPI 只读扩展：`groupQuery`、`accountQuery`、`collectionQuery`，分别使用固定操作与参数目录。
 - 事件读取：`events`，由 RPC 服务处理。
 
 白名单表示允许调用的内部操作，不等于当前 QQ 会话支持其全部参数或底层能力。发送及其他敏感操作绑定 `expectedEpoch`；能力缺失、权限不足、无效参数和查询失败均按真实结果返回错误。

@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0-alpha.2",
+  "version": "0.2.0-alpha.3",
   "context": "offline-source-inventory",
-  "generated_at": "2026-11-16T06:29:20.638Z",
+  "generated_at": "2026-11-16T07:52:07.778Z",
   "schema_version": 1,
   "qq_version": "3.2.35-54395",
   "ready": false,
@@ -577,6 +577,42 @@
     },
     {
       "name": "get_system_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_detail_info",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_info_ex",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_shut_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_collection_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_profile_like",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_emoji_likes",
       "implemented": true,
       "available": false,
       "verification": "offline-tested"

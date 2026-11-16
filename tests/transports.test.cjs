@@ -119,7 +119,7 @@ test('HTTP and forward WS actions accept media-sized frames while HTTP enforces 
 
 test('pending action health aggregates public, internal and quick operations until they actually settle', async t => {
     const releases = [];
-    const { hub } = await fixture(t, [{ id: 'api', type: 'httpApi' }], {
+    const { hub } = await fixture(t, [{ id: 'api', type: 'httpApi', quickOperations: true }], {
         action: () => new Promise(resolve => releases.push(resolve))
     });
     assert.equal(hub.pendingActions, 0);
@@ -233,7 +233,7 @@ test('HTTP event reports sign exact bytes and preserve CQ parsing when adding at
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
-    const { hub, calls } = await fixture(t, [{ id: 'post', type: 'httpPost', url: 'http://127.0.0.1:' + server.address().port, token: 'hmac-secret' }]);
+    const { hub, calls } = await fixture(t, [{ id: 'post', type: 'httpPost', url: 'http://127.0.0.1:' + server.address().port, token: 'hmac-secret', quickOperations: true }]);
     hub.event({ post_type: 'message', self_id: 11111, time: Math.floor(Date.now() / 1000), message_type: 'group',
         group_id: 12345, user_id: 22222, message_id: 42, message: [] });
     await until(() => calls.length);
@@ -259,7 +259,7 @@ test('HTTP reporting keeps events and quick-operation responses at one MiB', asy
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
     const { hub, calls, diagnostics } = await fixture(t, [{ id: 'post', type: 'httpPost',
-        url: 'http://127.0.0.1:' + server.address().port }]);
+        url: 'http://127.0.0.1:' + server.address().port, quickOperations: true }]);
     const event = { post_type: 'message', self_id: 11111, time: Math.floor(Date.now() / 1000),
         message_type: 'private', user_id: 22222, message: [] };
     hub.event(event);
@@ -341,7 +341,7 @@ test('delayed HTTP quick response cannot send after authorization is revoked', a
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
-    const { hub, calls } = await fixture(t, [{ id: 'post', type: 'httpPost', url: 'http://127.0.0.1:' + server.address().port }], { authorization: () => allowed });
+    const { hub, calls } = await fixture(t, [{ id: 'post', type: 'httpPost', url: 'http://127.0.0.1:' + server.address().port, quickOperations: true }], { authorization: () => allowed });
     hub.event({ post_type: 'message', self_id: 11111, time: Math.floor(Date.now() / 1000), message_type: 'private', user_id: 22222, message: [] });
     await until(() => waiting);
     allowed = false;
@@ -385,7 +385,7 @@ test('quick operation has standard defaults, validates all flags before sending,
 
 test('hidden quick API rejects invented message targets before executing effects', async t => {
     const effects = [];
-    const { base } = await fixture(t, [{ id: 'api', type: 'httpApi' }], { action: async request => {
+    const { base } = await fixture(t, [{ id: 'api', type: 'httpApi', quickOperations: true }], { action: async request => {
         if (request.action === 'get_msg') return { status: 'ok', retcode: 0, data: { message_type: 'group', group_id: 12345, sender: { user_id: 22222 } } };
         effects.push(request); return { status: 'ok', retcode: 0, data: null };
     } });

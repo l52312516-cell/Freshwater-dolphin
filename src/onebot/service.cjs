@@ -17,6 +17,9 @@ const { ACTIONS: GROUP_FILE_ACTIONS, runGroupFiles } = require('./group-files.cj
 const { ACTIONS: FORWARD_ACTIONS, runForward, createForwardRegistry } = require('./forward.cjs');
 const { ACTIONS: MERGED_ACTIONS, runMerged } = require('./merged.cjs');
 const { ACTIONS: EXTENDED_ACTIONS, runExtended } = require('./extended-actions.cjs');
+const { ACTIONS: GROUP_QUERIES, runGroupQueries } = require('./group-queries.cjs');
+const { ACTIONS: COLLECTION_QUERIES, runCollectionQueries } = require('./collection-queries.cjs');
+const { ACTIONS: ACCOUNT_QUERY_ACTIONS, runAccountQuery } = require('./account-queries.cjs');
 const { decodeInlineMedia, stageInlineMedia } = require('./media-input.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
@@ -210,6 +213,9 @@ class OneBotService {
         if (MERGED_ACTIONS.has(action)) return runMerged(this, state, action, params);
         if (FORWARD_ACTIONS.has(action)) return runForward(this, state, action, params);
         if (EXTENDED_ACTIONS.has(action)) return runExtended(this, state, action, params);
+        if (GROUP_QUERIES.has(action)) return runGroupQueries(this, state, action, params);
+        if (COLLECTION_QUERIES.has(action)) return runCollectionQueries(this, state, action, params);
+        if (ACCOUNT_QUERY_ACTIONS.has(action)) return runAccountQuery(this, state, action, params);
         switch (action) {
         case 'get_login_info': {
             let nickname = typeof state.self.nickname === 'string' ? state.self.nickname : '';

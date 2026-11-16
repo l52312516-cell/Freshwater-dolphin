@@ -19,15 +19,18 @@ const { createVideoProcessor } = require('./video-send.cjs');
 const { createForward } = require('./forward.cjs');
 const { createMergedSend } = require('./merged-send.cjs');
 const { createExtended } = require('./extended.cjs');
+const { createGroupQueries } = require('./group-queries.cjs');
+const { createCollectionQueries } = require('./collection-queries.cjs');
+const { createAccountQueries } = require('./account-queries.cjs');
 const { createRecordExporter } = require('./record-export.cjs');
 const { integer: profileInteger, groupFields, memberFields, userFields } = require('./profile-fields.cjs');
 
 const TARGET_VERSION = '3.2.35-54395';
 const MAX_IDENTITIES = 20000;
 const SERVICES = Object.freeze({ msg: 'getMsgService', profile: 'getProfileService',
-  group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService', ticket: 'getTicketService', tipOff: 'getTipOffService' });
+  group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService', collection: 'getCollectionService', ticket: 'getTicketService', tipOff: 'getTipOffService' });
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport']);
+  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numeric(value, label = 'QQ number') {
@@ -159,6 +162,9 @@ class Capture extends EventEmitter {
     this.forwardApi = createForward(this);
     this.mergedSendApi = createMergedSend(this);
     this.extendedApi = createExtended(this);
+    this.groupQueriesApi = createGroupQueries(this);
+    this.collectionQueries = createCollectionQueries(this);
+    this.accountQueriesApi = createAccountQueries(this);
     if (options.install !== false) this.install();
   }
 
@@ -213,7 +219,8 @@ class Capture extends EventEmitter {
         ...(compatible && this.ready ? this.forwardApi.capabilities() : { forwardExisting: false, forwardRead: false }),
         mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom,
         recordExport: compatible && this.ready && this.recordExporter.available(),
-        ...(compatible && this.ready ? this.extendedApi.capabilities() : {}) } };
+        ...(compatible && this.ready ? { ...this.extendedApi.capabilities(), ...this.groupQueriesApi.capabilities(),
+          ...this.collectionQueries.capabilities(), ...this.accountQueriesApi.capabilities() } : {}) } };
   }
   publish(event) { this.emit('event', { ...event, epoch: this.epoch, selfUin: this.self?.uin || null }); }
   publishState() { this.publish({ kind: 'state', status: this.state() }); }
@@ -311,6 +318,7 @@ class Capture extends EventEmitter {
     this.session = session;
     this.epoch = randomUUID();
     this.social.reset();
+    this.groupQueriesApi.clear();
     this.ready = false;
     this.readyAt = null;
     this.online = null;
@@ -383,6 +391,7 @@ class Capture extends EventEmitter {
     this.readyAt = null;
     this.online = null;
     this.shareCards.clear();
+    this.groupQueriesApi.clear();
     clearInterval(this.observerTimer); this.observerTimer = null;
     this.rejectPending(error);
     this.detach();
@@ -443,6 +452,7 @@ class Capture extends EventEmitter {
     });
     const group = listener({
       ...Object.fromEntries(Object.entries(this.social.listenerMethods.group).map(([name, method]) => [name, active(method)])),
+      ...Object.fromEntries(Object.entries(this.groupQueriesApi.listenerMethods.group).map(([name, method]) => [name, active(method)])),
       onGroupListUpdate: active((kind, records) => {
         this.diagnostic(problem('GROUP_LIST_UPDATE', `type=${Number.isInteger(kind) ? kind : -1}; count=${Array.isArray(records) ? records.length : -1}`));
         if (!Array.isArray(records)) return;
@@ -831,24 +841,53 @@ class Capture extends EventEmitter {
       area: '', title_expire_time: 0, ...memberFields(record) };
   }
   async groupMembers(params, context) {
+    const groupId = numeric(params.groupId, 'group number');
+    const records = await this.groupMemberRecords(params, context);
+    return records.map(record => this.normalizeMember(groupId, record));
+  }
+  async groupMemberRecords(params, context, options = {}) {
     const epoch = this.epoch;
     const groupId = numeric(params.groupId, 'group number');
-    const response = await this.invoke('group', 'getAllMemberList', [groupId, Boolean(params.refresh)]);
-    if (this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed while querying members');
+    const check = () => {
+      if (this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed while querying members');
+      if (context?.signal?.aborted || context?.expiresAt !== undefined && Date.now() >= context.expiresAt) {
+        throw problem('EXPIRED', 'Member query expired or was cancelled');
+      }
+      options.check?.();
+    };
+    const invoke = options.invoke || ((method, args) => this.invoke('group', method, args));
+    check();
+    const response = await invoke('getAllMemberList', [groupId, Boolean(params.refresh)]);
+    check();
     if (!response || response.errCode !== 0) throw problem('KERNEL_ERROR', 'QQ rejected the member list query');
     const result = response.result;
-    if (!result || result.finish !== true || !(result.infos instanceof Map) || !Array.isArray(result.ids) || result.ids.length > 10000) {
+    if (!result || result.finish !== true || !(result.infos instanceof Map) || !Array.isArray(result.ids) ||
+        result.ids.length > 10000 || result.infos.size > result.ids.length) {
       throw problem('INVALID_RESPONSE', 'QQ returned an incomplete member list');
     }
     const ids = result.ids.map(value => ntuid(typeof value === 'string' ? value : value?.uid));
     const wanted = new Set(ids);
-    if (wanted.size !== ids.length || [...result.infos.keys()].some(uid => !wanted.has(uid))) {
+    if (wanted.size !== ids.length) {
+      throw problem('INVALID_RESPONSE', 'QQ member identities and records are inconsistent');
+    }
+    for (const uid of result.infos.keys()) if (!wanted.has(uid)) {
       throw problem('INVALID_RESPONSE', 'QQ member identities and records are inconsistent');
     }
     const records = new Map();
     const merge = (uid, value) => {
       if (!value || typeof value !== 'object' || Array.isArray(value) ||
         (value.uid !== undefined && value.uid !== uid)) throw problem('INVALID_RESPONSE', 'QQ returned a mismatched group member');
+      if (options.requireMuteState === true) {
+        // Native members contain Maps, wide integers and other opaque data.
+        // Read only the fixed mute-query fields, including during hydration;
+        // enumerating the native object could invoke unrelated getters.
+        const selected = {};
+        for (const name of ['uid', 'uin', 'nick', 'shutUpTime', 'role', 'cardName', 'groupCode']) {
+          const field = value[name];
+          if (field !== undefined) selected[name] = field;
+        }
+        value = selected;
+      }
       const previous = records.get(uid);
       if (previous?.uin && value.uin && String(previous.uin) !== String(value.uin)) throw problem('INVALID_RESPONSE', 'QQ member UIN changed inside one snapshot');
       records.set(uid, { ...previous, ...value, uid });
@@ -858,27 +897,31 @@ class Capture extends EventEmitter {
       merge(uid, typeof value === 'string' ? { uid } : value);
       if (result.infos.has(uid)) merge(uid, result.infos.get(uid));
     }
-    const missing = ids.filter(uid => !records.get(uid).uin || ![2, 3, 4].includes(records.get(uid).role));
+    const missing = ids.filter(uid => {
+      const record = records.get(uid);
+      return !record.uin || ![2, 3, 4].includes(record.role) || options.requireMuteState === true &&
+        (record.nick === undefined || record.shutUpTime === undefined);
+    });
     if (missing.length && !this.hasMethods('group', ['getMemberInfo'])) throw problem('UNSUPPORTED', 'QQ cannot complete the member list details');
     // Some QQ builds return a complete identity list but an empty detail Map.
     // Fetch actual records in bounded batches; never invent members from UIDs.
     for (let offset = 0; offset < missing.length; offset += 50) {
-      if (this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed while querying members');
+      check();
       const batch = missing.slice(offset, offset + 50), pending = new Set(batch);
       await this.waiting('groupMember', (received, _source, values) => {
         if (received !== groupId || !(values instanceof Map)) return undefined;
         for (const uid of batch) if (values.has(uid)) { merge(uid, values.get(uid)); pending.delete(uid); }
         return pending.size === 0 ? true : undefined;
-      }, () => this.invoke('group', 'getMemberInfo', [groupId, batch, Boolean(params.refresh)]), context);
+      }, () => { check(); return invoke('getMemberInfo', [groupId, batch, Boolean(params.refresh)]); }, context);
     }
-    if (this.epoch !== epoch) throw problem('SESSION_CHANGED', 'QQ changed while querying members');
+    check();
     // Validate the complete result before normalizeMember updates UID caches.
     for (const uid of ids) {
       const record = records.get(uid);
       numeric(record.uin, 'member QQ number'); ntuid(record.uid);
       if (![2, 3, 4].includes(record.role)) throw problem('INVALID_RESPONSE', 'QQ group member role is unknown');
     }
-    return ids.map(uid => this.normalizeMember(groupId, records.get(uid)));
+    return ids.map(uid => records.get(uid));
   }
   async history(params) {
     const peer = plainPeer(params.peer);
@@ -1025,6 +1068,9 @@ class Capture extends EventEmitter {
   }
   async socialQuery(params, context) { return this.social.query(params, context); }
   async extendedQuery(params, context) { return this.extendedApi.query(params, context); }
+  async groupQuery(params, context) { return this.groupQueriesApi.dispatch(params.operation, params, context); }
+  async collectionQuery(params, context) { return this.collectionQueries.query(params, context); }
+  async accountQuery(params, context) { return this.accountQueriesApi.query(params, context); }
   async extendedAction(params, context) { return this.extendedApi.action(params, context); }
   async recordExport(params, context) { this.ensureReady(); return this.recordExporter.export(params, context); }
   async interaction(params, context) {
@@ -1561,6 +1607,7 @@ class Capture extends EventEmitter {
     this.rejectPending(problem('NOT_READY', 'QQ capture stopped'));
     this.detach();
     this.social.close();
+    this.groupQueriesApi.clear();
     if (this.processObject.dlopen === this.dlopenHook) this.processObject.dlopen = this.originalDlopen;
     for (const restore of this.restorations.reverse()) { try { restore(); } catch (error) { this.diagnostic(error); } }
     this.restorations.length = 0;

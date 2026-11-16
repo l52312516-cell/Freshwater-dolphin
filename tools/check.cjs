@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 let failed = false;
 function walk(directory) {
     for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
-        if (['.git', 'work', 'outputs', 'node_modules', 'dist', '__pycache__'].includes(item.name)) continue;
+        if (['.git', 'work', 'outputs', '详细报告', 'runtime', 'node_modules', 'dist', '__pycache__'].includes(item.name)) continue;
         const file = path.join(directory, item.name);
         if (item.isDirectory()) { walk(file); continue; }
         if (item.name.endsWith('.cjs')) {

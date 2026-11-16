@@ -28,6 +28,23 @@ export interface MessageState {
   form: { type: 'private' | 'group'; recipient: string; text: string; at: string; reply: string; advanced: boolean; segments: string };
   actionName: string; actionParams: string; actionResult: unknown; uploadedImage: string;
 }
+export interface ActionCapability {
+  name: string; implemented: boolean; available: boolean; verification: string;
+  variants?: { custom_text_image_nodes: boolean; existing_message_id_nodes: boolean; existing_scope: string };
+  target_validation?: { qq_version: string; platform: string; date: string; scopes: string[]; reference: string };
+}
+export interface SegmentCapability {
+  name: string; implemented: boolean; send: boolean; receive: boolean; verification: string;
+  receive_scope?: string; send_contexts?: string[]; receive_contexts?: string[];
+}
+export interface CapabilityCatalogue {
+  schema_version: 1; qq_version: string | null; ready: boolean;
+  actions: ActionCapability[]; extensions: ActionCapability[];
+  segments: SegmentCapability[]; segment_extensions: SegmentCapability[];
+  events: { name: string; implemented: boolean; available: boolean; subtypes: string[] }[];
+  notes: string[];
+}
+export interface CapabilityState { catalogue: CapabilityCatalogue | null; loading: boolean; error: string }
 export interface SettingsState {
   text: string; maxAccounts: number; publicBaseUrl: string;
   statusCommand: { enabled: boolean; trigger: string };

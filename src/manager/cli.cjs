@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const { privateDirectory, read, atomic } = require('./files.cjs');
+const { fault } = require('../errors.cjs');
 const temporary = privateDirectory(root, 'work/temp');
 Object.assign(process.env, { TEMP: temporary, TMP: temporary, TMPDIR: temporary,
     npm_config_cache: path.join(root, 'work/cache/npm'), XDG_CACHE_HOME: path.join(root, 'work/cache') });
@@ -16,7 +17,9 @@ async function main(args) {
         if (!state.at || Date.now() - state.at > 15000 || !state.manager) throw new Error('Manager unavailable');
         return { manager: true };
     }
-    const tls = process.env.FWD_TLS_CERT && process.env.FWD_TLS_KEY ? {
+    const hasCert = Boolean(process.env.FWD_TLS_CERT), hasKey = Boolean(process.env.FWD_TLS_KEY);
+    if (hasCert !== hasKey) throw fault('INVALID_CONFIG', 'FWD_TLS_CERT and FWD_TLS_KEY must be configured together');
+    const tls = hasCert ? {
         cert: fs.readFileSync(require('../paths.cjs').workspacePath(root, process.env.FWD_TLS_CERT)),
         key: fs.readFileSync(require('../paths.cjs').workspacePath(root, process.env.FWD_TLS_KEY))
     } : undefined;

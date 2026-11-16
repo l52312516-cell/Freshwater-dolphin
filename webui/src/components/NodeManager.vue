@@ -74,7 +74,7 @@ async function edit(node?: NodeConfig) {
   editor.value = node ? JSON.parse(JSON.stringify(node)) : {
     id: 'node-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6), label: '', type: kind.value === 'general' ? 'wsClient' : kind.value,
     enabled: false, role: 'Universal', heartbeatMs: 30000, timeoutMs: 10000, pingTimeoutMs: 10000,
-    quickOperations: true, maxPending: 16, ratePerSecond: 20, burst: 40, eventBufferSize: 1000, eventMaxAgeMs: 60000,
+    quickOperations: false, maxPending: 16, ratePerSecond: 20, burst: 40, eventBufferSize: 1000, eventMaxAgeMs: 60000,
     ...(['httpPost', 'wsClient'].includes(kind.value) ? { url: '' } : {}),
   };
   await nextTick(); editDialog.value?.showModal();
@@ -204,7 +204,7 @@ watch(() => props.selectedId, closeEditors);
                 <span>{{ node.type.startsWith('ws') ? node.role || 'Universal' : node.type === 'httpPost' ? '事件上报' : '动作接口' }}</span>
                 <span>{{ node.tokenPresent || node.token ? '已设置 Token' : '无 Token' }}</span>
                 <span v-if="node.type === 'httpPost'">{{ node.secretPresent || node.secret ? 'HMAC 签名' : '无签名' }}</span>
-                <span v-if="node.type === 'httpPost'">{{ node.quickOperations !== false ? '允许快速操作' : '快速操作关闭' }}</span>
+                <span v-if="node.type === 'httpPost'">{{ node.quickOperations === true ? '允许快速操作' : '快速操作关闭' }}</span>
                 <span v-if="Number(runtime(node)?.connections) > 0">{{ runtime(node)?.connections }} 个连接</span>
               </div>
               <p v-if="runtime(node)?.lastError" class="connection-error">{{ runtime(node)?.lastError }}</p>
@@ -296,7 +296,7 @@ watch(() => props.selectedId, closeEditors);
           <SectionCard title="行为" hint="事件与限流策略">
             <div v-if="editor.type === 'httpPost'" class="switch-row">
               <div class="switch-row-text"><strong>允许响应中的标准快速操作</strong><small>只对已声明的标准操作生效，需要事件响应启用。</small></div>
-              <button type="button" class="switch" :class="{ on: editor.quickOperations !== false }" role="switch" :aria-checked="editor.quickOperations !== false" aria-label="允许快速操作" @click="editor.quickOperations = editor.quickOperations === false"><span></span></button>
+              <button type="button" class="switch" :class="{ on: editor.quickOperations === true }" role="switch" :aria-checked="editor.quickOperations === true" aria-label="允许快速操作" @click="editor.quickOperations = editor.quickOperations !== true"><span></span></button>
             </div>
             <div class="info-row"><span>消息格式</span><strong>标准 OneBot v11 数组段</strong></div>
             <div class="info-row"><span>自身回显</span><strong>不作为普通消息再次上报</strong></div>

@@ -12,6 +12,14 @@ const vue = require('vue');
 const dependencies = Promise.all([import('../src/request-scope.mjs'), import('../src/account-config.mjs'), import('../src/log-key.mjs')]);
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 function overview(accounts = [{ id: 'alpha' }, { id: 'beta' }]) { return { accounts, resources: { totalMemory: 1, freeMemory: 1 }, version: 'test', maxAccounts: 2 }; }
+function catalogue(qqVersion = 'test-version') {
+    return { schema_version: 1, qq_version: qqVersion, ready: true,
+        actions: [{ name: 'get_status', implemented: true, available: true, verification: 'offline-tested' },
+            { name: 'send_group_msg', implemented: true, available: false, verification: 'offline-tested' }],
+        extensions: [{ name: 'get_private_file_url', implemented: true, available: false, verification: 'offline-tested',
+            target_validation: { qq_version: '3.2.35-54395', platform: 'linux-x64', date: '2026-11-16', scopes: ['received-private-file'], reference: 'docs/native-validation-20261116.md' } }],
+        segments: [], segment_extensions: [], events: [], notes: ['Availability is not target validation.'] };
+}
 async function app(t, api) {
     const [scope, config, logs] = await dependencies;
     const source = fs.readFileSync(path.join(__dirname, '../src/App.vue'), 'utf8');
@@ -27,7 +35,7 @@ async function app(t, api) {
     }
     const customVue = { ...vue, onMounted() {}, onBeforeUnmount(callback) { unmount.push(callback); } };
     const module = { exports: {} };
-    const context = vm.createContext({ module, exports: module.exports, console, AbortController, EventSource: Source,
+    const context = vm.createContext({ module, exports: module.exports, console, Error, AbortController, EventSource: Source,
         setTimeout, clearTimeout, setInterval, clearInterval, document: { hidden: false },
         window: { addEventListener() {}, removeEventListener() {} },
         require(name) {
@@ -222,6 +230,109 @@ test('settings edited during a reload retain their new draft when the earlier se
     value.settings.musicSignKey = 'new-secret'; pending.resolve({ maxAccounts: 2, publicBaseUrl: '', rkey: { fallbackServers: [] }, musicSignUrl: '' });
     await loading; assert.equal(value.settings.publicBaseUrl, 'https://typed-during-request.example'); assert.equal(value.settings.musicSignKey, 'new-secret');
     assert.equal(value.settingsDirty.value, true);
+});
+
+test('leaving the browser warns for unsaved runtime and service settings and stops warning after saving', async t => {
+    const { value } = await app(t, async () => ({}));
+    const saved = { maxAccounts: 2, publicBaseUrl: '', musicSignUrl: '', rkey: { fallbackServers: [] } };
+    value.applySettings(saved);
+    const leaving = () => { const event = { prevented: false, preventDefault() { this.prevented = true; } }; value.beforeUnload(event); return event; };
+    assert.equal(leaving().prevented, false);
+    value.settings.publicBaseUrl = 'https://unsaved.example'; assert.equal(leaving().prevented, true);
+    value.applySettings(saved); assert.equal(leaving().prevented, false);
+    value.settings.musicSignKey = 'unsaved-private-key'; assert.equal(leaving().prevented, true);
+    value.applySettings(saved); assert.equal(leaving().prevented, false);
+    value.dirty.value = true; assert.equal(leaving().prevented, true);
+});
+
+test('loading account capabilities preserves the default or manually edited action and never invokes one', async t => {
+    const calls = []; const { value } = await app(t, async (url, method) => { calls.push([url, method]); return catalogue(); });
+    await value.loadCapabilities();
+    assert.equal(value.messages.actionName, 'get_status'); assert.equal(value.messages.actionParams, '{}');
+    value.messages.actionName = 'my_manual_action'; value.messages.actionParams = '{"draft":true}';
+    await value.loadCapabilities();
+    assert.equal(value.messages.actionName, 'my_manual_action'); assert.equal(value.messages.actionParams, '{"draft":true}');
+    assert.equal(value.capabilityState.catalogue.extensions[0].target_validation.scopes[0], 'received-private-file');
+    assert.deepEqual(calls, [['/accounts/alpha/capabilities', 'GET'], ['/accounts/alpha/capabilities', 'GET']]);
+    value.selectCapability('send_group_msg');
+    assert.equal(value.messages.actionName, 'send_group_msg'); assert.equal(value.messages.actionParams, '{"draft":true}');
+    value.selectCapability('not_in_current_catalogue'); assert.equal(value.messages.actionName, 'send_group_msg');
+    assert.equal(calls.length, 2); assert.equal(value.confirmDialog.value, null);
+});
+
+test('switching accounts discards old capabilities while a new account response is pending', async t => {
+    const alpha = deferred(), beta = deferred(); const calls = [];
+    const { value } = await app(t, url => { calls.push(url); return url.includes('/alpha/') ? alpha.promise : beta.promise; });
+    const first = value.loadCapabilities(); value.switchAccount('beta'); const second = value.loadCapabilities();
+    alpha.resolve(catalogue('alpha-private-version')); await first;
+    assert.equal(value.capabilityState.catalogue, null); assert.equal(value.capabilityState.loading, true); assert.equal(value.capabilityState.error, '');
+    beta.resolve(catalogue('beta-version')); await second;
+    assert.equal(value.capabilityState.catalogue.qq_version, 'beta-version'); assert.equal(value.capabilityState.loading, false);
+    assert.deepEqual(calls, ['/accounts/alpha/capabilities', '/accounts/beta/capabilities']);
+});
+
+test('logout and a newer capability refresh invalidate late responses', async t => {
+    const first = deferred(), second = deferred(); let count = 0;
+    const { value } = await app(t, () => ++count === 1 ? first.promise : second.promise);
+    const old = value.loadCapabilities(), current = value.loadCapabilities();
+    second.resolve(catalogue('latest-version')); await current;
+    first.resolve(catalogue('stale-version')); await old;
+    assert.equal(value.capabilityState.catalogue.qq_version, 'latest-version');
+    const pending = deferred(); const loggedOut = await app(t, () => pending.promise);
+    const loading = loggedOut.value.loadCapabilities(); loggedOut.value.unauthorized(); pending.resolve(catalogue('private-version')); await loading;
+    assert.equal(loggedOut.value.capabilityState.catalogue, null); assert.equal(loggedOut.value.capabilityState.loading, false); assert.equal(loggedOut.value.capabilityState.error, '');
+});
+
+test('a capability response from a previous QQ session cannot repopulate the current account', async t => {
+    const pending = deferred(); const { value } = await app(t, () => pending.promise);
+    value.acceptOverview(overview([{ id: 'alpha', desired: 'running', health: { ready: true, authorized: true, sessionEpoch: 'old-session' } }]));
+    const loading = value.loadCapabilities();
+    value.acceptOverview(overview([{ id: 'alpha', desired: 'running', health: { ready: true, authorized: true, sessionEpoch: 'new-session' } }]));
+    pending.resolve(catalogue('old-session-version')); await loading;
+    assert.equal(value.capabilityState.catalogue, null); assert.equal(value.capabilityState.error, '');
+});
+
+test('capability failures clear a previous catalogue and malformed responses never appear as current capabilities', async t => {
+    let count = 0;
+    const { value } = await app(t, async () => { if (++count === 1) return catalogue(); throw new Error('QQ account gateway is unavailable'); });
+    await value.loadCapabilities(); await value.loadCapabilities();
+    assert.equal(value.capabilityState.catalogue, null); assert.equal(value.capabilityState.loading, false);
+    assert.match(value.capabilityState.error, /gateway is unavailable/);
+    value.selectCapability('send_group_msg'); assert.equal(value.messages.actionName, 'get_status');
+    const malformed = await app(t, async () => ({ ...catalogue(), extensions: [{ ...catalogue().extensions[0], target_validation: { scopes: null } }] }));
+    await malformed.value.loadCapabilities();
+    assert.equal(malformed.value.capabilityState.catalogue, null); assert.match(malformed.value.capabilityState.error, /格式无效/);
+});
+
+test('entering message debugging reads the selected account capabilities without choosing or calling an action', async t => {
+    const calls = []; const { value } = await app(t, async url => { calls.push(url); return catalogue(); });
+    value.tab.value = 'social'; await vue.nextTick(); assert.equal(calls.length, 0);
+    value.social.tab = 'messages'; await vue.nextTick(); await Promise.resolve();
+    assert.deepEqual(calls, ['/accounts/alpha/capabilities']); assert.equal(value.messages.actionName, 'get_status');
+    value.switchAccount('beta'); await vue.nextTick(); await Promise.resolve();
+    assert.deepEqual(calls, ['/accounts/alpha/capabilities', '/accounts/beta/capabilities']); assert.equal(value.confirmDialog.value, null);
+});
+
+test('the capability browser distinguishes implementation, session availability and validation scope', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../src/components/CapabilityBrowser.vue'), 'utf8');
+    const script = compileScript(parse(source).descriptor, { id: 'audit-capabilities' });
+    const code = ts.transpileModule(script.content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const module = { exports: {} };
+    vm.runInNewContext(code, { module, exports: module.exports, require(name) {
+        if (name === 'vue') return vue;
+        throw new Error('Unexpected capability component dependency: ' + name);
+    } });
+    const props = vue.reactive({ state: { catalogue: catalogue(), loading: false, error: '' }, busy: false });
+    const value = module.exports.default.setup(props, { expose() {}, emit() {} });
+    assert.equal(value.availableCount.value, 1);
+    assert.equal(value.availability({ implemented: false, available: false }), '尚未实现');
+    assert.equal(value.availability(props.state.catalogue.actions[1]), '当前会话未提供所需能力');
+    props.state.catalogue.ready = false;
+    assert.equal(value.availability(props.state.catalogue.actions[1]), '当前会话尚未就绪');
+    assert.match(value.verification('offline-tested'), /待目标 QQ 验证/);
+    value.filter.value = 'available'; assert.equal(value.rows.value.length, 1); assert.equal(value.rows.value[0].name, 'get_status');
+    value.filter.value = 'unavailable'; value.query.value = 'private_file'; assert.equal(value.rows.value.length, 1);
+    assert.equal(value.rows.value[0].target_validation.scopes[0], 'received-private-file');
 });
 
 test('the log console renders a bounded page while preserving access to all filtered records', async () => {

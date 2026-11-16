@@ -2,7 +2,9 @@
 
 独立维护的 QQ kernel / OneBot v11 适配器，提供中文管理台、多个 QQ 实例与 Docker 部署。QQ 接入、内部通信、OneBot 协议及管理服务均在本仓库维护，不依赖原私有研究仓库。
 
-**当前为实验版本。** 首批适配环境固定为 Linux x64、QQ `3.2.35-54395`、Node.js 22 或更新版本。离线测试通过、管理台可打开和 QQ 进程存活，均不能替代真实消息与接口验证；公开验证范围见 [0.2.0-alpha.2 发布说明](docs/releases/0.2.0-alpha.2.md)，更完整的本地交付报告保存在 `outputs/`。
+**当前为实验版本。** 首批适配环境固定为 Linux x64、QQ `3.2.35-54395`、Node.js 22 或更新版本。离线测试通过、管理台可打开和 QQ 进程存活，均不能替代真实消息与接口验证；公开验证范围见 [0.2.0-alpha.3 验证摘要](docs/releases/0.2.0-alpha.3.md)，更完整的本地交付报告保存在 `outputs/`。
+
+当前开发版本为 `0.2.0-alpha.3`。新增群详情、群扩展信息、群禁言列表、资料点赞列表、消息表情回应者及收藏列表六项只读 QQAPI，参数与分页边界见 [QQAPI 扩展](docs/qqapi-extensions.md)。管理台接口调试可读取所选账号的能力目录并填入动作名；选择不会自动调用。快速操作默认关闭，已有显式开启配置保留；只配置 TLS 证书或密钥其中一项时启动失败。
 
 [文档导航](docs/README.md) · [能力矩阵](docs/reference/capability-matrix.md) · [Linux x64 下载](https://github.com/l52312516-cell/Freshwater-dolphin/releases/tag/v0.2.0-alpha.2)
 
@@ -227,8 +229,8 @@ FWD_LEGACY_STOPPED=1 node src/manager/cli.cjs --migrate-legacy
 ```sh
 npm run package
 set -o pipefail
-docker save freshwater-dolphin:0.2.0-alpha.2 | gzip -1 > outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz
-sha256sum outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz > outputs/freshwater-dolphin-0.2.0-alpha.2-linux-x64.tar.gz.sha256
+docker save freshwater-dolphin:0.2.0-alpha.3 | gzip -1 > outputs/freshwater-dolphin-0.2.0-alpha.3-linux-x64.tar.gz
+sha256sum outputs/freshwater-dolphin-0.2.0-alpha.3-linux-x64.tar.gz > outputs/freshwater-dolphin-0.2.0-alpha.3-linux-x64.tar.gz.sha256
 ```
 
 源码包采用白名单，排除工作目录、真实配置、凭据、QQ 及 Git 历史。Docker 导出镜像不包含绑定的登录数据。更新源码、程序或镜像由部署方显式完成；管理台不自行拉取镜像，不将容器内文件变更称为镜像升级。
