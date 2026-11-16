@@ -283,14 +283,21 @@ test('an exact own delivery confirms success even when the native acceptance Pro
 });
 
 test('a pending exact readback is cancelled at the request deadline and its late result cannot restart polling', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   const f = fixture(); t.after(() => f.capture.close()); f.init()();
-  let queries = 0, early, release;
-  f.msg.sendMsg = (_zero, peer) => { early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); return { result: 0 }; };
+  let queries = 0, early, release, submitted, reading;
+  const dispatched = new Promise(resolve => { submitted = resolve; });
+  const readbackEntered = new Promise(resolve => { reading = resolve; });
+  f.msg.sendMsg = (_zero, peer) => { early = earlyOwn(peer); f.listeners.msg.onAddSendMsg(early); submitted(); return { result: 0 }; };
   f.msg.getMsgsByMsgId = () => {
     queries++; f.listeners.msg.onAddSendMsg(early);
-    return new Promise(resolve => { release = resolve; });
+    return new Promise(resolve => { release = resolve; reading(); });
   };
-  await assert.rejects(correlatedSend(f, 30), { code: 'TIMEOUT' });
+  const pending = correlatedSend(f, 30), rejected = assert.rejects(pending, { code: 'TIMEOUT' });
+  await dispatched;
+  t.mock.timers.tick(0); await readbackEntered;
+  assert.equal(queries, 1);
+  t.mock.timers.tick(30); await rejected;
   await new Promise(resolve => setImmediate(resolve)); assert.equal(f.capture.pending.size, 0);
   release({ result: 0, msgList: [{ ...early, guildId: '', sendStatus: 2 }] });
   await new Promise(resolve => setImmediate(resolve));

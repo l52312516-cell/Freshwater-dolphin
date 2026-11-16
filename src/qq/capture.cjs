@@ -22,6 +22,18 @@ const { createExtended } = require('./extended.cjs');
 const { createGroupQueries } = require('./group-queries.cjs');
 const { createCollectionQueries } = require('./collection-queries.cjs');
 const { createAccountQueries } = require('./account-queries.cjs');
+const { createExtendedQueries2 } = require('./extended-queries2.cjs');
+const { createShareQueries } = require('./share-queries.cjs');
+const { createAdminQueries } = require('./admin-queries.cjs');
+const { createCustomFace } = require('./custom-face.cjs');
+const { createContactExtra } = require('./contact-extra.cjs');
+const { createFlashTransfer } = require('./flash-transfer.cjs');
+const { createQzone } = require('./qzone.cjs');
+const { createFriendDress } = require('./friend-dress.cjs');
+const { createForwardUpload } = require('./forward-upload.cjs');
+const { createVoiceExtra } = require('./voice-extra.cjs');
+const { createGroupAlbum } = require('./group-album.cjs');
+const { createMiscExtra } = require('./misc-extra.cjs');
 const { createRecordExporter } = require('./record-export.cjs');
 const { integer: profileInteger, groupFields, memberFields, userFields } = require('./profile-fields.cjs');
 
@@ -30,7 +42,7 @@ const MAX_IDENTITIES = 20000;
 const SERVICES = Object.freeze({ msg: 'getMsgService', profile: 'getProfileService',
   group: 'getGroupService', buddy: 'getBuddyService', msf: 'getMSFService', recent: 'getRecentContactService', richMedia: 'getRichMediaService', profileLike: 'getProfileLikeService', collection: 'getCollectionService', ticket: 'getTicketService', tipOff: 'getTipOffService' });
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
+  'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'adminAction', 'customFaceQuery', 'customFaceAction', 'contactExtra', 'flashTransfer', 'qzoneQuery', 'qzoneAction', 'voiceExtra', 'forwardUpload', 'friendDressQuery', 'groupAlbumQuery', 'groupAlbumAction', 'miscExtra', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function numeric(value, label = 'QQ number') {
@@ -165,6 +177,18 @@ class Capture extends EventEmitter {
     this.groupQueriesApi = createGroupQueries(this);
     this.collectionQueries = createCollectionQueries(this);
     this.accountQueriesApi = createAccountQueries(this);
+    this.extendedQueries2Api = createExtendedQueries2(this);
+    this.shareQueriesApi = createShareQueries(this);
+    this.adminQueriesApi = createAdminQueries(this);
+    this.customFaceApi = createCustomFace(this);
+    this.contactExtraApi = createContactExtra(this);
+    this.flashTransferApi = createFlashTransfer(this);
+    this.qzoneApi = createQzone(this);
+    this.friendDressApi = createFriendDress(this);
+    this.forwardUploadApi = createForwardUpload(this);
+    this.voiceExtraApi = createVoiceExtra(this);
+    this.groupAlbumApi = createGroupAlbum(this);
+    this.miscExtraApi = createMiscExtra(this);
     if (options.install !== false) this.install();
   }
 
@@ -216,11 +240,15 @@ class Capture extends EventEmitter {
         groupFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
         groupFileSpace: compatible && this.ready && require('./msf-native.cjs').available(),
         privateFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
+        downloadRkey: compatible && this.ready && require('./msf-native.cjs').available(),
         ...(compatible && this.ready ? this.forwardApi.capabilities() : { forwardExisting: false, forwardRead: false }),
         mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom,
         recordExport: compatible && this.ready && this.recordExporter.available(),
         ...(compatible && this.ready ? { ...this.extendedApi.capabilities(), ...this.groupQueriesApi.capabilities(),
-          ...this.collectionQueries.capabilities(), ...this.accountQueriesApi.capabilities() } : {}) } };
+          ...this.collectionQueries.capabilities(), ...this.accountQueriesApi.capabilities(), ...this.extendedQueries2Api.capabilities(),
+          ...this.shareQueriesApi.capabilities(), ...this.adminQueriesApi.capabilities(), ...this.customFaceApi.capabilities(),
+          ...this.contactExtraApi.capabilities(), ...this.flashTransferApi.capabilities(), ...this.qzoneApi.capabilities(),
+          ...this.groupAlbumApi.capabilities(), ...this.miscExtraApi.capabilities(), ...this.friendDressApi.capabilities(), ...this.forwardUploadApi.capabilities(), ...this.voiceExtraApi.capabilities() } : {}) } };
   }
   publish(event) { this.emit('event', { ...event, epoch: this.epoch, selfUin: this.self?.uin || null }); }
   publishState() { this.publish({ kind: 'state', status: this.state() }); }
@@ -319,6 +347,9 @@ class Capture extends EventEmitter {
     this.epoch = randomUUID();
     this.social.reset();
     this.groupQueriesApi.clear();
+    this.extendedQueries2Api.clear();
+    this.contactExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
     this.ready = false;
     this.readyAt = null;
     this.online = null;
@@ -392,6 +423,9 @@ class Capture extends EventEmitter {
     this.online = null;
     this.shareCards.clear();
     this.groupQueriesApi.clear();
+    this.extendedQueries2Api.clear();
+    this.contactExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
     clearInterval(this.observerTimer); this.observerTimer = null;
     this.rejectPending(error);
     this.detach();
@@ -404,6 +438,7 @@ class Capture extends EventEmitter {
       try { fn(...args); } catch (error) { this.diagnostic(error); }
     } };
     const msg = listener({
+      ...Object.fromEntries(Object.entries(this.extendedQueries2Api.listenerMethods?.msg || {}).map(([name, method]) => [name, active(method)])),
       ...Object.fromEntries(Object.entries(this.groupFilesApi.listenerMethods.msg).map(([name, method]) => [name, active(method)])),
       // Private synchronous observers can preserve an early native record
       // before QQ clears pending-build metadata. This is not a business event.
@@ -1070,6 +1105,22 @@ class Capture extends EventEmitter {
   async extendedQuery(params, context) { return this.extendedApi.query(params, context); }
   async groupQuery(params, context) { return this.groupQueriesApi.dispatch(params.operation, params, context); }
   async collectionQuery(params, context) { return this.collectionQueries.query(params, context); }
+  async extendedQuery2(params, context) { return this.extendedQueries2Api.query(params, context); }
+  async shareQuery(params, context) { return this.shareQueriesApi.query(params, context); }
+  async adminQuery(params, context) { return this.adminQueriesApi.query(params, context); }
+  async adminAction(params, context) { return this.adminQueriesApi.action(params, context); }
+  async customFaceQuery(params, context) { return this.customFaceApi.query(params, context); }
+  async customFaceAction(params, context) { return this.customFaceApi.action(params, context); }
+  async contactExtra(params, context) { return this.contactExtraApi.execute(params, context); }
+  async flashTransfer(params, context) { return this.flashTransferApi.execute(params, context); }
+  async qzoneQuery(params, context) { return this.qzoneApi.query(params, context); }
+  async friendDressQuery(params, context) { return this.friendDressApi.query(params, context); }
+  async forwardUpload(params, context) { return this.forwardUploadApi.upload(params, context); }
+  async voiceExtra(params, context) { return this.voiceExtraApi.execute(params, context); }
+  async qzoneAction(params, context) { return this.qzoneApi.action(params, context); }
+  async groupAlbumQuery(params, context) { return this.groupAlbumApi.query(params, context); }
+  async groupAlbumAction(params, context) { return this.groupAlbumApi.action(params, context); }
+  async miscExtra(params, context) { return this.miscExtraApi.execute(params, context); }
   async accountQuery(params, context) { return this.accountQueriesApi.query(params, context); }
   async extendedAction(params, context) { return this.extendedApi.action(params, context); }
   async recordExport(params, context) { this.ensureReady(); return this.recordExporter.export(params, context); }
@@ -1576,8 +1627,9 @@ class Capture extends EventEmitter {
     }
     const controller = new AbortController();
     const timeoutMs = method === 'sendMessage' ? (params.timeoutMs ?? 10000) :
+      method === 'voiceExtra' || method === 'forwardUpload' || method === 'flashTransfer' && params.operation === 'create' || method === 'groupAlbumAction' && ['album.uploadImage', 'album.uploadVideo'].includes(params.operation) || method === 'qzoneAction' && params.operation === 'qzone.publish' ? 60000 :
       method === 'forwardOperation' && ['customMerge', 'existingMerge'].includes(params.kind) ? (params.timeoutMs ?? 60000) :
-        ['prepareMedia', 'receiveMedia', 'recordExport'].includes(method) ? 60000 :
+        ['prepareMedia', 'receiveMedia', 'recordExport', 'customFaceQuery', 'customFaceAction'].includes(method) ? 60000 :
           ['nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl'].includes(method) ? (params.timeoutMs ?? 10000) : 10000;
     // All preparation, native calls and confirmation reads share the same
     // absolute end. Inner operations cannot create a later private deadline.
@@ -1608,6 +1660,9 @@ class Capture extends EventEmitter {
     this.detach();
     this.social.close();
     this.groupQueriesApi.clear();
+    this.extendedQueries2Api.clear();
+    this.contactExtraApi.clear();
+    this.flashTransferApi.clear(); this.qzoneApi.clear(); this.friendDressApi.clear(); this.voiceExtraApi.clear();
     if (this.processObject.dlopen === this.dlopenHook) this.processObject.dlopen = this.originalDlopen;
     for (const restore of this.restorations.reverse()) { try { restore(); } catch (error) { this.diagnostic(error); } }
     this.restorations.length = 0;

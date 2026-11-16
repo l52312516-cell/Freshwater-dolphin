@@ -4,6 +4,7 @@ const { MAX_ACTION_BYTES } = require('./limits.cjs');
 
 const { EventEmitter } = require('node:events');
 const WebSocket = require('ws');
+const streaming = require('./streaming.cjs');
 
 class ReverseWebSocket extends EventEmitter {
     constructor({ config, action, status, logger = () => {}, maxEvents = 1000, maxAgeMs = 60000, isAuthorized = () => true }) {
@@ -52,6 +53,8 @@ class ReverseWebSocket extends EventEmitter {
         this.socket = socket;
         const owned = () => this.socket === socket && generation === this.generation;
         const current = () => owned() && !this.stopped && this.isAuthorized();
+        const controller = new AbortController();
+        socket.once('close', () => controller.abort());
         socket.on('open', () => {
             if (!current()) { socket.terminate(); return; }
             this.delay = this.config.reconnectMinMs;
@@ -72,15 +75,23 @@ class ReverseWebSocket extends EventEmitter {
             try { request = JSON.parse(data.toString('utf8')); }
             catch (_) { this.send({ status: 'failed', retcode: 1400, data: null, message: 'Invalid JSON' }); return; }
             if (this.inflight.size >= (this.config.maxPending || 16)) {
-                this.send({ status: 'failed', retcode: 1503, data: null, message: 'Too many pending actions',
-                    ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) }); return;
+                const error = { status: 'failed', retcode: 1503, data: null, message: 'Too many pending actions',
+                    ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) };
+                this.send(streaming.STREAMED_ACTIONS.has(request?.action) ? streaming.terminal(error, request) : error); return;
             }
-            const task = Promise.resolve().then(() => current() ? this.action(request) : undefined).then(response => {
+            const streamed = streaming.STREAMED_ACTIONS.has(request?.action);
+            const options = { signal: controller.signal, ...(streamed ? { streamSink: { send: value => streaming.sendSocket(socket, value, { signal: controller.signal, current }) } } : {}) };
+            const task = Promise.resolve().then(() => current() ? this.action(request, options) : undefined).then(async response => {
                 // Results belong to the requesting connection; never send on a replacement socket.
-                if (current() && response !== undefined) this.send(response);
+                if (current() && response !== undefined) {
+                    if (streamed) await streaming.sendSocket(socket, response.stream === 'stream-action' ? response : streaming.terminal(response, request), { signal: controller.signal, current });
+                    else this.send(response);
+                }
             }).catch(() => {
-                if (current()) this.send({ status: 'failed', retcode: 1500, data: null, message: 'Action failed',
-                    ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) });
+                if (current()) { const error = { status: 'failed', retcode: 1500, data: null, message: 'Action failed',
+                    ...(request && Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) };
+                    this.send(streamed ? streaming.terminal(error, request) : error);
+                }
             });
             this.inflight.add(task);
             task.finally(() => this.inflight.delete(task));

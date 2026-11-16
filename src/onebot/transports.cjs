@@ -7,6 +7,7 @@ const { ReverseWebSocket } = require('./ws.cjs');
 const { executeQuickOperation } = require('./quick-operation.cjs');
 const { MAX_ACTION_BYTES } = require('./limits.cjs');
 const { decodeHttpParameter } = require('./parameter-schema.cjs');
+const streaming = require('./streaming.cjs');
 
 const MAX_BODY = 1024 * 1024;
 const failure = (retcode, message, request) => ({ status: 'failed', retcode, data: null, message, wording: message,
@@ -36,12 +37,12 @@ async function readBody(stream, maximum = MAX_ACTION_BYTES) {
     return Buffer.concat(chunks).toString('utf8');
 }
 
-function parameters(search) {
+function parameters(search, action) {
     const result = Object.create(null);
     for (const [key, value] of search) {
         if (Object.hasOwn(result, key)) throw new Error('Duplicate parameter');
         if (key === 'access_token') continue;
-        result[key] = decodeHttpParameter(key, value);
+        result[key] = decodeHttpParameter(key, value, action || search.get('action'));
     }
     return result;
 }
@@ -68,6 +69,7 @@ class TransportHub {
         this.wss = new WebSocketServer({ noServer: true, maxPayload: MAX_ACTION_BYTES, perMessageDeflate: false });
         this.port = null;
         this.nodes = new Map();
+        this.streams = new Set();
         this.internalNode = { config: { id: 'internal', maxPending: 16 }, pending: new Set(), tokens: 40, tokenAt: Date.now(), active: false };
         const source = config.nodes || [{ id: 'legacy', type: 'wsClient', enabled: true, ...config.reverseWs }];
         for (const item of source) {
@@ -75,7 +77,7 @@ class TransportHub {
                 tokens: item.burst || 40, tokenAt: Date.now(), active: false, lastError: null, lastDeliveryAt: null,
                 draining: null, abort: null, socket: null };
             if (item.type === 'wsClient') {
-                node.socket = new ReverseWebSocket({ config: item, action: request => this.dispatch(node, request, this.session),
+                node.socket = new ReverseWebSocket({ config: item, action: (request, options) => this.dispatch(node, request, this.session, options),
                     status, logger: (event, data) => { this.diagnostic(node, event, data); },
                     isAuthorized: () => node.active && this.current(this.session),
                     maxEvents: item.eventBufferSize || config.eventBufferSize, maxAgeMs: item.eventMaxAgeMs || config.eventMaxAgeMs });
@@ -153,6 +155,7 @@ class TransportHub {
 
     stop() {
         this.session = null;
+        for (const controller of this.streams) controller.abort();
         this.internalNode.active = false;
         for (const node of this.nodes.values()) {
             node.active = false;
@@ -180,10 +183,18 @@ class TransportHub {
         return true;
     }
 
-    async dispatch(node, request, session) {
-        if (!node.active || !this.current(session)) return failure(1503, 'Account is not authorized or ready', request);
+    async dispatch(node, request, session, options = {}) {
+        const streamed = streaming.STREAMED_ACTIONS.has(request?.action);
+        const finish = result => streamed ? streaming.terminal(result, request) : result;
+        if (!node.active || !this.current(session)) return finish(failure(1503, 'Account is not authorized or ready', request));
         if (!request || typeof request !== 'object' || Array.isArray(request) || typeof request.action !== 'string') return failure(1400, 'Invalid action request', request);
-        if (node.pending.size >= (node.config.maxPending || 16) || !this.rateLimit(node)) return failure(1503, 'Node is busy', request);
+        if (node.pending.size >= (node.config.maxPending || 16) || !this.rateLimit(node)) return finish(failure(1503, 'Node is busy', request));
+        if (streamed && typeof options.streamSink?.send !== 'function') return finish(failure(1404, 'A streaming transport sink is required', request));
+        const actionOptions = { signal: options.signal, ...(streamed ? { streamSink: { send: async data => {
+            if (!this.current(session) || options.signal?.aborted) throw Object.assign(new Error('Stream session closed'), { code: 'EXPIRED' });
+            await options.streamSink.send(streaming.frame(data, request));
+            if (!this.current(session) || options.signal?.aborted) throw Object.assign(new Error('Stream session closed'), { code: 'EXPIRED' });
+        } } } : {}) };
         const operation = Promise.resolve().then(async () => {
             if (!this.current(session)) return failure(1503, 'Account session changed', request);
             if (['.handle_quick_operation', '.handle_quick_operation_async'].includes(request.action)) {
@@ -207,11 +218,11 @@ class TransportHub {
                     return { status: 'ok', retcode: 0, data: null, ...(Object.hasOwn(request, 'echo') ? { echo: request.echo } : {}) };
                 } catch (error) { return failure(error.code === 'INVALID_REQUEST' ? 1400 : 1500, 'Quick operation failed', request); }
             }
-            return this.action(request, session);
+            return this.action(request, session, actionOptions);
         });
         node.pending.add(operation);
-        try { return await operation; }
-        catch (_) { return failure(1500, 'Action failed', request); }
+        try { return finish(await operation); }
+        catch (_) { return finish(failure(1500, 'Action failed', request)); }
         finally { node.pending.delete(operation); }
     }
 
@@ -243,11 +254,11 @@ class TransportHub {
         if (!['GET', 'POST'].includes(request.method)) return reply(response, 405, failure(1400, 'GET or POST required'));
         const session = this.session && { ...this.session };
         let action = path, params, echo;
-        if (request.method === 'GET') params = parameters(url.searchParams);
+        if (request.method === 'GET') params = parameters(url.searchParams, action);
         else {
             const body = await readBody(request);
             const kind = String(request.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-            if (kind === 'application/x-www-form-urlencoded') params = parameters(new URLSearchParams(body));
+            if (kind === 'application/x-www-form-urlencoded') params = parameters(new URLSearchParams(body), action);
             else if (kind === 'application/json' || !kind) {
                 params = body.trim() ? JSON.parse(body) : {};
                 if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('Object required');
@@ -264,8 +275,23 @@ class TransportHub {
             delete params.echo;
         }
         if (!action || action.includes('/')) return reply(response, 404, failure(1404, 'Unknown action path'));
-        const result = await this.dispatch(node, { action, params, ...(echo !== undefined ? { echo } : {}) }, session);
-        reply(response, 200, result);
+        await this.dispatchHttp(node, { action, params, ...(echo !== undefined ? { echo } : {}) }, session, request, response);
+    }
+
+    async dispatchHttp(node, action, session, request, response) {
+        const streamed = streaming.STREAMED_ACTIONS.has(action.action), controller = new AbortController();
+        const current = () => this.current(session) && !controller.signal.aborted;
+        const abort = () => controller.abort();
+        request.once('aborted', abort); response.once('close', abort); this.streams.add(controller);
+        try {
+            if (streamed) { response.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.flushHeaders(); }
+            const result = await this.dispatch(node, action, session, { signal: controller.signal,
+                ...(streamed ? { streamSink: { send: value => streaming.writeHttp(response, value, { signal: controller.signal, current }) } } : {}) });
+            if (streamed) { if (!controller.signal.aborted && (current() || result.status === 'failed')) { await streaming.writeHttp(response, result, { signal: controller.signal, current: () => !controller.signal.aborted && (this.current(session) || result.status === 'failed') }); response.end(); } else response.destroy(); }
+            else if (!controller.signal.aborted) reply(response, 200, current() || result.status === 'failed' ? result : failure(1503, 'Account session changed', action));
+            else response.destroy();
+        } catch (_) { response.destroy(); }
+        finally { this.streams.delete(controller); request.removeListener('aborted', abort); response.removeListener('close', abort); }
     }
 
     async internalRequest(request, response, url) {
@@ -283,8 +309,7 @@ class TransportHub {
         const contentType = String(request.headers['content-type'] || '').split(';')[0].trim();
         if (contentType !== 'application/json') return reply(response, 415, failure(1400, 'JSON required'));
         const action = JSON.parse(await readBody(request));
-        const result = await this.dispatch(this.internalNode, action, session);
-        reply(response, 200, result);
+        await this.dispatchHttp(this.internalNode, action, session, request, response);
     }
 
     upgrade(request, socket, head) {
@@ -304,20 +329,25 @@ class TransportHub {
     }
 
     connectClient(node, socket, role, session) {
-        const context = { role, session, pong: true };
+        const controller = new AbortController();
+        const context = { role, session, pong: true, controller };
+        this.streams.add(controller);
         node.clients.set(socket, context);
         if (role !== 'Api') this.sendClient(socket, this.meta('lifecycle', { sub_type: 'connect' }));
         socket.on('error', () => this.diagnostic(node, 'websocket_error'));
         socket.on('pong', () => { context.pong = true; clearTimeout(context.pongTimer); context.pongTimer = null; });
-        socket.on('close', () => { clearTimeout(context.pongTimer); node.clients.delete(socket); });
+        socket.on('close', () => { controller.abort(); this.streams.delete(controller); clearTimeout(context.pongTimer); node.clients.delete(socket); });
         socket.on('message', (bytes, binary) => {
             if (role === 'Event') { socket.close(1008, 'Event connection does not accept actions'); return; }
             if (binary) { socket.close(1003, 'JSON text required'); return; }
             let request;
             try { request = JSON.parse(bytes.toString('utf8')); }
             catch (_) { this.sendClient(socket, failure(1400, 'Invalid JSON')); return; }
-            this.dispatch(node, request, session).then(result => {
-                if (this.current(session)) this.sendClient(socket, result);
+            const current = () => this.current(session) && !controller.signal.aborted && node.clients.get(socket) === context;
+            const streamed = streaming.STREAMED_ACTIONS.has(request?.action);
+            this.dispatch(node, request, session, { signal: controller.signal,
+                ...(streamed ? { streamSink: { send: value => streaming.sendSocket(socket, value, { signal: controller.signal, current }) } } : {}) }).then(async result => {
+                if (current()) { if (streamed) await streaming.sendSocket(socket, result, { signal: controller.signal, current }); else this.sendClient(socket, result); }
             }).catch(() => this.diagnostic(node, 'action_failed'));
         });
     }

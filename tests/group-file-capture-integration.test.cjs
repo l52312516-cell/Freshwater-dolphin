@@ -61,7 +61,7 @@ test('all fixed group file actions cross OneBotService and the real Capture.call
     assert.deepEqual(ok(await f.action('trans_group_file', { file_id: 'file-A' })), {
         group_id: 200, file_id: 'file-A', save_busid: 102, save_file_path: 'server/location'
     });
-    assert.equal(ok(await f.action('rename_group_file', { file_id: 'file-A', busid: 102, parent_directory: '/', new_name: 'renamed.txt' })), null);
+    assert.deepEqual(ok(await f.action('rename_group_file', { file_id: 'file-A', busid: 102, parent_directory: '/', new_name: 'renamed.txt' })), { ok: true });
     assert.equal(f.rpc.length, 8);
     assert.ok(f.rpc.every(call => call.method === 'groupFiles' && call.params.expectedEpoch === f.capture.epoch));
     assert.deepEqual(f.calls.map(call => [call.method, call.args]), [
@@ -81,6 +81,27 @@ test('the real capture bridge rejects missing or stale mutation epochs before na
     failed(await f.action('delete_group_folder', { folder_id: 'created-folder' }, null,
         { epoch: 'previous-generation', selfUin: '12345' }), 1503);
     assert.equal(f.calls.length, 0);
+});
+
+test('omitted busid crosses the actual exact file browser before native delete, move and rename', async t => {
+    const f = fixture(t), lookups = [];
+    f.rich.getGroupFileList = (groupId, request) => {
+        lookups.push({ groupId, request });
+        setImmediate(() => f.capture.groupFilesApi.listenerMethods.msg.onGroupFileInfoUpdate({ reqId: 19, retCode: 0, isEnd: true,
+            nextIndex: 1, allFileCount: 1, item: [{ peerId: groupId, type: 1, folderInfo: null,
+                fileInfo: { fileId: 'file-A', busId: 101, fileName: 'actual.txt', fileSize: '13', parentFolderId: request.folderId } }] }));
+        return 19;
+    };
+    assert.equal(ok(await f.action('delete_group_file', { file_id: 'file-A', folder_id: 'source-folder' })), null);
+    assert.equal(ok(await f.action('move_group_file', { file_id: 'file-A', parent_directory: 'source-folder', target_directory: 'target-folder' })), null);
+    assert.deepEqual(ok(await f.action('rename_group_file', { file_id: 'file-A', current_parent_directory: 'source-folder', new_name: 'renamed.txt' })), { ok: true });
+    assert.equal(lookups.length, 3); assert.ok(lookups.every(item => item.groupId === '200' && item.request.folderId === 'source-folder'));
+    assert.deepEqual(f.calls.map(call => [call.method, call.args]), [
+        ['deleteGroupFile', ['200', [101], ['file-A']]], ['moveGroupFile', ['200', [101], ['file-A'], 'source-folder', 'target-folder']],
+        ['renameGroupFile', ['200', 101, 'file-A', 'source-folder', 'renamed.txt']]
+    ]);
+    assert.deepEqual(f.rpc.map(call => call.params.operation), ['group.fileInfo', 'group.fileDelete', 'group.fileInfo', 'group.fileMove', 'group.fileInfo', 'group.fileRename']);
+    assert.ok(f.rpc.every(call => call.params.expectedEpoch === f.capture.epoch));
 });
 
 test('native business rejections and partial batches retain echo and never dispatch a fallback or retry', async t => {
@@ -105,15 +126,19 @@ test('invalid second batch entries and mismatched account parameters cannot reac
 });
 
 test('OneBot timeout retains the native group mutation lock until settlement and a later action can recover', async t => {
-    const f = fixture(t); f.service.actionTimeoutMs = 50;
+    const f = fixture(t), normalActionTimeoutMs = f.service.actionTimeoutMs; f.service.actionTimeoutMs = 50;
     let complete;
     f.outcomes.deleteGroupFolder = () => new Promise(resolve => { complete = resolve; });
     failed(await f.action('delete_group_folder', { folder_id: 'created-folder' }), 1504);
     failed(await f.action('rename_group_file_folder', { folder_id: 'created-folder', new_folder_name: 'Renamed folder' }), 1503);
     assert.equal(f.calls.length, 1);
+    // The recovered rename includes a real asynchronous directory readback;
+    // only the deliberately stalled request uses the short timeout budget.
+    f.service.actionTimeoutMs = normalActionTimeoutMs;
     complete({ result: 0, groupFileCommonResult: { retCode: 0 } }); await tick();
     assert.equal(ok(await f.action('rename_group_file_folder', { folder_id: 'created-folder', new_folder_name: 'Renamed folder' })), null);
     assert.equal(f.calls.filter(call => call.method === 'deleteGroupFolder').length, 1);
+    assert.equal(f.calls.filter(call => call.method === 'renameGroupFolder').length, 1);
 });
 
 test('replacement of the acting session rejects a late native success and retires only its own generation locks', async t => {

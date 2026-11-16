@@ -62,6 +62,7 @@ test('system face and voice catalogs retain their hierarchy and requested identi
     const face = fixed.prepare('face.get', { faceId: '66' });
     const response = p.messageField(1, [p.bytesField(1, Buffer.from('66')), p.bytesField(2, Buffer.from('爱心'))]);
     assert.equal(fixed.decode(ack(face, response), face).face.qSid, '66');
+    assert.equal(fixed.decode(ack(face), face).face, null, 'an acknowledged absent face remains absent');
     assert.throws(() => fixed.decode(ack(face, p.messageField(1, [p.bytesField(1, Buffer.from('67'))])), face), { code: 'INVALID_RESPONSE' });
 });
 

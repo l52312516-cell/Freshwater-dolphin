@@ -581,11 +581,13 @@ test('abort before native dispatch performs no work and unknown storage operatio
 
 function protocolFixture() {
     const calls = [], state = { epoch: 'current', self: { uin: '12345', uid: 'u_self' },
-        capabilities: Object.fromEntries(Object.values(ACTION_REQUIREMENTS).map(flag => [flag, true])) };
+        capabilities: { ...Object.fromEntries(Object.values(ACTION_REQUIREMENTS).map(flag => [flag, true])), groupFileInfo: true } };
     let transform = value => value;
-    const service = { async sessionCall(actual, method, params) {
+    const service = { async assertSession(actual) { assert.equal(actual, state); }, async sessionCall(actual, method, params) {
         assert.equal(actual, state); assert.equal(method, 'groupFiles'); calls.push(structuredClone(params));
         const response = params.operation === 'group.fileCount' ? { counts: { 200: 4 } }
+            : params.operation === 'group.fileInfo' ? { groupId: params.groupId, fileInfo: { fileId: params.fileId,
+                busId: params.fileId === 'file-B' ? 101 : 102, parentFolderId: params.directory } }
             : { confirmed: true, groupId: params.groupId,
                 ...(params.operation === 'group.folderCreate' ? { folderId: 'folder-A', name: params.name } : {}),
                 ...(params.folderId ? { folderId: params.folderId, name: params.name } : {}),
@@ -595,7 +597,7 @@ function protocolFixture() {
         return transform(response);
     } };
     const action = (name, params = {}) => runGroupFiles(service, state, name, { group_id: 200, ...params });
-    return { calls, state, action, response: fn => { transform = fn; } };
+    return { calls, state, service, action, response: fn => { transform = fn; } };
 }
 
 test('OneBot group file extensions map to the fixed account-scoped bridge without storage fabrication', async () => {
@@ -608,7 +610,7 @@ test('OneBot group file extensions map to the fixed account-scoped bridge withou
     assert.equal(await f.action('delete_group_file', { file_id: 'file-A', busid: '102' }), null);
     assert.equal(await f.action('move_group_file', { files: [{ file_id: 'file-A', busid: 102 }], parent_directory: '/', target_directory: 'folder-A' }), null);
     assert.deepEqual(await f.action('trans_group_file', { file_id: 'file-A' }), { group_id: 200, file_id: 'file-A', save_busid: 102, save_file_path: 'server/opaque/location' });
-    assert.equal(await f.action('rename_group_file', { file_id: 'file-A', busid: 102, parent_directory: '/', new_name: 'new.txt' }), null);
+    assert.deepEqual(await f.action('rename_group_file', { file_id: 'file-A', busid: 102, parent_directory: '/', new_name: 'new.txt' }), { ok: true });
     assert.deepEqual(f.calls.map(value => value.operation), ['group.fileCount', 'group.folderCreate', 'group.folderRename', 'group.folderDelete',
         'group.fileDelete', 'group.fileMove', 'group.fileTrans', 'group.fileRename']);
     assert.deepEqual(f.calls[4].files, [{ fileId: 'file-A', busId: 102 }]);
@@ -630,6 +632,72 @@ test('OneBot validates complete batches, strict parameters and capabilities befo
     f.state.capabilities.groupFolderCreate = false;
     await assert.rejects(f.action('create_group_file_folder', { name: 'Test' }), { code: 'UNSUPPORTED' });
     assert.equal(f.calls.length, 0);
+});
+
+test('folder rename name alias preserves real target, preferred alias and single confirmed dispatch', async () => {
+    const f = protocolFixture();
+    for (const [params, expected] of [[{ name: 'Alias name' }, 'Alias name'], [{ new_folder_name: '', name: 'Fallback name' }, 'Fallback name'],
+        [{ new_folder_name: 'Preferred name', name: 'Other name' }, 'Preferred name']]) {
+        const before = f.calls.length;
+        assert.equal(await f.action('rename_group_file_folder', { folder_id: 'folder-A', ...params }), null);
+        assert.equal(f.calls.length, before + 1); assert.equal(f.calls.at(-1).name, expected);
+        assert.equal(f.calls.at(-1).folderId, 'folder-A'); assert.equal(f.calls.at(-1).groupId, '200');
+    }
+    const before = f.calls.length;
+    for (const params of [{ name: '' }, { name: '../bad' }, { name: null }, { new_folder_name: 7, name: 'actual' }, { new_folder_name: 'actual', name: {} }]) {
+        await assert.rejects(f.action('rename_group_file_folder', { folder_id: 'folder-A', ...params }), { code: 'INVALID_PARAMS' });
+    }
+    assert.equal(f.calls.length, before);
+});
+
+test('omitted storage IDs come only from each exact source file before one complete batch mutation', async () => {
+    for (const [action, params, directory, operation] of [
+        ['delete_group_file', { files: [{ file_id: 'file-A' }, { file_id: 'file-B' }], folder_id: 'source-folder' }, 'source-folder', 'group.fileDelete'],
+        ['move_group_file', { files: [{ file_id: 'file-A' }, { file_id: 'file-B', busid: 101 }], parent_directory: 'source-folder', target_directory: 'target-folder' }, 'source-folder', 'group.fileMove']]) {
+        const f = protocolFixture(); assert.equal(await f.action(action, params), null);
+        const mutations = f.calls.filter(call => call.operation !== 'group.fileInfo'); assert.equal(mutations.length, 1);
+        assert.equal(mutations[0].operation, operation); assert.deepEqual(mutations[0].files, [{ fileId: 'file-A', busId: 102 }, { fileId: 'file-B', busId: 101 }]);
+        assert.ok(f.calls.slice(0, -1).every(call => call.operation === 'group.fileInfo' && call.groupId === '200' && call.directory === directory));
+        assert.equal(f.calls.filter(call => call.operation === 'group.fileInfo').length, action === 'delete_group_file' ? 2 : 1);
+    }
+});
+
+test('file rename accepts current_parent_directory and returns reference success only after exact confirmation', async () => {
+    for (const [params, directory] of [[{}, '/'], [{ current_parent_directory: 'source-folder' }, 'source-folder'],
+        [{ current_parent_directory: '', parent_directory: 'legacy-folder' }, 'legacy-folder'],
+        [{ current_parent_directory: 'preferred-folder', parent_directory: 'legacy-folder' }, 'preferred-folder']]) {
+        const f = protocolFixture();
+        assert.deepEqual(await f.action('rename_group_file', { file_id: 'file-A', new_name: 'actual.txt', ...params }), { ok: true });
+        assert.deepEqual(f.calls.map(call => call.operation), ['group.fileInfo', 'group.fileRename']);
+        assert.equal(f.calls[0].directory, directory); assert.equal(f.calls[1].parentDirectory, directory); assert.equal(f.calls[1].busId, 102);
+    }
+});
+
+test('wrong group/file/directory, missing or malformed metadata, and changed sessions cannot authorize a mutation', async () => {
+    for (const mutate of [value => ({ ...value, groupId: '201' }), value => ({ ...value, fileInfo: { ...value.fileInfo, fileId: 'other' } }),
+        value => ({ ...value, fileInfo: { ...value.fileInfo, parentFolderId: 'other-folder' } }), value => ({ ...value, fileInfo: { ...value.fileInfo, busId: undefined } }),
+        value => ({ ...value, fileInfo: { ...value.fileInfo, busId: '102' } }), value => ({ ...value, fileInfo: { ...value.fileInfo, busId: -1 } })]) {
+        const f = protocolFixture(); f.response(mutate);
+        await assert.rejects(f.action('delete_group_file', { file_id: 'file-A' }), { code: 'INVALID_RESPONSE' });
+        assert.deepEqual(f.calls.map(call => call.operation), ['group.fileInfo']);
+    }
+    const f = protocolFixture();
+    f.service.assertSession = async () => { throw Object.assign(new Error('changed'), { code: 'SESSION_CHANGED' }); };
+    await assert.rejects(f.action('delete_group_file', { file_id: 'file-A' }), { code: 'SESSION_CHANGED' });
+    assert.deepEqual(f.calls.map(call => call.operation), ['group.fileInfo']);
+});
+
+test('an unresolved later batch file stops every write and missing query capability fails before reads', async () => {
+    const f = protocolFixture();
+    f.response(value => value.fileInfo?.fileId === 'file-B' ? { ...value, fileInfo: { ...value.fileInfo, busId: undefined } } : value);
+    await assert.rejects(f.action('delete_group_file', { files: [{ file_id: 'file-A' }, { file_id: 'file-B' }] }), { code: 'INVALID_RESPONSE' });
+    assert.deepEqual(f.calls.map(call => call.operation), ['group.fileInfo', 'group.fileInfo']);
+    const g = protocolFixture(); g.state.capabilities.groupFileInfo = false;
+    await assert.rejects(g.action('delete_group_file', { file_id: 'file-A' }), { code: 'UNSUPPORTED' }); assert.equal(g.calls.length, 0);
+    for (const params of [{ file_id: 'file-A', busid: null }, { file_id: 'file-A', folder_id: null }, { file_id: 'file-A', self_id: 54321 }]) {
+        await assert.rejects(g.action('delete_group_file', params), { code: 'INVALID_PARAMS' });
+    }
+    assert.equal(g.calls.length, 0);
 });
 
 test('OneBot rejects unconfirmed, mismatched and partial bridge outcomes', async () => {

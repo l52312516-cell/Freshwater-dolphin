@@ -18,6 +18,22 @@
 
 能力矩阵是源码清单，`implemented` 表示存在实现；实际账号的 `available` 必须通过 `get_capabilities` 查询。目录不将未验证的 QQ 方法或参数变体标为真实业务通过。
 
+## QQAPI 扩展专题
+
+- [扩展批次与真实验证范围](qqapi-expansion-20261116.md)
+- [已有接口参数与返回契约核对](original-actions-contract-audit.md)
+- [群管理、待办及匿名接口边界](group-admin-evidence-20261116.md)
+- [群扩展查询、签到与待办列表](query2-extensions.md)
+- [联系人、翻译、申请与过滤通知](contact-extra-extensions.md)
+- [收藏表情及目录修改](custom-face.md)
+- [群相册及媒体上传](group-album.md)
+- [QQ 空间与好友动态](qzone.md)
+- [好友个性装扮](friend-dress.md)
+- [闪传与部分上传恢复](flash-transfer-extensions.md)
+- [文件与流式传输](file-stream-extensions.md)
+- [转发资源上传与消息回应汇总限制](forward-extra.md)
+- [AI 群语音与原消息转写](voice-extra.md)
+
 ## 验证与发布
 
 - [0.2.0-alpha.3 验证摘要](releases/0.2.0-alpha.3.md)

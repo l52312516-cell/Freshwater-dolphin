@@ -7,12 +7,15 @@ const { fault } = require('../errors.cjs');
 const VERSION = 1;
 const LIMIT = 2 * 1024 * 1024;
 const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo',
-    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
+    'groupMember', 'groupMembers', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'getMessage', 'sendMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'adminAction', 'customFaceQuery', 'customFaceAction', 'contactExtra', 'flashTransfer', 'qzoneQuery', 'qzoneAction', 'voiceExtra', 'forwardUpload', 'friendDressQuery', 'groupAlbumQuery', 'groupAlbumAction', 'miscExtra', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 const READ_ONLY = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'groupInfo', 'groupMember', 'groupMembers',
-    'history', 'imageInfo', 'socialQuery', 'getMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'groupQuery', 'collectionQuery', 'accountQuery']);
+    'history', 'imageInfo', 'socialQuery', 'getMessage', 'events', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'customFaceQuery', 'qzoneQuery', 'friendDressQuery', 'groupAlbumQuery', 'groupQuery', 'collectionQuery', 'accountQuery']);
 function cancellable(method, params) {
     return READ_ONLY.has(method) || method === 'groupFiles' && ['group.filesList', 'group.fileInfo'].includes(params?.operation)
-        || method === 'forwardOperation' && params?.kind === 'read';
+        || method === 'forwardOperation' && params?.kind === 'read'
+        || method === 'contactExtra' && ['translate', 'unidirectional', 'doubt.list', 'group.filtered'].includes(params?.operation)
+        || method === 'flashTransfer' && ['list', 'detail', 'metadata', 'share', 'download', 'resolve'].includes(params?.operation)
+        || method === 'miscExtra' && params?.operation === 'miniapp.ark';
 }
 
 function privateDirectory(directory) {

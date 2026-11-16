@@ -1,12 +1,16 @@
 'use strict';
 
-// Fixed read-only operations over QQ 3.2.35-54395 x64. One queue belongs to one
+// Fixed operations over QQ 3.2.35-54395 x64. One queue belongs to one
 // QQ process; immutable native callback IDs isolate timed-out and late responses.
 const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { setTimeout: pause } = require('node:timers/promises');
-const OPS = new Set(['fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', 'fixedExtended']);
+const FIXED_PROTOCOLS = Object.freeze({ fixedExtended: './fixed-oidb.cjs', fixedQuery2: './query2-oidb.cjs',
+    fixedShare: './share-oidb.cjs', fixedAdmin: './admin-oidb.cjs', fixedCustomFace: './custom-face-protocol.cjs',
+    fixedContactExtra: './contact-extra-protocol.cjs', fixedGroupAlbum: './group-album-protocol.cjs', fixedMiscExtra: './misc-extra-protocol.cjs',
+    fixedFlashTransfer: './flash-transfer-protocol.cjs', fixedForwardUpload: './forward-upload-protocol.cjs', fixedVoiceExtra: './voice-extra-protocol.cjs' });
+const OPS = new Set(['fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', ...Object.keys(FIXED_PROTOCOLS)]);
 const MAX_QUEUED = 32;
 let addon = null;
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
@@ -70,10 +74,12 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
                 while (!success(native.readTemplate().haveTemplate)) await wait();
             }
             check();
-            let command, request, decode;
-            if (params.op === 'fixedExtended') {
-                const proto = require('./fixed-oidb.cjs'), prepared = proto.prepare(params.operation, params.request);
+            let command, request, decode, allowEmptyResponse = false;
+            if (Object.hasOwn(FIXED_PROTOCOLS, params.op)) {
+                const proto = require(FIXED_PROTOCOLS[params.op]);
+                const prepared = proto.prepare(params.operation, params.request);
                 command = prepared.name; request = prepared.body; decode = body => proto.decode(body, prepared);
+                allowEmptyResponse = prepared.allowEmptyResponse === true;
             } else if (params.op === 'fetchRkey') {
                 const proto = require('./rkey.cjs');
                 command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(); decode = body => ({ rkeys: proto.decodeResponse(body) });
@@ -113,9 +119,9 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
                         if (!response.body?.length) {
                             const size = /^(0|[1-9]\d{0,19})$/.test(String(response.responseBytes)) ? String(response.responseBytes) : 'unknown';
                             const status = ['empty', 'too_large', 'invalid', 'allocation_failed'].includes(response.bodyStatus) ? response.bodyStatus : 'unknown';
-                            throw problem('QUERY_FAILED', 'QQ native query returned no response body [status=' + status + ',bytes=' + size + ']');
+                            if (!allowEmptyResponse || status !== 'empty' || size !== '0') throw problem('QUERY_FAILED', 'QQ native query returned no response body [status=' + status + ',bytes=' + size + ']');
                         }
-                        const result = decode(Buffer.from(response.body));
+                        const result = decode(Buffer.from(response.body || []));
                         check(); return { ...result, via: 'native-msf' };
                     }
                     await wait();

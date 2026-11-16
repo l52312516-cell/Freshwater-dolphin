@@ -44,24 +44,25 @@ function files(params) {
             !params.files.length || params.files.length > 100) throw problem('INVALID_PARAMS', 'Expected a single file or 1 to 100 batch files');
         const list = params.files.map(item => {
             if (!object(item) || Object.keys(item).some(key => !['file_id', 'busid'].includes(key))) throw problem('INVALID_PARAMS', 'Invalid file batch');
-            return { fileId: opaque(item.file_id, 'file_id'), busId: bus(item.busid) };
+            return { fileId: opaque(item.file_id, 'file_id'), ...(item.busid === undefined ? {} : { busId: bus(item.busid) }) };
         });
         if (new Set(list.map(item => item.fileId)).size !== list.length) throw problem('INVALID_PARAMS', 'Duplicate file_id');
         return list;
     }
-    return [{ fileId: opaque(params.file_id, 'file_id'), busId: bus(params.busid) }];
+    return [{ fileId: opaque(params.file_id, 'file_id'), ...(params.busid === undefined ? {} : { busId: bus(params.busid) }) }];
 }
 async function runGroupFiles(service, state, action, params) {
     if (!ACTIONS.has(action)) throw problem('UNSUPPORTED', 'Unknown group file extension');
     if (state.capabilities?.[ACTION_REQUIREMENTS[action]] !== true) throw problem('UNSUPPORTED', 'The current QQ session does not provide this group file capability');
     const allowed = {
         get_group_file_count: [], create_group_file_folder: ['name', 'parent_id'],
-        rename_group_file_folder: ['folder_id', 'new_folder_name'], delete_group_folder: ['folder_id'],
-        delete_group_file: ['file_id', 'busid', 'files'], move_group_file: ['file_id', 'busid', 'files', 'parent_directory', 'target_directory'],
-        trans_group_file: ['file_id'], rename_group_file: ['file_id', 'busid', 'parent_directory', 'new_name']
+        rename_group_file_folder: ['folder_id', 'new_folder_name', 'name'], delete_group_folder: ['folder_id'],
+        delete_group_file: ['file_id', 'busid', 'files', 'folder_id'], move_group_file: ['file_id', 'busid', 'files', 'parent_directory', 'target_directory'],
+        trans_group_file: ['file_id'], rename_group_file: ['file_id', 'busid', 'parent_directory', 'current_parent_directory', 'new_name']
     };
     fields(params, allowed[action]);
     const groupId = group(params.group_id);
+    if (params.self_id !== undefined && group(params.self_id) !== String(state.self?.uin)) throw problem('INVALID_PARAMS', 'self_id belongs to another account');
     let input, expected;
     if (action === 'get_group_file_count') input = { operation: 'group.fileCount', groupIds: [groupId] };
     else if (action === 'create_group_file_folder') {
@@ -69,7 +70,8 @@ async function runGroupFiles(service, state, action, params) {
         if (parentDirectory !== '/') throw problem('UNSUPPORTED', 'Group folders can only be created at the root on this QQ build');
         input = { operation: 'group.folderCreate', groupId, parentDirectory, name: name(params.name) };
     } else if (action === 'rename_group_file_folder') {
-        input = { operation: 'group.folderRename', groupId, folderId: opaque(params.folder_id, 'folder_id'), name: name(params.new_folder_name) };
+        for (const key of ['new_folder_name', 'name']) if (params[key] !== undefined && typeof params[key] !== 'string') throw problem('INVALID_PARAMS', 'Invalid folder name alias');
+        input = { operation: 'group.folderRename', groupId, folderId: opaque(params.folder_id, 'folder_id'), name: name(params.new_folder_name || params.name) };
     } else if (action === 'delete_group_folder') input = { operation: 'group.folderDelete', groupId, folderId: opaque(params.folder_id, 'folder_id') };
     else if (['delete_group_file', 'move_group_file'].includes(action)) {
         expected = files(params);
@@ -80,8 +82,32 @@ async function runGroupFiles(service, state, action, params) {
             if (input.sourceDirectory === input.destinationDirectory) throw problem('INVALID_PARAMS', 'Source and destination directory are identical');
         }
     } else if (action === 'trans_group_file') input = { operation: 'group.fileTrans', groupId, fileId: opaque(params.file_id, 'file_id') };
-    else input = { operation: 'group.fileRename', groupId, fileId: opaque(params.file_id, 'file_id'), busId: bus(params.busid),
-        parentDirectory: opaque(params.parent_directory, 'parent_directory'), name: name(params.new_name) };
+    else {
+        for (const key of ['current_parent_directory', 'parent_directory']) if (params[key] !== undefined) {
+            if (typeof params[key] !== 'string') throw problem('INVALID_PARAMS', 'Invalid current file directory alias');
+            if (params[key]) opaque(params[key], key);
+        }
+        input = { operation: 'group.fileRename', groupId, fileId: opaque(params.file_id, 'file_id'),
+            ...(params.busid === undefined ? {} : { busId: bus(params.busid) }),
+            parentDirectory: params.current_parent_directory || params.parent_directory || '/', name: name(params.new_name) };
+    }
+    // Complete caller validation precedes all lookups. Resolve every omitted
+    // storage ID before allowing even the first batch mutation. No guessed 0,
+    // conventional 102, foreign-group record or missing locator can substitute.
+    const lookupDirectory = action === 'move_group_file' ? input.sourceDirectory : action === 'rename_group_file' ? input.parentDirectory :
+        action === 'delete_group_file' && params.folder_id !== undefined ? opaque(params.folder_id, 'folder_id') : '/';
+    const unresolved = (expected || (action === 'rename_group_file' ? [input] : [])).filter(item => item.busId === undefined);
+    if (unresolved.length) {
+        if (state.capabilities?.groupFileInfo !== true) throw problem('UNSUPPORTED', 'Omitting busid requires the real group file metadata query');
+        for (const item of unresolved) {
+            const observed = await service.sessionCall(state, 'groupFiles', { operation: 'group.fileInfo', groupId, fileId: item.fileId, directory: lookupDirectory });
+            const info = observed?.fileInfo;
+            if (observed?.groupId !== groupId || !object(info) || info.fileId !== item.fileId || !Number.isInteger(info.busId) || info.busId < 0 || info.busId > 0xffffffff ||
+                info.parentFolderId !== undefined && info.parentFolderId !== lookupDirectory) throw problem('INVALID_RESPONSE', 'QQ supplied no exact storage ID for this file in its original group directory');
+            item.busId = info.busId;
+        }
+        await service.assertSession(state);
+    }
     const result = await service.sessionCall(state, 'groupFiles', input);
     if (action === 'get_group_file_count') {
         if (!object(result?.counts) || Object.keys(result.counts).length !== 1 || !Object.hasOwn(result.counts, groupId) ||
@@ -115,7 +141,7 @@ async function runGroupFiles(service, state, action, params) {
             return { group_id: Number(groupId), file_id: input.fileId, save_busid: result.saveBusId, save_file_path: result.saveFilePath };
         }
     }
-    return null;
+    return action === 'rename_group_file' ? { ok: true } : null;
 }
 
 module.exports = { ACTIONS, ACTION_REQUIREMENTS, runGroupFiles };

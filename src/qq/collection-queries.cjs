@@ -120,7 +120,8 @@ function validateCollectionPage(value, expected) {
     }
     return complete;
 }
-function createCollectionQueries(capture) {
+function createCollectionQueries(capture, { fetchImpl = globalThis.fetch } = {}) {
+    const protocol = require('./collection-protocol.cjs');
     let epoch, session, uin, uid;
     const pending = new Set();
     function synchronize() {
@@ -130,7 +131,7 @@ function createCollectionQueries(capture) {
             // Its physical slot is released only when the original task settles.
         }
     }
-    function capabilities() { synchronize(); return { collectionList: capture.hasMethods('collection', ['getCollectionItemList']) }; }
+    function capabilities() { synchronize(); return { collectionList: typeof fetchImpl === 'function' && capture.hasMethods('tipOff', ['getPskey']) }; }
     async function query(params, context = {}) {
         const input = request(params);
         capture.ensureReady(); synchronize();
@@ -144,15 +145,71 @@ function createCollectionQueries(capture) {
             if (context.signal?.aborted || Date.now() >= (context.expiresAt ?? Infinity)) throw problem('EXPIRED', 'Collection query expired');
         };
         active();
-        if (!capabilities().collectionList) throw problem('UNSUPPORTED', 'This QQ session has no collection-list query');
+        if (!capabilities().collectionList) throw problem('UNSUPPORTED', 'This QQ session has no verified collection ticket method');
         if (pending.size >= MAX_PENDING) throw problem('BUSY', 'Too many collection queries are still pending');
         const token = {}; pending.add(token);
-        const operation = Promise.resolve().then(() => {
+        const operation = Promise.resolve().then(async () => {
             active();
-            return capture.invoke('collection', 'getCollectionItemList', [{ category: input.category, groupId: -1,
-                forceSync: true, forceFromDb: false, timeStamp: input.timeStamp, count: input.count, searchDown: true }]);
-        }).then(value => {
-            active(); return { ...input, page: validateCollectionPage(value, input) };
+            const endsAt = Math.min(context.expiresAt ?? Infinity, Date.now() + 10000);
+            const check = () => { active(); if (Date.now() >= endsAt) throw problem('TIMEOUT', 'Collection query exceeded its total deadline'); };
+            const ticket = await capture.invoke('tipOff', 'getPskey', [['weiyun.com'], true]);
+            check();
+            if (ticket?.result !== 0 || !(ticket.domainPskeyMap instanceof Map)) throw problem('AUTH_FAILED', 'QQ supplied no verified Weiyun domain ticket');
+            let pskey = ticket.domainPskeyMap.get('weiyun.com');
+            if (!protocol.credential(pskey)) throw problem('AUTH_FAILED', 'QQ supplied no bounded Weiyun domain ticket');
+            const output = [], seen = new Set();
+            let cursor = input.timeStamp, hasMore = true;
+            try {
+                for (let page = 0; page < 10 && hasMore && output.length < input.count; page++) {
+                    check();
+                    const count = Math.min(50, input.count - output.length);
+                    const signal = AbortSignal.any([...(context.signal ? [context.signal] : []),
+                        AbortSignal.timeout(Math.max(1, endsAt - Date.now()))]);
+                    let response;
+                    try {
+                        response = await fetchImpl(protocol.ENDPOINT, { method: 'POST', redirect: 'manual', signal,
+                            headers: { 'Content-Type': 'application/octet-stream', Host: 'collector.weiyun.com',
+                                Cookie: 'uin=' + saved.uin + ';vt=27;vi=' + pskey + ';appid=5004', Range: 'bytes=0-' },
+                            body: protocol.encodeRequest({ uin: saved.uin, pskey, timeStamp: cursor, count, sequence: page + 1 }) });
+                    } catch {
+                        check(); throw problem(signal.aborted ? 'TIMEOUT' : 'QUERY_FAILED', 'Collection HTTPS request failed; it was not retried');
+                    }
+                    if (response.status !== 200 || !response.body) {
+                        await response.body?.cancel().catch(() => {});
+                        throw problem('QUERY_FAILED', 'Collection endpoint did not return a successful body; redirects are not followed');
+                    }
+                    const declared = response.headers.get('content-length');
+                    if (declared !== null && (!/^(0|[1-9]\d{0,9})$/.test(declared) || Number(declared) > protocol.MAX_RESPONSE_BYTES)) {
+                        await response.body.cancel().catch(() => {});
+                        throw problem('INVALID_RESPONSE', 'Collection response declares an invalid or oversized body');
+                    }
+                    const reader = response.body.getReader(), chunks = []; let size = 0;
+                    try {
+                        for (;;) {
+                            check(); const next = await reader.read(); check(); if (next.done) break;
+                            size += next.value.length;
+                            if (size > protocol.MAX_RESPONSE_BYTES) throw problem('INVALID_RESPONSE', 'Collection response exceeds its byte limit');
+                            chunks.push(Buffer.from(next.value));
+                        }
+                    } catch (error) {
+                        await reader.cancel().catch(() => {});
+                        check();
+                        if (error.code === 'INVALID_RESPONSE') throw error;
+                        throw problem(signal.aborted ? 'TIMEOUT' : 'QUERY_FAILED', 'Collection response stream failed; it was not retried');
+                    } finally { reader.releaseLock(); }
+                    check();
+                    const result = protocol.decodeResponse(Buffer.concat(chunks, size), { count, timeStamp: cursor, uin: saved.uin, sequence: page + 1 });
+                    for (const item of result.items) {
+                        if (seen.has(item.cid)) throw problem('INVALID_RESPONSE', 'Collector repeated an item across pages');
+                        seen.add(item.cid);
+                        if (input.category === 0 || item.category === input.category) output.push(item);
+                    }
+                    cursor = result.bottomTimeStamp; hasMore = result.hasMore;
+                }
+            } finally { pskey = ''; }
+            check();
+            return { ...input, page: validateCollectionPage({ errCode: 0, errMsg: '', collectionSearchList: {
+                collectionItemList: output, hasMore, bottomTimeStamp: cursor } }, input) };
         });
         // A caller timing out does not release a still-running native request.
         operation.finally(() => pending.delete(token)).catch(() => {});

@@ -1,5 +1,7 @@
 'use strict';
 
+const { chinaDay, collectSignedList } = require('./query2-signin.cjs');
+
 // Fixed official QQ Web endpoints. Authentication stays inside this account's
 // bridge and never enters RPC results, URLs in logs or persistent storage.
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
@@ -133,6 +135,21 @@ function createGroupWeb(capture, { fetchImpl = globalThis.fetch } = {}) {
         const query = ['group.noticeList', 'group.essenceList', 'group.honor'].includes(operation);
         const domain = operation.startsWith('group.notice') ? 'web.qun.qq.com' : 'qun.qq.com';
         const auth = await authenticate(domain, context, state);
+        if (operation === 'group.signedList') {
+            const dayYmd = chinaDay();
+            return collectSignedList(async page => {
+                const response = await request('https://qun.qq.com/v2/signin/trpc/GetDaySignedList?g_tk=' + auth.urlKey,
+                    { method: 'POST', headers: { Cookie: auth.cookie, 'Content-Type': 'application/json', Referer: 'https://qun.qq.com/' },
+                        body: JSON.stringify({ ...page, uid: state.uin, groupId: data.groupId }) }, context, state);
+                if (response.status !== 200) throw failure('QUERY_FAILED', 'QQ sign-in request failed; redirects are not followed');
+                try {
+                    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.bytes), (_key, value) => {
+                        if (typeof value === 'number' && (!Number.isFinite(value) || Number.isInteger(value) && !Number.isSafeInteger(value))) throw new Error();
+                        return value;
+                    });
+                } catch { throw failure('INVALID_RESPONSE', 'QQ returned no exact sign-in JSON response'); }
+            }, data.groupId, dayYmd);
+        }
         let url, form;
         if (operation === 'group.noticeList') {
             url = 'https://web.qun.qq.com/cgi-bin/announce/list_announce';

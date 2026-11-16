@@ -20,6 +20,23 @@ const { ACTIONS: EXTENDED_ACTIONS, runExtended } = require('./extended-actions.c
 const { ACTIONS: GROUP_QUERIES, runGroupQueries } = require('./group-queries.cjs');
 const { ACTIONS: COLLECTION_QUERIES, runCollectionQueries } = require('./collection-queries.cjs');
 const { ACTIONS: ACCOUNT_QUERY_ACTIONS, runAccountQuery } = require('./account-queries.cjs');
+const { ACTIONS: COMPAT_ACTIONS, runCompatActions } = require('./compat-actions.cjs');
+const { ACTIONS: QUERY2_ACTIONS, runExtendedQueries2 } = require('./extended-queries2.cjs');
+const { ACTIONS: RKEY_ACTIONS, runRkeyActions } = require('./rkey-actions.cjs');
+const { ACTIONS: SHARE_ACTIONS, runShareActions } = require('./share-actions.cjs');
+const { ACTIONS: ADMIN_ACTIONS, runAdminActions } = require('./admin-actions.cjs');
+const { ACTIONS: CUSTOM_FACE_ACTIONS, runCustomFace } = require('./custom-face-actions.cjs');
+const { ACTIONS: EMOJI_PAGINATION_ACTIONS, runEmojiPagination } = require('./emoji-pagination-actions.cjs');
+const { ACTIONS: CONTACT_EXTRA_ACTIONS, runContactExtraActions } = require('./contact-extra-actions.cjs');
+const { ACTIONS: SINGLE_FORWARD_ACTIONS, runSingleForward } = require('./single-forward-actions.cjs');
+const { ACTIONS: FLASH_ACTIONS, runFlashTransferActions } = require('./flash-transfer-actions.cjs');
+const { ACTIONS: QZONE_ACTIONS, runQzone } = require('./qzone-actions.cjs');
+const { ACTIONS: GROUP_ALBUM_ACTIONS, runGroupAlbum } = require('./group-album-actions.cjs');
+const { ACTIONS: MISC_EXTRA_ACTIONS, runMiscExtra } = require('./misc-extra-actions.cjs');
+const { ACTIONS: STREAM_ACTIONS, runStreamActions } = require('./file-stream-actions.cjs');
+const { ACTIONS: FRIEND_DRESS_ACTIONS, runFriendDress } = require('./friend-dress-actions.cjs');
+const { ACTIONS: FORWARD_EXTRA_ACTIONS, runForwardExtra } = require('./forward-extra-actions.cjs');
+const { ACTIONS: VOICE_EXTRA_ACTIONS, runVoiceExtra } = require('./voice-extra-actions.cjs');
 const { decodeInlineMedia, stageInlineMedia } = require('./media-input.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
@@ -70,13 +87,19 @@ class OneBotService {
         this.deadlines = new AsyncLocalStorage();
         this.messageLogs = new AsyncLocalStorage();
         this.operation = new AsyncLocalStorage();
+        this.streamOptions = new AsyncLocalStorage();
         this.forwardRegistry = createForwardRegistry();
     }
 
     call(method, params = {}) {
         const remaining = (this.deadlines.getStore() || Date.now() + this.actionTimeoutMs) - Date.now();
         if (remaining <= 0) throw problem('EXPIRED', 'Action deadline expired; delivery may be unknown');
-        return this.backend.call(method, params, { timeoutMs: remaining });
+        // Session authorization can await between preparing these parameters
+        // and dispatch. Keep the kernel's budget inside the same remaining RPC
+        // deadline even when that check or process scheduling takes time.
+        const bounded = Number.isInteger(params.timeoutMs) && params.timeoutMs > 0 ?
+            { ...params, timeoutMs: Math.min(params.timeoutMs, remaining) } : params;
+        return this.backend.call(method, bounded, { timeoutMs: remaining });
     }
     remaining() {
         const remaining = (this.deadlines.getStore() || Date.now() + this.actionTimeoutMs) - Date.now();
@@ -87,6 +110,7 @@ class OneBotService {
     async capabilities(current) {
         const status = current || await this.status();
         return capabilities({ ...status, capabilities: { ...status.capabilities,
+            streamFiles: Boolean(this.mediaDirectory),
             music: status.capabilities?.music === true && this.globalServices?.musicEnabled() === true,
             image: status.capabilities?.image === true && Boolean(this.mediaDirectory),
             file: status.capabilities?.file === true && Boolean(this.mediaDirectory),
@@ -95,6 +119,11 @@ class OneBotService {
             recordReceive: status.capabilities?.recordReceive === true && Boolean(this.mediaDirectory && this.mediaBaseUrl && this.mediaSigningKeyFile),
             video: status.capabilities?.video === true && Boolean(this.mediaDirectory),
             videoReceive: status.capabilities?.videoReceive === true && Boolean(this.mediaDirectory && this.mediaBaseUrl && this.mediaSigningKeyFile),
+            customFaceAdd: status.capabilities?.customFaceAdd === true && Boolean(this.mediaDirectory),
+            customFaceSend: status.capabilities?.customFaceSend === true && Boolean(this.mediaDirectory),
+            flashCreate: status.capabilities?.flashCreate === true && Boolean(this.mediaDirectory),
+            groupAlbumUploadImage: status.capabilities?.groupAlbumUploadImage === true && Boolean(this.mediaDirectory),
+            groupAlbumUploadVideo: status.capabilities?.groupAlbumUploadVideo === true && Boolean(this.mediaDirectory),
             imageReceive: status.capabilities?.imageReceive === true && Boolean(this.mediaDirectory && this.mediaBaseUrl && this.mediaSigningKeyFile) } });
     }
 
@@ -138,7 +167,7 @@ class OneBotService {
         return result;
     }
 
-    async action(request, expectedSession) {
+    async action(request, expectedSession, options = {}) {
         let response;
         const started = Date.now(), operation = { stage: 'validate' };
         try {
@@ -148,7 +177,7 @@ class OneBotService {
             if (!actions.has(request.action)) throw problem('UNSUPPORTED', 'Unsupported action');
             const params = request.params === undefined ? {} : request.params;
             if (!params || typeof params !== 'object' || Array.isArray(params)) throw problem('INVALID_REQUEST', 'params must be an object');
-            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_record', 'get_group_file_url', 'get_group_file_system_info', ...MERGED_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
+            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_record', 'get_group_file_url', 'get_group_file_system_info', 'add_custom_face', 'send_custom_face', 'create_flash_task', 'upload_image_to_qun_album', 'upload_video_to_qun_album', 'send_qzone_msg', ...MERGED_ACTIONS, ...SINGLE_FORWARD_ACTIONS, ...STREAM_ACTIONS, ...FORWARD_EXTRA_ACTIONS, ...VOICE_EXTRA_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
             if (['send_private_msg', 'send_group_msg', 'send_msg'].includes(request.action)) {
                 if (params.auto_escape !== undefined && typeof params.auto_escape !== 'boolean') throw problem('INVALID_REQUEST', 'auto_escape must be boolean');
                 const validated = codec.parse(params.message, params.auto_escape === true);
@@ -156,8 +185,8 @@ class OneBotService {
             }
             const expiresAt = Date.now() + timeoutMs;
             const messages = [];
-            const data = await this.operation.run(operation, () => this.messageLogs.run(messages,
-                () => this.deadlines.run(expiresAt, () => this.run(request.action, params, expectedSession))));
+            const data = await this.streamOptions.run(options, () => this.operation.run(operation, () => this.messageLogs.run(messages,
+                () => this.deadlines.run(expiresAt, () => this.run(request.action, params, expectedSession)))));
             if (Date.now() >= expiresAt) throw problem('EXPIRED', 'Action completed after its deadline; delivery may be unknown');
             response = { status: 'ok', retcode: 0, data: data === undefined ? null : data };
             for (const message of messages) this.logMessage(message);
@@ -216,6 +245,24 @@ class OneBotService {
         if (GROUP_QUERIES.has(action)) return runGroupQueries(this, state, action, params);
         if (COLLECTION_QUERIES.has(action)) return runCollectionQueries(this, state, action, params);
         if (ACCOUNT_QUERY_ACTIONS.has(action)) return runAccountQuery(this, state, action, params);
+        if (COMPAT_ACTIONS.has(action)) return runCompatActions(this, state, action, params);
+        if (QUERY2_ACTIONS.has(action)) return runExtendedQueries2(this, state, action, params);
+        if (RKEY_ACTIONS.has(action)) return runRkeyActions(this, state, action, params);
+        if (SHARE_ACTIONS.has(action)) return runShareActions(this, state, action, params);
+        if (ADMIN_ACTIONS.has(action)) return runAdminActions(this, state, action, params);
+        if (CUSTOM_FACE_ACTIONS.has(action)) return runCustomFace(this, state, action, params);
+        if (EMOJI_PAGINATION_ACTIONS.has(action)) return runEmojiPagination(this, state, action, params);
+        if (CONTACT_EXTRA_ACTIONS.has(action)) return runContactExtraActions(this, state, action, params);
+        if (SINGLE_FORWARD_ACTIONS.has(action)) return runSingleForward(this, state, action, params);
+        if (FLASH_ACTIONS.has(action)) return runFlashTransferActions(this, state, action, params);
+        if (QZONE_ACTIONS.has(action)) return runQzone(this, state, action, params);
+        if (GROUP_ALBUM_ACTIONS.has(action)) return runGroupAlbum(this, state, action, params);
+        if (MISC_EXTRA_ACTIONS.has(action)) return runMiscExtra(this, state, action, params);
+        if (FRIEND_DRESS_ACTIONS.has(action)) return runFriendDress(this, state, action, params);
+        if (FORWARD_EXTRA_ACTIONS.has(action)) return runForwardExtra(this, state, action, params);
+        if (VOICE_EXTRA_ACTIONS.has(action)) return runVoiceExtra(this, state, action, params);
+        if (STREAM_ACTIONS.has(action)) return runStreamActions(this, { ...state, capabilities: {
+            ...state.capabilities, streamFiles: Boolean(this.mediaDirectory) } }, action, params);
         switch (action) {
         case 'get_login_info': {
             let nickname = typeof state.self.nickname === 'string' ? state.self.nickname : '';
@@ -498,10 +545,14 @@ class OneBotService {
         }
         const entry = this.store.remember(state.self.uin, record);
         const uploaded = record.elements?.find(item => item.elementType === 3)?.fileElement;
+        const fileId = uploaded?.fileUuid;
+        if (typeof fileId !== 'string' || !fileId.trim() || Buffer.byteLength(fileId) > 1024 || /[\x00-\x1f\x7f-\x9f]/.test(fileId) || Buffer.from(fileId).toString('utf8') !== fileId) {
+            throw problem('INVALID_RESPONSE', 'QQ file message was submitted but its confirmed record has no exact resource ID; it was not retried');
+        }
         this.queueSentMessage({ selfId: state.self.uin, messageId: entry.id, messageType: chatType === 2 ? 'group' : 'private',
             userId: state.self.uin, ...(chatType === 2 ? { groupId: target } : { peerId: target }),
             senderName: state.self.nickname || record.sendNickName, groupName: record.groupName, segments: [{ type: 'file', data: {} }] });
-        return { file_id: typeof uploaded?.fileUuid === 'string' && uploaded.fileUuid ? uploaded.fileUuid : null, message_id: entry.id };
+        return { file_id: fileId, message_id: entry.id };
     }
 
     async groupAction(state, params, action) {

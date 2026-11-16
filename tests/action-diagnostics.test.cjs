@@ -9,7 +9,7 @@ test('known unavailable actions retain their fixed name without dispatching a ba
     const logs = [];
     const service = new OneBotService({ backend: { call() { calls++; throw new Error('must not run'); } },
         store: {}, logger: (event, details) => logs.push({ event, ...details }) });
-    for (const action of ['send_forward_msg', 'set_group_anonymous_ban']) {
+    for (const action of ['get_msg_emoji_likes', 'set_group_anonymous_ban', 'bot_exit', 'send_packet']) {
         const response = await service.action({ action, params: {}, echo: { action } });
         assert.equal(response.retcode, 1404);
         assert.deepEqual(response.echo, { action });

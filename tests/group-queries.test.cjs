@@ -403,7 +403,8 @@ test('OneBot group query actions preserve three distinct real native outputs and
     assert.deepEqual(await runGroupQueries(service, state, 'get_group_detail_info', { group_id: 200 }), {
         ...detail, group_id: 200, group_name: 'Group', member_count: 2, max_member_count: 200, group_all_shut: -1, group_remark: 'Remark' });
     assert.deepEqual(await runGroupQueries(service, state, 'get_group_info_ex', { group_id: '200' }), { luckyWord: 'native extension' });
-    assert.deepEqual(await runGroupQueries(service, state, 'get_group_shut_list', { group_id: '200' }), [member]);
+    assert.deepEqual(await runGroupQueries(service, state, 'get_group_shut_list', { group_id: '200' }), [{ ...member,
+        user_id: 22222, nickname: 'Nick', shut_up_time: 1900000000 }]);
     assert.deepEqual(calls.map(value => value.method), ['groupQuery', 'groupQuery', 'groupQuery']);
     assert.deepEqual(calls.map(value => value.params.operation), ['group.detail', 'group.ext', 'group.shutList']);
     assert.ok(calls.every(value => value.params.groupId === '200'));

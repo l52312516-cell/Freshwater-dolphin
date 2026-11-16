@@ -34,8 +34,8 @@ async function run(config, log) {
             return value.profileId === config.profileId && String(value.uin) === session.uin && value.epoch === session.epoch;
         } catch (_) { return false; }
     }
-    const network = new TransportHub({ config, action: (request, session) => service.action(request,
-        { epoch: session.epoch, selfUin: session.uin }),
+    const network = new TransportHub({ config, action: (request, session, options) => service.action(request,
+        { epoch: session.epoch, selfUin: session.uin }, options),
         status: () => lastStatus, logger: log, authorization: authorized,
         capabilities: () => typeof service.capabilities === 'function' ? service.capabilities() : {},
         managementToken: session => {

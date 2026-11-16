@@ -113,6 +113,36 @@ test('extended queries preserve actual records and reject different group or omi
     assert.equal((await f.invoke('get_essence_msg_list', { group_id: 12345 })).retcode, 1500);
 });
 
+test('notice deletion accepts the real fid alias and preserves reference fallback and precedence without retrying', async () => {
+    const f = fixture();
+    for (const [params, noticeId] of [[{ fid: 'fid-real' }, 'fid-real'], [{ fid: '', notice_id: 'notice-real' }, 'notice-real'],
+        [{ fid: 'preferred-real', notice_id: 'secondary-real' }, 'preferred-real']]) {
+        const before = f.calls.length;
+        const value = await f.invoke('_del_group_notice', { group_id: 12345, ...params });
+        assert.equal(value.retcode, 0); assert.equal(value.data, null); assert.equal(f.calls.length, before + 1);
+        assert.equal(f.calls.at(-1).params.noticeId, noticeId);
+    }
+    const count = f.calls.length;
+    for (const params of [{ fid: null }, { fid: 7, notice_id: 'actual' }, { fid: '' }, { fid: 'actual', notice_id: [] }]) {
+        assert.equal((await f.invoke('_del_group_notice', { group_id: 12345, ...params })).retcode, 1400);
+    }
+    assert.equal(f.calls.length, count);
+});
+
+test('AI catalog compatibility fields require actual server character identity, display name and preview data', async () => {
+    const f = fixture(), voice = { voiceId: 'actual-id', voiceDisplayName: '实际角色', voiceExampleUrl: 'https://qq.example/actual-preview' };
+    f.overrides.extendedQuery = params => ({ ...params, characters: [{ category: '实际分类', voices: [voice] }] });
+    const result = await f.invoke('get_ai_characters', { group_id: 12345 });
+    assert.equal(result.retcode, 0);
+    assert.equal(result.data[0].type, '实际分类');
+    assert.deepEqual(result.data[0].characters[0], { ...voice, character_id: 'actual-id', character_name: '实际角色', preview_url: voice.voiceExampleUrl });
+    for (const key of ['voiceId', 'voiceDisplayName', 'voiceExampleUrl']) {
+        const partial = { ...voice }; delete partial[key];
+        f.overrides.extendedQuery = params => ({ ...params, characters: [{ category: '实际分类', voices: [partial] }] });
+        assert.equal((await f.invoke('get_ai_characters', { group_id: 12345 })).retcode, 1500);
+    }
+});
+
 test('unsupported contracts, unknown fields and missing actual essence random fail without a write', async () => {
     const f = fixture(); f.state.capabilities.messagePoke = false;
     assert.equal((await f.invoke('send_poke', { user_id: 22222 })).retcode, 1404); assert.equal(f.calls.length, 0);
@@ -166,9 +196,9 @@ test('additional fixed account and catalog actions retain target identity and re
         ['ocr_image', { image: 'file:///private/image' }]]) assert.equal((await f.invoke(action, params)).retcode, 1400);
     assert.equal(f.calls.length, count);
     f.overrides.extendedQuery = params => ({ ...params, texts: [{ text: '第一行\n第二行', confidence: 99 }], language: 'zh',
-        characters: [{ type: 'normal', voices: [] }], faces: [{ id: '1', name: 'face' }], face: { id: params.faceId } });
+        characters: [{ category: 'normal', voices: [] }], faces: [{ id: '1', name: 'face' }], face: { id: params.faceId } });
     assert.equal((await f.invoke('ocr_image', { image: 'https://gchat.qpic.cn/actual-image/0' })).data.texts[0].text, '第一行\n第二行');
-    assert.deepEqual((await f.invoke('get_ai_characters', { group_id: 12345 })).data, [{ type: 'normal', voices: [] }]);
+    assert.deepEqual((await f.invoke('get_ai_characters', { group_id: 12345 })).data, [{ category: 'normal', type: 'normal', voices: [], characters: [] }]);
     assert.deepEqual((await f.invoke('get_system_face_list')).data, [{ id: '1', name: 'face' }]);
     assert.deepEqual((await f.invoke('get_system_face', { face_id: '1' })).data, { id: '1' });
     f.overrides.extendedQuery = params => ({ ...params, faceId: '99999', face: {} });

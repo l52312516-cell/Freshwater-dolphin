@@ -43,7 +43,8 @@ async function fixture(t) {
             emojiType: params.request.emojiId.length > 3 ? '2' : '1', likesCnt: '1', isClicked: true }] : [];
         let result = Buffer.alloc(0);
         if (params.operation === 'image.ocr') result = p.messageField(10, [p.messageField(1, [p.bytesField(1, Buffer.from('OCR文字')), p.varintField(2, 99)])]);
-        if (params.operation === 'voice.characters') result = p.messageField(1, [p.bytesField(1, Buffer.from('声音')), p.messageField(2, [p.bytesField(1, Buffer.from('voice-1'))])]);
+        if (params.operation === 'voice.characters') result = p.messageField(1, [p.bytesField(1, Buffer.from('声音')), p.messageField(2, [
+            p.bytesField(1, Buffer.from('voice-1')), p.bytesField(2, Buffer.from('实际角色')), p.bytesField(3, Buffer.from('https://qq.example/actual-preview'))])]);
         const face = p.bytesField(1, Buffer.from('66'));
         if (params.operation === 'face.get') result = p.bytesField(1, face);
         if (params.operation === 'face.list') result = p.messageField(2, [p.messageField(1, [p.bytesField(2, face)])]);

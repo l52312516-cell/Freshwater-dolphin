@@ -17,7 +17,13 @@ Freshwater-dolphin 的原创源码适用根目录 `LICENSE`。本文件不会改
 | 腾讯 QQ | 首批兼容 3.2.35-54395 Linux x64 | 第三方专有软件，由用户从官方渠道取得并遵守其条款；不放入本项目源码包 |
 | aiocqhttp / Hypercorn / Quart / Flask | 仅可选互操作测试，版本见 requirements-test.txt | 前三者 MIT，Flask 为 BSD-3-Clause；其他间接依赖按各自许可。通过独立 Python 环境安装，不打入运行镜像 |
 
-OneBot v11 是本项目实现的通信协议。AstrBot 是对接目标；本项目不包含 AstrBot 源码。未引入 SnowLuma、NapCat 或原私有研究仓库的实现代码。
+OneBot v11 是本项目实现的通信协议。AstrBot 是对接目标；本项目不包含 AstrBot 源码。
+
+## 协议契约参考
+
+QQAPI 扩展研究参考了 SnowLuma 2.4.2（提交 `5dcbfa6f297b9dd112d859c2793687f8ed4bf563`）公开源码中的动作名称、参数与返回语义、固定 SSO/OIDB 命令及 protobuf 字段对应关系；具体契约出处和兼容差异见 `docs/qqapi-expansion-20261116.md`、各扩展专题及 `docs/original-actions-contract-audit.md`。AI 语音的原生调用签名、媒体类型和 OIDB UIN 模式另参考 [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 的对应接口定义与固定协议实现，见 `docs/voice-extra.md`。
+
+本项目独立编写运行模块、编解码、账号与会话约束及测试，没有整段引入上述项目的实现源码、原生二进制或依赖包。协议字段、兼容名称与合成测试向量不表示引入了其运行实现；离线对照使用的参考编译器和本地参考快照也不进入源码交付。第三方原项目仍适用各自声明，本项目许可不对其重新授权。
 
 ## ws — MIT
 

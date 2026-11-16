@@ -49,7 +49,7 @@ async function runGroupQueries(service, state, action, params) {
             seenUids.has(value.uid) || seenUins.has(String(value.uin))) throw problem('INVALID_RESPONSE', 'QQ returned invalid or duplicate muted members');
         seenUids.add(value.uid); seenUins.add(String(value.uin));
     }
-    return result.members;
+    return result.members.map(value => ({ ...value, user_id: Number(value.uin), nickname: value.nick, shut_up_time: Number(value.shutUpTime) }));
 }
 
 module.exports = { ACTIONS, REQUIREMENTS, ACTION_REQUIREMENTS: REQUIREMENTS, runGroupQueries };

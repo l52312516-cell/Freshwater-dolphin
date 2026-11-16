@@ -153,6 +153,7 @@ function decode(bytes, prepared) {
         if (raw?.length) fail('INVALID_RESPONSE', 'Unrecognized business body for QQ acknowledgement [' + responseShape(raw) + ']');
         return { ...prepared.data, confirmed: true, confirmation: 'server_ack', ...(unchanged ? { alreadyApplied: true } : {}) };
     }
+    if (raw !== undefined && raw.length === 0 && prepared.operation === 'face.get') return { face: null };
     if (!raw?.length) fail('INVALID_RESPONSE', 'QQ omitted the requested result');
     const body = p.fields(raw);
     if (prepared.operation === 'image.ocr') {
@@ -172,7 +173,9 @@ function decode(bytes, prepared) {
         }) })) };
     }
     if (prepared.operation === 'face.get') {
-        const value = face(p.fields(one(body, 1, 2, true)));
+        const raw = one(body, 1, 2);
+        if (raw === undefined) return { face: null };
+        const value = face(p.fields(raw));
         if (value.qSid !== String(prepared.data.faceId)) fail('INVALID_RESPONSE', 'QQ returned another face');
         return { face: value };
     }

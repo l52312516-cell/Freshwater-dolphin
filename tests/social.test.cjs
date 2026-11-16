@@ -107,13 +107,15 @@ test('flags bind QQ epoch and request type, and reset removes previous session h
     await assert.rejects(f.social.action({ operation: 'friendRequest', flag, approve: true }), { code: 'NOT_FOUND' });
 });
 
-test('request queue is bounded and expired handles do not remain valid', async () => {
+test('request queue is bounded and expired handles do not remain valid', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
     const f = fixture({}, { maximumRequests: 1, requestTtlMs: 10 });
+    t.after(() => f.capture.close());
     const original = observeFriend(f);
     const flag = f.events[0].request.flag;
     observeFriend(f, friend({ friendUid: 'u_other' }));
     assert.equal(f.events.length, 1); assert.ok(f.diagnostics.includes('BUSY'));
-    await new Promise(resolve => setTimeout(resolve, 15));
+    t.mock.timers.tick(15);
     await assert.rejects(f.social.action({ operation: 'friendRequest', flag, approve: true }), { code: 'NOT_FOUND' });
     // Replay the same native request; generating a new timestamp here makes
     // this a different valid request when the wall clock crosses a second.
@@ -140,11 +142,19 @@ test('epoch switch during a pending native operation rejects its late completion
     assert.equal(f.capture.bus.listenerCount('social:friend'), 0);
 });
 
-test('query requires real callback rather than a successful request return and exposes historical pending flags without events', async () => {
-    const f = fixture();
+test('query requires real callback rather than a successful request return and exposes historical pending flags without events', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    const f = fixture(); t.after(() => f.capture.close());
+    let requested, reads = 0;
+    const entered = new Promise(resolve => { requested = resolve; });
     f.services.buddy.approvalFriendRequest = async () => {};
-    f.services.buddy.getBuddyReq = async () => ({ result: 0 });
-    await assert.rejects(f.social.query({ operation: 'friendRequests' }, limit(20)), { code: 'TIMEOUT' });
+    f.services.buddy.getBuddyReq = async () => { reads++; requested(); return { result: 0 }; };
+    const pending = f.social.query({ operation: 'friendRequests' }, limit(20));
+    const rejected = assert.rejects(pending, { code: 'TIMEOUT' });
+    await entered; await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(20); await rejected;
+    assert.equal(reads, 1); assert.equal(f.capture.bus.listenerCount('social:friend'), 0);
+    assert.equal(f.capture.pending.size, 0);
     f.services.buddy.getBuddyReq = async () => { observeFriend(f, friend({ reqTime: '1700000000' })); return { result: 0 }; };
     const rows = await f.social.query({ operation: 'friendRequests' }, limit());
     assert.equal(rows.length, 1); assert.match(rows[0].flag, /^fwd_req_/); assert.equal(f.events.length, 0);

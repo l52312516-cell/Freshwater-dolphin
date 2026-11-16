@@ -12,7 +12,7 @@
 | 普通表情 | 支持稳定的内置表情类型。动态贴纸、骰子和猜拳等需要额外元数据，不把它们伪装成普通表情。 |
 | 图片发送 | 接受账户私有媒体目录内非空的 PNG/JPEG/GIF，以及规范 `base64://` 图片。单张及整条消息内嵌图片解码总量最多 10 MiB；读取真实尺寸和 MD5，再交给 QQ 原生上传。内嵌图片先转成本账号私有短路径，发送结束或失败后清除导入副本，不把 base64 放入文件 RPC。远程 URL、闪照和表情包输入仍不支持。 |
 | 图片接收、`get_image` | 查询精确消息和 element ID；本地缺失时调用 QQ 的真实下载接口，先装等待者，再核对完成回调、错误码、大小、MD5 和目录。优先通过按账户签名的短期资源 URL 交付；官方图片 URL 缺少 rkey 时，优先从当前已登录 QQ 的原生通道获取，按账号会话及群聊/私聊缓存并在过期后重新查询。原生不可用时只使用显式配置的回退服务；没有真实 key 就明确失败。缓存实现、真实到期刷新与含图合并下载的验收分别记录。 |
-| 文件上传扩展 | `upload_group_file`、`upload_private_file` 接受账户媒体目录内最大 50 MiB 的本地文件，上传到会话根目录，保留真实文件名并等待 QQ 发送成功。暂不支持子目录、远程下载或任意宿主机文件。 |
+| 文件上传扩展 | `upload_group_file`、`upload_private_file` 接受账户媒体目录内最大 50 MiB 的本地文件，上传到会话根目录，保留真实文件名并等待 QQ 发送成功；只有确认记录包含真实非空资源 ID 时才返回 `file_id`。资源 ID 缺失明确失败，不用消息 ID 代替，也不自动重发。暂不支持子目录、远程下载或任意宿主机文件。 |
 | 文件消息段 | `file` 为扩展消息段，发送复用已验证的本地文件上传链路，每条消息只允许一个文件段，不拆分混合消息。`get_msg` 和历史查询可返回真实文件 ID、文件名、精确大小。入站群文件事件由 `groupFileUrl` 门控，私聊文件事件由独立的 `privateFileUrl` 门控；查询真实文件资源后附下载 URL，临时无法取 URL 时只保留有效元数据，不从文件名推测链接。私聊文件 URL 查询及小文件实际下载已通过目标版本云测（见 native-validation-20261116.md）；其他大小、完整入站事件和本地导出仍分别待验收。 |
 | 语音、`get_record` | 出站支持账户本地 MP3/WAV/QQ SILK，以及规范 base64 输入；内联媒体合计最多 10 MiB，本地源文件最多 50 MiB、600 秒，时长和波形取自真实 PCM。工具和 native 方法均存在时 `can_send_record` 才为 true。入站先按真实消息和元素读取账号 native roots 内完整 SILK，校验大小及 MD5 后登记资源；只有 QQ 下载器实际可用时才尝试主动下载。`record.receive_scope` 明确区分 `account-local-only` 与 `account-local-or-qq-downloader`，没有文件且不能下载时明确失败。`get_record` 仅接受本账号已登记的语音句柄，导出 silk/wav/mp3/flac/ogg；压缩格式要求项目内 FFmpeg。返回容器内真实文件路径，不能将其当作跨容器下载 URL。真机结果以本轮报告为准。 |
 | 视频 | 入站支持完整 MP4/WebM 原始文件下载，最大 50 MiB。本地缺失时经原生 MSF 通道（NTV2RichMedia `0x11ea_200` 群 / `0x11e9_200` 私聊）直接取官方视频 URL（本构建 JS `downloadRichMedia`/`getVideoPlayUrlV2` 均失败），仅从受限官方域名单次下载，接受描述完整范围的 Content-Range，验证大小、MD5、完整容器后交付短期签名 URL。出站支持本账号目录内最大 50 MiB、600 秒、4096×4096 的单视频轨 H.264 MP4，读取真实尺寸和时长并解码真实 PNG 封面，再交 QQ 上传并等待确认；只允许单个视频段，不转码、不生成默认元数据。真机结果以本轮报告为准。 |
@@ -60,15 +60,17 @@
 | `delete_group_file` | 单文件或 1–100 个文件批量删除；成功列表必须精确覆盖全部请求且失败列表为空，成功 `data: null`。 |
 | `move_group_file` | 采用真实源、目标目录与上述完整文件回执，成功 `data: null`；部分成功报错。 |
 | `trans_group_file` | 返回 `group_id`、原 `file_id`、`save_busid`、`save_file_path`。QQ 可能将转存后的文件换成新 ID；云测应按 `save_file_path` 在目录中重新定位并查询真实元数据。`save_busid` 与目录中的 `busid` 不能直接等同，后续文件操作使用重新查询到的当前目录 `busid`。未据此验证保存后的文件实际下载、内容或客户端展示；`save_file_path` 不是下载 URL。 |
-| `rename_group_file` | 采用真实文件 ID、busid、父目录和新名称，核对明确业务回执及返回的可选文件身份，成功 `data: null`。 |
+| `rename_group_file` | 采用真实文件 ID、busid、父目录和新名称，核对明确业务回执及返回的可选文件身份，成功 `data: {ok:true}`。支持 `current_parent_directory`，非空时优先于 `parent_directory`，缺省根目录 `/`。 |
 | `set_qq_profile` | 仅支持 `nickname` 与 `personal_note`，按本账号身份回读确认所请求值后成功 `data: null`；组合修改部分完成如实报错。 |
 | `set_group_remark` | 修改当前账号的群备注，按群号回读确认实际值后成功 `data: null`；不是修改群公开名称。 |
 
 合并转发中的图片必须具有真实官方资源定位；缺少 rkey 时优先从当前登录 QQ 的原生通道获取，再尝试显式配置的回退服务。没有可用真实 key 时返回 `RKEY_UNAVAILABLE` 等明确错误，不剥掉图片返回残缺文本。仅文字合并样本通过不能证明含图片合并通过，图片数为零时的下载校验也不是图片实测证据。合并内语音、视频、引用仍未验证。自定义合并节点仅允许本账号作者的文字/base64图片，最多100节点、1000段、64KiB文字及10MiB合计图片，拒绝伪造其他作者、嵌套和任意路径或URL。已有 ID 节点实验实现只处理同源群1–20个不同持久 OneBot ID 的纯文字，不接受原生长 ID 或混合节点；目前正式变体禁用，即使全部 native 方法存在也不能启用。普通转发、自定义合并和已有消息合并分别验证，不能互相继承成功结论。
 
-群文件修改动作都只派发一次，超时或不完整结果不会自动重试；读取动作的分页与详情查找仍有明确上限。群文件下载 URL 与群空间容量已由原生 MSF 通道提供（见 `get_group_file_url`、`get_group_file_system_info`）；未提供真实契约的文件操作继续不支持。私聊文件新增 `get_private_file_url` 及事件接线，采用精确消息和文件身份绑定的固定查询，保留 UID-mode OIDB 与经典 Offline 服务的独立编解码；历史真机失败保留；2026-11-16 已按元数据原 UUID 与校验字段补齐响应匹配，Freshwater 正式 OneBot 查询成功下载 56041 字节私聊文件并核对大小和 MD5。成功仅限 UID-mode OIDB 及该样本，经典 Offline 备用通道仍失败，其他参数变体不能一并标为可用。群文件夹和文件的所有参数、批量及权限变体都需要单独实测，单个测试对象通过不能替代这些覆盖。
+群文件修改动作都只派发一次，超时或不完整结果不会自动重试；读取动作的分页与详情查找仍有明确上限。删除、移动和改名省略 `busid` 时，先按原群、原目录和精确文件 ID 查询真实 `fileInfo.busId`，全部待操作文件查询核验后才派发一次修改，不猜测 0 或 102。删除可用 `folder_id` 指定源目录，省略时仅查询根目录。群文件下载 URL 与群空间容量已由原生 MSF 通道提供（见 `get_group_file_url`、`get_group_file_system_info`）；未提供真实契约的文件操作继续不支持。私聊文件新增 `get_private_file_url` 及事件接线，采用精确消息和文件身份绑定的固定查询，保留 UID-mode OIDB 与经典 Offline 服务的独立编解码；历史真机失败保留；2026-11-16 已按元数据原 UUID 与校验字段补齐响应匹配，Freshwater 正式 OneBot 查询成功下载 56041 字节私聊文件并核对大小和 MD5。成功仅限 UID-mode OIDB 及该样本，经典 Offline 备用通道仍失败，其他参数变体不能一并标为可用。群文件夹和文件的所有参数、批量及权限变体都需要单独实测，单个测试对象通过不能替代这些覆盖。
 
 能力目录中的扩展段 `file.receive` 仅在真实会话就绪且 `groupFileUrl` 或 `privateFileUrl` 至少一个可用时为 `true`；`receive_contexts` 分别列出当前门控启用的 `group`、`private`，未就绪时为空，群文件能力不会暗中启用私聊文件。发送范围为 `send_contexts: ["private", "group"]`，并继续受账户媒体目录与 `file` 发送能力门控。`get_private_file_url`、`get_group_file_url` 与 `get_group_file_system_info` 使用各自独立能力。目录验证状态保留 `offline-tested`，方法存在和离线通过均不代替实际云端验收。
+
+QQ `3.2.35-54395` 的最终版本另外关闭六个真实未闭环的入口：AI 合成两个动作、闪传创建、Android 图文 Ark 和两个独立转发资源上传别名。实时 `get_capabilities` 保留它们的 `implemented:true`，但 `available:false`；这不是实现数量减少或云验成功。`send_forward_msg` 按 `mergeCustom` 或 `forwardUpload` 的真实状态计算整体可用性，并分别列出 `variants.targeted_text_image_nodes` 和 `variants.upload_only_text_nodes`。当前目标版本只有后者关闭；指定测试群的文字合并在最终双账号样本中均取得真实 ID，不能据此宣称无目标上传已可用。具体失败阶段及范围见 `qqapi-expansion-20261116.md`、`forward-extra.md` 和 `voice-extra.md`。
 
 ## 四个验证阶段的剩余工作
 

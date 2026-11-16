@@ -93,7 +93,16 @@ async function runExtended(service, state, action, params) {
         request = { operation: 'voice.characters', groupId: id(params.group_id, 'group_id'), chatType: integer(params.chat_type ?? 1, 'chat_type', 2, 1) };
         const result = query(await service.sessionCall(state, 'extendedQuery', request), request, 'characters', 10000);
         if (result.chatType !== request.chatType) throw problem('INVALID_RESPONSE', 'QQ returned a different voice catalog context');
-        return result.characters;
+        let voices = 0;
+        return result.characters.map(category => {
+            if (typeof category.category !== 'string' || !Array.isArray(category.voices)) throw problem('INVALID_RESPONSE', 'QQ omitted the native AI voice category or character list');
+            const characters = category.voices.map(voice => {
+                if (++voices > 5000 || !object(voice) || typeof voice.voiceId !== 'string' || !voice.voiceId ||
+                    typeof voice.voiceDisplayName !== 'string' || typeof voice.voiceExampleUrl !== 'string') throw problem('INVALID_RESPONSE', 'QQ omitted actual AI voice identity, name or preview URL');
+                return { ...voice, character_id: voice.voiceId, character_name: voice.voiceDisplayName, preview_url: voice.voiceExampleUrl };
+            });
+            return { ...category, type: category.category, characters };
+        });
     } else if (action === 'get_system_face_list' || action === 'get_system_face') {
         fields(params, action === 'get_system_face' ? ['face_id'] : []);
         request = action === 'get_system_face' ? { operation: 'face.get', faceId: String(integer(params.face_id, 'face_id')) } : { operation: 'face.list' };
@@ -140,7 +149,7 @@ async function runExtended(service, state, action, params) {
         request = { operation: 'group.memberTitle', groupId, uid: await resolve(service, state, uin), title };
     } else {
         const allowed = action === 'get_group_honor_info' ? ['group_id', 'type'] : action === 'get_essence_msg_list' ? ['group_id', 'page_start', 'count'] :
-            action === '_get_group_notice' ? ['group_id', 'page', 'count'] : action === '_send_group_notice' ? ['group_id', 'content'] : ['group_id', 'notice_id'];
+            action === '_get_group_notice' ? ['group_id', 'page', 'count'] : action === '_send_group_notice' ? ['group_id', 'content'] : ['group_id', 'notice_id', 'fid'];
         fields(params, allowed);
         const groupId = id(params.group_id, 'group_id');
         if (action === 'get_group_honor_info') {
@@ -170,8 +179,11 @@ async function runExtended(service, state, action, params) {
                 return result;
             });
         }
+        if (action === '_del_group_notice') {
+            for (const key of ['fid', 'notice_id']) if (params[key] !== undefined) text(params[key], key, 1024, true);
+        }
         request = action === '_send_group_notice' ? { operation: 'group.noticePublish', groupId, content: text(params.content, 'content', 20000) } :
-            { operation: 'group.noticeDelete', groupId, noticeId: text(params.notice_id, 'notice_id', 1024) };
+            { operation: 'group.noticeDelete', groupId, noticeId: text(params.fid || params.notice_id, 'notice_id', 1024) };
     }
     const result = await service.sessionCall(state, 'extendedAction', request);
     confirmed(result, request);

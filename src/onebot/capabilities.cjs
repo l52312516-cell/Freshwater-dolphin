@@ -6,6 +6,24 @@ const { STANDARD_REQUIREMENTS: EXTENDED_STANDARD, EXTENSION_REQUIREMENTS: EXTEND
 const { REQUIREMENTS: GROUP_QUERY_REQUIREMENTS } = require('./group-queries.cjs');
 const { ACTION_REQUIREMENTS: COLLECTION_REQUIREMENTS } = require('./collection-queries.cjs');
 const { EXTENSION_REQUIREMENTS: ACCOUNT_QUERY_REQUIREMENTS } = require('./account-queries.cjs');
+const { EXTENSION_REQUIREMENTS: COMPAT_REQUIREMENTS } = require('./compat-actions.cjs');
+const { EXTENSION_REQUIREMENTS: QUERY2_REQUIREMENTS } = require('./extended-queries2.cjs');
+const { EXTENSION_REQUIREMENTS: RKEY_REQUIREMENTS } = require('./rkey-actions.cjs');
+const { EXTENSION_REQUIREMENTS: SHARE_REQUIREMENTS } = require('./share-actions.cjs');
+const { EXTENSION_REQUIREMENTS: ADMIN_REQUIREMENTS } = require('./admin-actions.cjs');
+const { EXTENSION_REQUIREMENTS: CUSTOM_FACE_REQUIREMENTS } = require('./custom-face-actions.cjs');
+const { EXTENSION_REQUIREMENTS: EMOJI_PAGINATION_REQUIREMENTS } = require('./emoji-pagination-actions.cjs');
+const { REQUIREMENTS: CONTACT_EXTRA_REQUIREMENTS } = require('./contact-extra-actions.cjs');
+const { EXTENSION_REQUIREMENTS: SINGLE_FORWARD_REQUIREMENTS } = require('./single-forward-actions.cjs');
+const { REQUIREMENTS: FLASH_REQUIREMENTS } = require('./flash-transfer-actions.cjs');
+const { EXTENSION_REQUIREMENTS: QZONE_REQUIREMENTS } = require('./qzone-actions.cjs');
+const { EXTENSION_REQUIREMENTS: GROUP_ALBUM_REQUIREMENTS } = require('./group-album-actions.cjs');
+const { EXTENSION_REQUIREMENTS: MISC_EXTRA_REQUIREMENTS } = require('./misc-extra-actions.cjs');
+const { REQUIREMENTS: STREAM_REQUIREMENTS } = require('./file-stream-actions.cjs');
+const { EXTENSION_REQUIREMENTS: FRIEND_DRESS_REQUIREMENTS } = require('./friend-dress-actions.cjs');
+const { REASONS: UNSUPPORTED_REASONS } = require('./unsupported-actions.cjs');
+const { EXTENSION_REQUIREMENTS: FORWARD_EXTRA_REQUIREMENTS } = require('./forward-extra-actions.cjs');
+const { EXTENSION_REQUIREMENTS: VOICE_EXTRA_REQUIREMENTS } = require('./voice-extra-actions.cjs');
 const STANDARD_ACTIONS = Object.freeze([
     'send_private_msg', 'send_group_msg', 'send_msg', 'delete_msg', 'get_msg', 'get_forward_msg',
     'send_like', 'set_group_kick', 'set_group_ban', 'set_group_anonymous_ban', 'set_group_whole_ban',
@@ -40,13 +58,15 @@ const EXTENSION_REQUIREMENTS = Object.freeze({ get_capabilities: null, get_group
     set_qq_profile: 'selfProfile', set_group_remark: 'groupRemark',
     qqapi_get_forward_messages: 'forwardRead', qqapi_message_forward: 'forwardExisting',
     send_private_forward_msg: 'mergeCustom', send_group_forward_msg: 'mergeCustom', ...GROUP_FILE_REQUIREMENTS, ...EXTENDED_REQUIREMENTS,
-    ...GROUP_QUERY_REQUIREMENTS, ...COLLECTION_REQUIREMENTS, ...ACCOUNT_QUERY_REQUIREMENTS });
+    ...GROUP_QUERY_REQUIREMENTS, ...COLLECTION_REQUIREMENTS, ...ACCOUNT_QUERY_REQUIREMENTS, ...COMPAT_REQUIREMENTS, ...QUERY2_REQUIREMENTS, ...RKEY_REQUIREMENTS, ...SHARE_REQUIREMENTS,
+    ...ADMIN_REQUIREMENTS, ...CUSTOM_FACE_REQUIREMENTS, ...EMOJI_PAGINATION_REQUIREMENTS, ...CONTACT_EXTRA_REQUIREMENTS, ...SINGLE_FORWARD_REQUIREMENTS,
+    ...FLASH_REQUIREMENTS, ...QZONE_REQUIREMENTS, ...GROUP_ALBUM_REQUIREMENTS, ...MISC_EXTRA_REQUIREMENTS, ...STREAM_REQUIREMENTS, ...FRIEND_DRESS_REQUIREMENTS, ...FORWARD_EXTRA_REQUIREMENTS, ...VOICE_EXTRA_REQUIREMENTS });
 const EXTENSION_ACTIONS = Object.freeze(Object.keys(EXTENSION_REQUIREMENTS));
 const IMPLEMENTED_ACTIONS = new Set([...Object.keys(ACTION_REQUIREMENTS), ...EXTENSION_ACTIONS]);
 // Diagnostics retain only fixed, recognized protocol names. Unknown strings
 // can contain credentials and must never be copied into the operational log.
 const KNOWN_ACTIONS = new Set([...STANDARD_ACTIONS, ...EXTENSION_ACTIONS,
-    'send_group_forward_msg', 'send_private_forward_msg', 'send_forward_msg']);
+    ...Object.keys(UNSUPPORTED_REASONS), 'send_group_forward_msg', 'send_private_forward_msg', 'send_forward_msg']);
 const TARGET_VALIDATION = Object.freeze({
     get_private_file_url: ['received-private-file', 'original-uuid-and-checksum', '56041-byte-download'],
     qqapi_get_forward_messages: ['observed-group-forward', 'text-and-image', 'download-md5-checked']
@@ -55,12 +75,17 @@ const TARGET_VALIDATION = Object.freeze({
 function capabilities(status = {}) {
     const flags = status.capabilities || {};
     const ready = Boolean(status.ready && status.self?.uin && status.self?.uid);
-    const available = flag => flag === null || (flag === 'identity' ? ready : ready && flags[flag] === true);
+    const available = flag => Array.isArray(flag) ? flag.every(available) :
+        flag === null || (flag === 'identity' ? ready : ready && flags[flag] === true);
     const entry = (name, implemented, flag, verified = false) => ({ name, implemented,
-        available: implemented && (name === 'send_group_forward_msg' ? available(flag) || available('mergeExistingNative') : available(flag)),
+        available: implemented && (name === 'send_group_forward_msg' ? available(flag) || available('mergeExistingNative') :
+            name === 'send_forward_msg' ? available(flag) || available('forwardUpload') : available(flag)),
         verification: verified ? 'verified' : implemented ? 'offline-tested' : 'unsupported',
+        ...(!implemented && UNSUPPORTED_REASONS[name] ? { reason: UNSUPPORTED_REASONS[name] } : {}),
         ...(name === 'send_group_forward_msg' ? { variants: { custom_text_image_nodes: available('mergeCustom'),
             existing_message_id_nodes: available('mergeExistingNative'), existing_scope: 'same-source-group-plain-text-1..20' } } : {}),
+        ...(name === 'send_forward_msg' ? { variants: { targeted_text_image_nodes: available('mergeCustom'),
+            upload_only_text_nodes: available('forwardUpload') } } : {}),
         ...(status.qqVersion === '3.2.35-54395' && Object.hasOwn(TARGET_VALIDATION, name) ? {
             target_validation: { qq_version: '3.2.35-54395', platform: 'linux-x64', date: '2026-11-16',
                 scopes: [...TARGET_VALIDATION[name]], reference: 'docs/native-validation-20261116.md' }
@@ -68,7 +93,8 @@ function capabilities(status = {}) {
     return {
         schema_version: 1, qq_version: status.qqVersion || null, ready,
         actions: STANDARD_ACTIONS.map(name => entry(name, Object.hasOwn(ACTION_REQUIREMENTS, name), ACTION_REQUIREMENTS[name])),
-        extensions: EXTENSION_ACTIONS.map(name => entry(name, true, EXTENSION_REQUIREMENTS[name])),
+        extensions: [...EXTENSION_ACTIONS.map(name => entry(name, true, EXTENSION_REQUIREMENTS[name])),
+            ...Object.keys(UNSUPPORTED_REASONS).filter(name => !STANDARD_ACTIONS.includes(name) && !IMPLEMENTED_ACTIONS.has(name)).map(name => entry(name, false, null))],
         segments: MESSAGE_SEGMENTS.map(name => ({ name,
             send: ['text', 'at', 'reply', 'face', 'image', 'music', 'record', 'video'].includes(name) && available(name),
             receive: (['text', 'at', 'reply', 'face'].includes(name) && available(name)) || (['image', 'record', 'video', 'json'].includes(name) && available(name + 'Receive')) || (name === 'forward' && available('forwardRead')),

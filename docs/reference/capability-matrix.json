@@ -1,7 +1,7 @@
 {
   "version": "0.2.0-alpha.3",
   "context": "offline-source-inventory",
-  "generated_at": "2026-11-16T07:52:07.778Z",
+  "generated_at": "2026-11-16T11:27:02.885Z",
   "schema_version": 1,
   "qq_version": "3.2.35-54395",
   "ready": false,
@@ -64,7 +64,8 @@
       "name": "set_group_anonymous_ban",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Reference acknowledges a placeholder without banning an anonymous participant."
     },
     {
       "name": "set_group_whole_ban",
@@ -82,7 +83,8 @@
       "name": "set_group_anonymous",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Reference acknowledges a placeholder without changing anonymous group settings."
     },
     {
       "name": "set_group_card",
@@ -172,19 +174,22 @@
       "name": "get_cookies",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Raw QQ authentication material is not exposed by the public adapter."
     },
     {
       "name": "get_csrf_token",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Raw QQ authentication material is not exposed by the public adapter."
     },
     {
       "name": "get_credentials",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Raw QQ authentication material is not exposed by the public adapter."
     },
     {
       "name": "get_record",
@@ -226,13 +231,15 @@
       "name": "set_restart",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Reference does not support restart; use the account manager lifecycle controls."
     },
     {
       "name": "clean_cache",
       "implemented": false,
       "available": false,
-      "verification": "unsupported"
+      "verification": "unsupported",
+      "reason": "Reference performs no cache cleanup; account data must not be deleted by a placeholder."
     }
   ],
   "extensions": [
@@ -616,6 +623,693 @@
       "implemented": true,
       "available": false,
       "verification": "offline-tested"
+    },
+    {
+      "name": "delete_group_file_folder",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_friends_category",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_reaction",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_sys_faces",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_face_entity",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "search_sys_faces",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_super_face_id",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "nc_get_user_status",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_todo_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_signed_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_online_clients",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_rkey",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_rkey_server",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "share_group_ex",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_group_ark_share",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "share_peer",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_ark_share",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_self_longnick",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_admin_settings",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_tags",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_share_link",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "add_group_tag",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "delete_group_tag",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_add_option",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_search",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_robot_add_option",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_member_invite_policy",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_new_member_history_visibility",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_member_permissions",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_kick_members",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_todo",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "complete_group_todo",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "cancel_group_todo",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_custom_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_custom_face_detail",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "add_custom_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "delete_custom_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "modify_custom_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "move_custom_face_to_front",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_custom_face",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_emoji_like",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "translate_en2zh",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_unidirectional_friend_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_input_status",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "_mark_all_as_read",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_doubt_friends_add_request",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_doubt_friends_add_request",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_ignore_add_request",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_ignored_notifies",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "forward_friend_single_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "forward_group_single_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "create_flash_task",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "delete_flash_file",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "download_fileset",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_fileset_id",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_fileset_info",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_flash_file_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_flash_file_url",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_share_link",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "list_filesets",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "rename_flash_file",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_flash_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "comment_qzone",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "delete_qzone_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_qzone_feeds",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_qzone_msg_detail",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_qzone_msg_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "like_qzone",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_qzone_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_qzone_ban",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_qzone_msg_right",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "unlike_qzone",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_album_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_qun_album_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_group_album_media_list",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_album_media_like",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "cancel_group_album_media_like",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "do_group_album_comment",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "del_group_album_media",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "upload_image_to_qun_album",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "upload_video_to_qun_album",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_mini_app_ark",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_tuwen_ark",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_group_sign",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "set_diy_online_status",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "click_inline_keyboard_button",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "upload_file_stream",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "download_file_stream",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "download_file_image_stream",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "download_file_record_stream",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "test_download_stream",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "clean_stream_temp_file",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "download_file",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "get_file",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "_get_friend_dress",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "upload_forward_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "upload_foward_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_forward_msg",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested",
+      "variants": {
+        "targeted_text_image_nodes": false,
+        "upload_only_text_nodes": false
+      }
+    },
+    {
+      "name": "get_ai_record",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "send_group_ai_record",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "fetch_ptt_text",
+      "implemented": true,
+      "available": false,
+      "verification": "offline-tested"
+    },
+    {
+      "name": "_get_model_show",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference synthesizes model variants; no verified QQ model query is available."
+    },
+    {
+      "name": "_set_model_show",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference returns success without changing a QQ model."
+    },
+    {
+      "name": ".get_word_slices",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference does not implement word segmentation."
+    },
+    {
+      "name": "bot_exit",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "An account-scoped persistent shutdown contract is required by the multi-account manager."
+    },
+    {
+      "name": "check_url_safely",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference returns a constant safety level without checking a URL."
+    },
+    {
+      "name": "create_collection",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference does not implement collection creation."
+    },
+    {
+      "name": "get_clientkey",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Raw QQ authentication material is not exposed by the public adapter."
+    },
+    {
+      "name": "get_msg_emoji_likes",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "No verified complete message reaction summary or last reaction time is available; per-emoji paging is separate."
+    },
+    {
+      "name": "nc_get_packet_status",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Reference returns null without packet statistics."
+    },
+    {
+      "name": "request_decrypt_key",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Raw protocol decryption keys are not exposed by the public adapter."
+    },
+    {
+      "name": "send_packet",
+      "implemented": false,
+      "available": false,
+      "verification": "unsupported",
+      "reason": "Caller-selected raw SSO requests are not exposed; only fixed business protocols are supported."
     }
   ],
   "segments": [

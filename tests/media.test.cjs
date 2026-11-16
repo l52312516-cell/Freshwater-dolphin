@@ -317,6 +317,32 @@ test('local file uploads remain within the account root and return only confirme
     assert.equal(unknown.retcode, 1504); assert.equal(sends, 2);
 });
 
+test('file upload success requires a real resource ID and an incomplete confirmed receipt never returns null or retries', async t => {
+    const { root } = fixture(t); fs.writeFileSync(path.join(root, 'actual.txt'), 'actual file bytes');
+    const state = { ready: true, online: true, epoch: 'file-resource-epoch', self: { uin: '123', uid: 'u_self' }, capabilities: { file: true } };
+    let resourceId, sends = 0, mappings = 0;
+    const service = new OneBotService({ mediaDirectory: root, store: { remember: () => ({ id: ++mappings }) }, backend: { async call(method, params) {
+        if (method === 'status') return state;
+        if (method === 'resolve') return { uin: params.uin, uid: 'u_destination' };
+        if (method === 'prepareMedia') return { elementType: 3, fileElement: { fileName: 'actual.txt' } };
+        assert.equal(method, 'sendMessage'); sends++;
+        return { ...params.peer, msgId: String(1000 + sends), senderUin: '123', senderUid: 'u_self', sendStatus: 2,
+            elements: [{ elementType: 3, fileElement: { fileName: 'actual.txt', ...(resourceId === undefined ? {} : { fileUuid: resourceId }) } }] };
+    } } });
+    for (const action of ['upload_group_file', 'upload_private_file']) {
+        const params = { [action === 'upload_group_file' ? 'group_id' : 'user_id']: 200, file: 'actual.txt' };
+        for (resourceId of [undefined, null, '', '  ', 7, 'x\n', 'x'.repeat(1025)]) {
+            const before = sends, result = await service.action({ action, params });
+            assert.equal(result.retcode, 1500); assert.equal(result.data, null); assert.equal(sends, before + 1);
+            assert.match(result.message, /no exact resource ID.*not retried/);
+        }
+        resourceId = 'actual-native-file-resource';
+        const value = await service.action({ action, params }); assert.equal(value.retcode, 0);
+        assert.equal(value.data.file_id, resourceId); assert.ok(value.data.message_id > 0);
+    }
+    assert.equal(mappings, sends);
+});
+
 test('media actions use one longer deadline and pass only its remaining budget to QQ', async t => {
     const { root } = fixture(t);
     const state = { ready: true, epoch: 'epoch', self: { uin: '123', uid: 'u_123' }, capabilities: { image: true, file: true } };

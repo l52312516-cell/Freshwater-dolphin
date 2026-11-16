@@ -4,6 +4,26 @@ const assert = require('node:assert/strict');
 const { createAccountQueries } = require('../src/qq/account-queries.cjs');
 const { OneBotService } = require('../src/onebot/service.cjs');
 
+test('fetch_emoji_like retains native profile fields and an account-bound buffered opaque cookie', async () => {
+    const f = fixture();
+    const first = await f.service.action({ action: 'fetch_emoji_like', params: { message_id: 1, emojiId: '76', count: 1 } });
+    assert.equal(first.retcode, 0, JSON.stringify(first));
+    assert.deepEqual(first.data.emojiLikesList, [{ tinyId: '20000', nickName: 'person-0', headUrl: '' }]);
+    assert.equal(first.data.isFirstPage, true); assert.equal(first.data.isLastPage, false);
+    assert.match(first.data.cookie, /^eq1\./); assert.equal(first.data.cookie.includes('PRIVATE-NATIVE'), false);
+    const next = await f.service.action({ action: 'fetch_emoji_like', params: { message_id: 1, emojiId: '76', count: 2, cookie: first.data.cookie } });
+    assert.equal(next.retcode, 0, JSON.stringify(next));
+    assert.deepEqual(next.data.emojiLikesList.map(row => row.tinyId), ['20001', '20002']);
+    assert.equal(next.data.isFirstPage, false); assert.equal(next.data.isLastPage, true); assert.equal(next.data.cookie, '');
+    const calls = f.calls.length;
+    for (const params of [{ message_id: 1, emojiId: '76', cookie: '1' }, { message_id: 1, emojiId: '76', count: -1 },
+        { message_id: 1, emojiId: '76', self_id: 99999 }, { message_id: 1, emojiId: '76', count: null },
+        { message_id: 1, emojiId: '76', cookie: null }]) {
+        assert.notEqual((await f.service.action({ action: 'fetch_emoji_like', params })).retcode, 0);
+    }
+    assert.equal(f.calls.length, calls);
+});
+
 function fixture() {
     const calls = [], logs = [], record = { chatType: 2, peerUid: '54321', msgId: '18446744073709551000', msgSeq: '18446744073709551001' },
         profile = { uid: 'u_self', time: '1234567890', favoriteInfo: { userInfos: [], total_count: 3, last_time: 2, today_count: 1 },

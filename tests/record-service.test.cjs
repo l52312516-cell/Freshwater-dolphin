@@ -105,7 +105,18 @@ test('configured media deadline is shared across preparation and sending without
     const prepare = f.calls.find(call => call.method === 'prepareMedia'), send = f.calls.find(call => call.method === 'sendMessage');
     assert.ok(prepare.timeoutMs > 25 && prepare.timeoutMs <= 1000);
     assert.ok(send.timeoutMs < prepare.timeoutMs - 30 && send.timeoutMs > 0);
-    assert.ok(send.params.timeoutMs <= send.timeoutMs + 2);
+    assert.ok(send.params.timeoutMs <= send.timeoutMs);
+});
+
+test('authorization latency cannot leave the kernel a longer send budget than its remaining RPC', async t => {
+    const f = fixture(t);
+    f.service.authorizeSession = async () => { await pause(30); return true; };
+    await f.service.deadlines.run(Date.now() + 1000, () => f.service.sessionCall(f.state, 'sendMessage', {
+        peer: { chatType: 2, peerUid: '200' }, elements: [], timeoutMs: 1000
+    }));
+    const sent = f.calls.find(call => call.method === 'sendMessage');
+    assert.ok(sent.timeoutMs <= 950 && sent.timeoutMs > 0);
+    assert.equal(sent.params.timeoutMs, sent.timeoutMs);
 });
 
 test('complete mixed voice input is validated before any native preparation or sending', async t => {
