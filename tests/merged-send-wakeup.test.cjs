@@ -19,7 +19,7 @@ test('a merged root queued before the candidate waiter starts is consumed withou
     const records = new Map();
     const calls = [];
     let mergeArgs, rootEmitted = false, deadlinesAfterMerge = 0;
-    const capture = new Capture({ install: false, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
     capture.ready = true;
     capture.epoch = epoch;
     capture.self = { ...self };

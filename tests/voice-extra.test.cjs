@@ -23,7 +23,11 @@ function fixture(t) {
     };
     let fetcher = async () => new Response(SILK, { headers: { 'content-length': String(SILK.length) } });
     capture.getMessage = async data => { reads.push(data); return read(data); }; capture.receiveMedia = (...args) => receive(...args); capture.invoke = (...args) => invoke(...args);
-    const native = { available: () => true, run: async (_capture, params) => { protocol.prepare(params.operation, params.request); assert.equal(params.op, 'fixedVoiceExtra'); assert.equal(params.expectedEpoch, capture.epoch); assert.equal(params.expectedUin, capture.self.uin); calls.push(params); return respond(params); } };
+    const native = { available: () => true, run: async (_capture, params) => {
+        protocol.prepare(params.operation, params.request); assert.equal(params.op, 'fixedVoiceExtra'); assert.equal(params.expectedEpoch, capture.epoch); assert.equal(params.expectedUin, capture.self.uin);
+        if (params.operation === 'voice.synthesize') { current.msgRandom = params.request.sessionId; current.msgTime = String(Math.floor(Date.now() / 1000)); }
+        calls.push(params); return respond(params);
+    } };
     const api = createVoiceExtra(capture, { native, fetchImpl: (...args) => { downloads.push(args); return fetcher(...args); } });
     const state = { self: capture.self, capabilities: api.capabilities() }, service = { record: async (_state, id, _unused, options) => { assert.equal(id, 7); assert.deepEqual(options, { refresh: true }); return current; },
         sessionCall: (_state, method, data) => { assert.equal(method, 'voiceExtra'); return api.execute({ ...data, expectedEpoch: capture.epoch }); },
@@ -50,12 +54,34 @@ test('AI generate returns source URL only after actual self-message and exact do
     const h = fixture(t); h.fetch(() => new Response(SILK, { status: 302, headers: { location: 'https://evil.example' } })); await assert.rejects(h.action('get_ai_record', ai), { code: 'QUERY_FAILED' });
 });
 
-test('AI known pending polls retain one deduplication session and transport failures are never retried', async t => {
+test('AI generate validates 03-prefixed SILK without changing source bytes or weakening framing', async t => {
+    for (const [bytes, accepted] of [[Buffer.concat([Buffer.from([3]), SILK]), true],
+        [Buffer.concat([Buffer.from([4]), SILK]), false],
+        [Buffer.concat([Buffer.from([3]), SILK.subarray(0, SILK.length - 1)]), false]]) {
+        const f = fixture(t), digest = crypto.createHash('md5').update(bytes).digest('hex');
+        Object.assign(f.current.elements[0].pttElement, { md5HexStr: digest, fileSize: String(bytes.length) });
+        f.reply(params => {
+            if (params.operation !== 'voice.synthesize') return { groupId: params.request.groupId, fileUuid: 'exact_media_uuid', url: 'https://multimedia.nt.qq.com/voice?key=official' };
+            f.capture.bus.emit('sendObservation', { callback: 'onAddSendMsg', records: [f.current] });
+            return { ...params.request, pending: false, node: { ...node(), info: { ...node().info, fileHash: digest, fileSize: bytes.length } } };
+        });
+        f.fetch(() => new Response(bytes, { headers: { 'content-length': String(bytes.length) } }));
+        if (accepted) assert.equal(await f.action('get_ai_record', ai), 'https://multimedia.nt.qq.com/voice?key=official');
+        else await assert.rejects(f.action('get_ai_record', ai), error => {
+            assert.equal(error.code, 'UNSUPPORTED');
+            assert.equal(error.diagnostic.reason, 'media_format_invalid');
+            assert.equal(error.diagnostic.phase, 'media_parse'); return true;
+        });
+        assert.equal(f.calls.filter(value => value.operation === 'voice.synthesize').length, 1);
+        assert.equal(f.downloads.length, 1); assert.equal(f.remembered.length, 0);
+    }
+});
+
+test('AI pending response and transport failures never trigger another synthesis', async t => {
     const f = fixture(t); f.reply(async params => {
-        if (f.calls.length === 1) return { ...params.request, pending: true };
-        f.capture.bus.emit('sent', [f.current]); return { ...params.request, pending: false, node: node() };
+        f.capture.bus.emit('sent', [f.current]); return { ...params.request, pending: true };
     });
-    await f.action('send_group_ai_record', ai); assert.equal(f.calls.length, 2); assert.equal(f.calls[0].request.sessionId, f.calls[1].request.sessionId);
+    await assert.rejects(f.action('send_group_ai_record', ai), { code: 'QUERY_FAILED' }); assert.equal(f.calls.length, 1); assert.equal(f.remembered.length, 0); assert.equal(f.reads.length, 0);
     const g = fixture(t); g.reply(() => { throw Object.assign(new Error('transport lost'), { code: 'QUERY_FAILED' }); });
     await assert.rejects(g.action('send_group_ai_record', ai), { code: 'QUERY_FAILED' }); assert.equal(g.calls.length, 1); assert.equal(g.remembered.length, 0);
 });
@@ -127,14 +153,38 @@ test('Voice closed parameters, session proof and OneBot response identities reje
     await assert.rejects(f.action('send_group_ai_record', ai), { code: 'INVALID_RESPONSE' }); assert.equal(f.remembered.length, 0);
 });
 
-test('QQ 3.2.35-54395 rejects both public and direct synthesis before dispatch while original PTT transcription remains independent', async t => {
+test('QQ 3.2.35-54395 enables AI only with receipt prerequisites while original PTT transcription stays independent', async t => {
     const f = fixture(t); f.capture.qqVersion = '3.2.35-54395';
-    const flags = f.api.capabilities(); assert.equal(flags.aiVoiceGenerate, false); assert.equal(flags.aiVoiceSend, false); assert.equal(flags.pttText, true);
+    const flags = f.api.capabilities(); assert.equal(flags.aiVoiceGenerate, true); assert.equal(flags.aiVoiceSend, true); assert.equal(flags.pttText, true);
     Object.assign(f.state.capabilities, flags);
-    for (const action of ['get_ai_record', 'send_group_ai_record']) await assert.rejects(f.action(action, ai), { code: 'UNSUPPORTED' });
-    for (const operation of ['voice.generate', 'voice.send']) await assert.rejects(f.execute({ operation, groupId: '33333', character: ai.character, text: ai.text, chatType: 1 }), { code: 'UNSUPPORTED' });
-    assert.equal(f.calls.length, 0); assert.equal(f.reads.length, 0); assert.equal(f.downloads.length, 0); assert.equal(f.remembered.length, 0);
+    assert.deepEqual(await f.action('send_group_ai_record', ai), { message_id: 73 }); assert.equal(f.calls.length, 1);
+    const g = fixture(t); g.capture.bus.off = undefined; Object.assign(g.state.capabilities, g.api.capabilities());
+    assert.equal(g.state.capabilities.aiVoiceGenerate, false); assert.equal(g.state.capabilities.aiVoiceSend, false); assert.equal(g.state.capabilities.pttText, true);
+    for (const action of ['get_ai_record', 'send_group_ai_record']) await assert.rejects(g.action(action, ai), { code: 'UNSUPPORTED' });
+    for (const operation of ['voice.generate', 'voice.send']) await assert.rejects(g.execute({ operation, groupId: '33333', character: ai.character, text: ai.text, chatType: 1 }), { code: 'UNSUPPORTED' });
+    assert.equal(g.calls.length, 0); assert.equal(g.reads.length, 0); assert.equal(g.downloads.length, 0); assert.equal(g.remembered.length, 0);
     assert.equal(f.capture.bus.listenerCount('sendObservation'), 0); assert.equal(f.capture.listenerCount('event'), 0);
-    assert.deepEqual(await f.action('fetch_ptt_text', { message_id: 7 }), { text: ' 已识别原始语音 ' });
-    assert.equal(f.translations.length, 1); assert.equal(f.calls.length, 0);
+    assert.deepEqual(await g.action('fetch_ptt_text', { message_id: 7 }), { text: ' 已识别原始语音 ' });
+    assert.equal(g.translations.length, 1); assert.equal(g.calls.length, 0);
+});
+
+test('AI receipt requires the actual request random and a new nonhistory message time', async t => {
+    for (const mutate of [r => { delete r.msgRandom; }, r => { r.msgRandom = 0; }, r => { r.msg_random = 0; },
+        r => { r.msgTime = '1'; }, r => { r.msgTime = String(Math.floor(Date.now() / 1000) + 60); }, r => { r.sourceType = 3; }, r => { r.sendStatus = 1; }]) {
+        const f = fixture(t); f.reply(params => { mutate(f.current); f.capture.bus.emit('sent', [f.current]); return { ...params.request, pending: false, node: node() }; });
+        await assert.rejects(f.execute({ operation: 'voice.send', groupId: '33333', character: 'v', text: 'x' }, { expiresAt: Date.now() + 20 }), { code: 'EXPIRED' });
+        assert.equal(f.calls.length, 1); assert.equal(f.reads.length, 0); assert.equal(f.remembered.length, 0);
+    }
+    const signed = fixture(t); signed.reply(params => {
+        signed.current.msgRandom = Number(BigInt.asIntN(32, BigInt(params.request.sessionId)));
+        signed.capture.bus.emit('sent', [signed.current]); return { ...params.request, pending: false, node: node() };
+    });
+    assert.deepEqual(await signed.action('send_group_ai_record', ai), { message_id: 73 }); assert.equal(signed.calls.length, 1);
+});
+
+test('AI independent readback must preserve random and new-message time', async t => {
+    for (const alter of [r => ({ ...r, msgRandom: 0 }), r => ({ ...r, msgTime: '1' }), r => ({ ...r, msg_random: 0 })]) {
+        const f = fixture(t); f.read(() => alter(f.current)); await assert.rejects(f.action('send_group_ai_record', ai), { code: 'INVALID_RESPONSE' });
+        assert.equal(f.calls.length, 1); assert.equal(f.reads.length, 1); assert.equal(f.remembered.length, 0);
+    }
 });

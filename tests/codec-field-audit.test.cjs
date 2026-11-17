@@ -37,7 +37,7 @@ test('invalid, scalar, array and excessive JSON cards reject the entire native c
 test('native envelopes with conflicting non-null payloads never become truncated text or media', async () => {
     for (const element of [{ ...text('misleading'), arkElement: { bytesData: '{}' } },
         { ...image({}), fileElement: {} }, { ...ark('{}'), grayTipElement: {} }]) {
-        await assert.rejects(codec.fromKernel(receive([element]), { image: async () => resource }), { code: 'UNSUPPORTED' });
+        await assert.rejects(codec.fromKernel(receive([element]), { image: async () => resource }), { code: 'INVALID_RESPONSE' });
     }
     assert.deepEqual(await codec.fromKernel(receive([{ ...text('safe'), arkElement: null, fileElement: null }])),
         [{ type: 'text', data: { text: 'safe' } }]);
@@ -127,7 +127,7 @@ test('all query file fields are validated before resource downloads or identity 
     let calls = 0;
     await assert.rejects(codec.fromKernel(receive([image({}), { elementType: 3, fileElement: valid }, { elementType: 99 }]), {
         queryFiles: true, image: async () => { calls++; return resource; }
-    }), { code: 'UNSUPPORTED' });
+    }), { code: 'INVALID_RESPONSE' });
     assert.equal(calls, 0);
 });
 

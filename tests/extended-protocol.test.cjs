@@ -101,6 +101,59 @@ test('fixed extended actions resolve target UID and require exact confirmed targ
     assert.equal(f.calls.filter(call => call.params.operation === 'group.noticeDelete').length, 2);
 });
 
+test('friend_poke preserves an independent private peer and optional target rather than aliasing target_id', async () => {
+    for (const [extra, target] of [[{}, '22222'], [{ target_id: 22222 }, '22222'], [{ target_id: 11111 }, '11111'], [{ target_id: '33333' }, '33333']]) {
+        const f = fixture();
+        f.overrides.resolve = params => ({ uin: params.uin, uid: params.uin === '11111' ? 'u_self' : 'u_' + params.uin });
+        const result = await f.invoke('friend_poke', { user_id: 22222, ...extra });
+        assert.equal(result.retcode, 0, JSON.stringify(result)); assert.equal(result.data, null);
+        const writes = f.calls.filter(call => call.method === 'extendedAction');
+        assert.equal(writes.length, 1);
+        assert.deepEqual(writes[0].params, { operation: 'message.poke', peer: { chatType: 1, peerUid: 'u_22222' },
+            peerUin: '22222', targetUid: target === '11111' ? 'u_self' : 'u_' + target, targetUin: target, expectedEpoch: 'current-epoch' });
+        assert.deepEqual(f.calls.filter(call => call.method === 'resolve').map(call => call.params.uin), target === '22222' ? ['22222'] : ['22222', target]);
+    }
+});
+
+test('friend_poke validates both IDs before resolving or writing and keeps other poke action parameter boundaries', async () => {
+    const f = fixture();
+    for (const target_id of [null, 0, '', false, true, -1, 1.5, '01', ' 22222', '+22222', '1e3', '4294967296', [], {}, NaN]) {
+        assert.equal((await f.invoke('friend_poke', { user_id: 22222, target_id })).retcode, 1400, String(target_id));
+    }
+    for (const user_id of [null, 0, '', false, '4294967296']) {
+        assert.equal((await f.invoke('friend_poke', { user_id, target_id: 11111 })).retcode, 1400);
+    }
+    for (const [action, params] of [['send_poke', { user_id: 22222, target_id: 11111 }],
+        ['send_poke', { user_id: 22222, group_id: 33333, target_id: 11111 }],
+        ['group_poke', { user_id: 22222, group_id: 33333, target_id: 11111 }],
+        ['friend_poke', { user_id: 22222, group_id: 33333, target_id: 11111 }]]) {
+        assert.equal((await f.invoke(action, params)).retcode, 1400);
+    }
+    assert.equal(f.calls.length, 0);
+});
+
+test('friend_poke rejects conflicting UID mappings or session changes before dispatch and never retries mismatched acknowledgements', async () => {
+    for (const mapping of [uin => ({ uin, uid: 'u_collision' }),
+        uin => ({ uin, uid: uin === '22222' ? 'u_self' : 'u_33333' }),
+        uin => ({ uin, uid: uin === '11111' ? 'u_wrong_self' : 'u_' + uin })]) {
+        const f = fixture(); f.overrides.resolve = params => mapping(params.uin);
+        const target_id = mapping('11111').uid === 'u_wrong_self' ? 11111 : 33333;
+        assert.equal((await f.invoke('friend_poke', { user_id: 22222, target_id })).retcode, 1500);
+        assert.equal(f.calls.filter(call => call.method === 'extendedAction').length, 0);
+    }
+    for (const changeAfter of [1, 2]) {
+        const f = fixture(); let resolves = 0;
+        f.overrides.resolve = params => { if (++resolves === changeAfter) f.state.epoch = 'changed'; return { uin: params.uin, uid: 'u_' + params.uin }; };
+        assert.equal((await f.invoke('friend_poke', { user_id: 22222, target_id: 33333 })).retcode, 1503);
+        assert.equal(f.calls.filter(call => call.method === 'extendedAction').length, 0);
+    }
+    for (const changed of [{ peerUin: '99999' }, { targetUin: '99999' }, { targetUid: 'u_other' }, { peer: { chatType: 1, peerUid: 'u_other' } }]) {
+        const f = fixture(); f.overrides.extendedAction = params => ({ ...params, ...changed, confirmed: true });
+        assert.equal((await f.invoke('friend_poke', { user_id: 22222, target_id: 33333 })).retcode, 1500);
+        assert.equal(f.calls.filter(call => call.method === 'extendedAction').length, 1);
+    }
+});
+
 test('extended queries preserve actual records and reject different group or omitted pagination', async () => {
     const f = fixture();
     assert.deepEqual((await f.invoke('_get_group_notice', { group_id: 12345 })).data, [{ notice_id: 'notice-1', message: { text: 'synthetic' } }]);
@@ -203,4 +256,33 @@ test('additional fixed account and catalog actions retain target identity and re
     assert.deepEqual((await f.invoke('get_system_face', { face_id: '1' })).data, { id: '1' });
     f.overrides.extendedQuery = params => ({ ...params, faceId: '99999', face: {} });
     assert.equal((await f.invoke('get_system_face', { face_id: '1' })).retcode, 1500);
+});
+
+test('online status keeps the reference defaults and rejects zero before any backend action', async () => {
+    const f = fixture();
+    assert.equal((await f.invoke('set_online_status', { status: 10 })).retcode, 0);
+    assert.deepEqual(f.calls.at(-1).params, { operation: 'self.status', status: 10, extStatus: 0, batteryStatus: 100, expectedEpoch: f.state.epoch });
+    assert.equal((await f.invoke('set_online_status', { status: '11', battery_status: 0 })).retcode, 0);
+    assert.equal(f.calls.at(-1).params.batteryStatus, 0);
+    const before = f.calls.length;
+    for (const status of [0, '0', undefined]) assert.equal((await f.invoke('set_online_status', { status })).retcode, 1400);
+    for (const params of [{ battery_status: null }, { ext_status: null }]) {
+        assert.equal((await f.invoke('set_online_status', { status: 10, ...params })).retcode, 1400);
+    }
+    assert.equal(f.calls.length, before);
+    f.overrides.extendedAction = params => ({ ...params, confirmed: true, batteryStatus: 0 });
+    assert.equal((await f.invoke('set_online_status', { status: 10 })).retcode, 1500);
+});
+
+test('special title defaults only when absent and rejects null before resolving or writing', async () => {
+    const f = fixture();
+    for (const params of [{}, { special_title: '' }]) {
+        assert.equal((await f.invoke('set_group_special_title', { group_id: 12345, user_id: 22222, ...params })).retcode, 0);
+        assert.equal(f.calls.at(-1).params.title, '');
+    }
+    const before = f.calls.length;
+    for (const special_title of [null, false, 0, [], {}]) {
+        assert.equal((await f.invoke('set_group_special_title', { group_id: 12345, user_id: 22222, special_title })).retcode, 1400);
+    }
+    assert.equal(f.calls.length, before);
 });

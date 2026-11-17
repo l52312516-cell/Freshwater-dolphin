@@ -11,7 +11,7 @@ const { runCustomFace } = require('../src/onebot/custom-face-actions.cjs');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const md5 = crypto.createHash('md5').update(PNG).digest('hex');
 const A = '12345_0_0_0_' + md5.toUpperCase() + '_0_0', B = '12345_0_0_0_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB_0_0';
-function fixture(t, initial = [A, B]) {
+function fixture(t, initial = [A, B], options = {}) {
     const temp = path.resolve(__dirname, '../work/temp'); fs.mkdirSync(temp, { recursive: true });
     const directory = fs.mkdtempSync(path.join(temp, 'custom-face-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -29,19 +29,25 @@ function fixture(t, initial = [A, B]) {
         if (request.operation === 'face.delete') state.ids = state.ids.filter(id => id !== data.emojiId);
         if (request.operation === 'face.modify') state.descriptions.set(data.emojiId, data.desc);
         if (request.operation === 'face.reorder') state.ids = [...data.ids];
-        if (request.operation === 'face.uploadSession') return { servers: [{ host: '42.81.1.9', port: 80 }] };
+        if (request.operation === 'face.uploadSession') return { servers: [{ host: '42.81.1.9', port: options.uploadPort ?? 80 }] };
         if (request.operation === 'face.uploadTicket') return { token: Buffer.alloc(128, 1) };
         return { ...data, acknowledged: true };
     } };
+    const responseAt = (bytes, url) => {
+        const response = new Response(bytes, { status: options.httpStatus ?? 200 });
+        Object.defineProperty(response, 'url', { value: options.responseUrl ? options.responseUrl(url) : new Request(url).url });
+        if (options.redirected) Object.defineProperty(response, 'redirected', { value: true });
+        return response;
+    };
     const api = createCustomFace(capture, { native, fetchImpl: async (url, request) => {
         state.requests.push({ url, request });
-        if (url.startsWith('https://p.qpic.cn/qq_expression/')) return new Response(PNG);
+        if (url.startsWith('https://p.qpic.cn/qq_expression/')) return responseAt(PNG, url);
         const body = request.body, head = p.fields(body.subarray(9, 9 + body.readUInt32BE(1))), identity = p.fields(p.one(head, 3).value);
         const emojiId = p.one(identity, 1).value.toString();
         if (state.upload) state.ids.push(emojiId);
         const size = body.readUInt32BE(5), ackHead = p.messageField(2, [p.varintField(2, size), p.varintField(3, 0), p.varintField(4, size), p.varintField(5, 0)]);
         const prefix = Buffer.alloc(9); prefix[0] = 0x28; prefix.writeUInt32BE(ackHead.length, 1);
-        return new Response(Buffer.concat([prefix, ackHead, Buffer.from([0x29])]));
+        return responseAt(Buffer.concat([prefix, ackHead, Buffer.from([0x29])]), url);
     } });
     const context = () => ({ expiresAt: Date.now() + 1000 });
     return { state, capture, api, query: data => api.query({ ...data, expectedEpoch: capture.epoch }, context()), action: data => api.action({ ...data, expectedEpoch: capture.epoch }, context()) };
@@ -76,7 +82,7 @@ test('add uploads actual controlled image bytes once and confirms catalog identi
     const f = fixture(t, []), input = 'base64://' + PNG.toString('base64');
     const result = await f.action({ operation: 'face.add', file: input });
     assert.equal(result.emojiId, A); assert.equal(result.confirmation, 'catalog_readback'); assert.equal(f.state.requests.length, 1);
-    const upload = f.state.requests[0]; assert.equal(upload.url, 'http://42.81.1.9:80/cgi-bin/httpconn?htcmd=0x6FF0087&uin=12345');
+    const upload = f.state.requests[0]; assert.equal(upload.url, 'http://42.81.1.9/cgi-bin/httpconn?htcmd=0x6FF0087&uin=12345');
     assert.equal(upload.request.redirect, 'manual'); assert.deepEqual(upload.request.body.subarray(9 + upload.request.body.readUInt32BE(1), -1), PNG);
     assert.equal((await f.action({ operation: 'face.add', file: input })).alreadyPresent, true); assert.equal(f.state.requests.length, 1);
     for (const file of ['C:/outside.png', 'file:///outside.png', 'https://evil.example/a.png', 'base64://AAAA']) await assert.rejects(f.action({ operation: 'face.add', file }));
@@ -91,6 +97,41 @@ test('saved custom face preparation downloads only the account URL, verifies dig
     const before = f.state.requests.length;
     await assert.rejects(f.query({ operation: 'face.prepare', emojiId: 'C'.repeat(32) }), { code: 'NOT_FOUND' });
     assert.equal(f.state.requests.length, before);
+});
+
+test('custom face requests bind canonical default ports and retain nondefault upload ports', async t => {
+    for (const port of [80, 8080]) {
+        const f = fixture(t, [], { uploadPort: port });
+        const result = await f.action({ operation: 'face.add', file: 'base64://' + PNG.toString('base64') });
+        assert.equal(result.confirmation, 'catalog_readback');
+        assert.equal(f.state.requests.length, 1);
+        const target = new URL(f.state.requests[0].url);
+        assert.equal(target.port, port === 80 ? '' : '8080');
+        assert.equal(f.state.requests[0].request.redirect, 'manual');
+    }
+    const image = fixture(t, [A], { responseUrl: url => {
+        const explicitDefaultPort = url.replace('https://p.qpic.cn/', 'https://p.qpic.cn:443/');
+        // A real Fetch response uses the canonical URL even if :443 was explicit.
+        return new Request(explicitDefaultPort).url;
+    } });
+    assert.equal((await image.query({ operation: 'face.prepare', emojiId: A })).emojiId, A);
+    assert.equal(new URL(image.state.requests[0].url).port, '');
+});
+
+test('canonical custom face URLs still reject redirects, changed hosts, paths, ports, queries and non200 status', async t => {
+    const changed = [url => url.replace('http:', 'https:'), url => url.replace('42.81.1.9', '42.81.1.10'), url => url.replace('/cgi-bin/httpconn', '/other'),
+        url => url.replace('http://42.81.1.9/', 'http://42.81.1.9:8080/'), url => url.replace('uin=12345', 'uin=54321')];
+    for (const responseUrl of changed) {
+        const f = fixture(t, [], { responseUrl });
+        await assert.rejects(f.action({ operation: 'face.add', file: 'base64://' + PNG.toString('base64') }), { code: 'QUERY_FAILED' });
+        assert.equal(f.state.requests.length, 1);
+        assert.equal(f.state.calls.filter(c => c.operation === 'face.list').length, 1);
+    }
+    for (const options of [{ redirected: true }, { httpStatus: 201 }]) {
+        const f = fixture(t, [], options);
+        await assert.rejects(f.action({ operation: 'face.add', file: 'base64://' + PNG.toString('base64') }), { code: 'QUERY_FAILED' });
+        assert.equal(f.state.requests.length, 1);
+    }
 });
 
 test('custom face operations bind full session and retain unresolved physical mutation locks after caller timeout', async t => {

@@ -45,14 +45,16 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-PACKAGE="$ROOT/work/cache/downloads/QQ.deb"
-CHECKSUM="$ROOT/work/cache/downloads/QQ.sha256"
-[[ -f "$PACKAGE" && -f "$CHECKSUM" && ! -L "$PACKAGE" && ! -L "$CHECKSUM" ]] || { echo 'Provide the shared official QQ.deb and independent SHA256 first' >&2; exit 1; }
-EXPECTED="$(awk 'NR==1 {print $1}' "$CHECKSUM")"
-[[ "$EXPECTED" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'QQ.sha256 must start with the expected SHA256' >&2; exit 1; }
-printf '%s  %s\n' "$EXPECTED" "$PACKAGE" | sha256sum --check --status - || { echo 'QQ package SHA256 mismatch' >&2; exit 1; }
-[[ "$(dpkg-deb --field "$PACKAGE" Architecture)" == amd64 && "$(dpkg-deb --field "$PACKAGE" Version)" == 3.2.35-54395 ]] || { echo 'Only Linux amd64 QQ 3.2.35-54395 is verified' >&2; exit 1; }
-export FWD_QQ_VERSION=3.2.35-54395
+RUNTIME_DATA="$(node tools/qq-runtime-entry.cjs --select "$FWD_CONFIG")"
+mapfile -t RUNTIME_FIELDS <<< "$RUNTIME_DATA"
+[[ "${#RUNTIME_FIELDS[@]}" == 7 ]] || { echo 'Invalid QQ runtime preflight output' >&2; exit 1; }
+PACKAGE="${RUNTIME_FIELDS[0]}"
+EXPECTED="${RUNTIME_FIELDS[1]}"
+export FWD_QQ_VERSION="${RUNTIME_FIELDS[2]}" FWD_QQ_PROFILE_ID="${RUNTIME_FIELDS[3]}"
+export FWD_QQ_PACKAGE_ID="${RUNTIME_FIELDS[4]}" FWD_QQ_EXPERIMENTAL="${RUNTIME_FIELDS[5]}"
+export FWD_QQ_PACKAGE_SHA256="$EXPECTED"
+[[ "$FWD_QQ_PACKAGE_ID" != - ]] || export FWD_QQ_PACKAGE_ID=''
+[[ "${RUNTIME_FIELDS[6]}" == - ]] || export FWD_QQ_EXPECTED_WRAPPER_SHA256="${RUNTIME_FIELDS[6]}"
 MARKER="$ACCOUNT/qq-root/.freshwater-deb.sha256"
 if [[ -f "$MARKER" && ! -L "$MARKER" ]]; then
     [[ "$(cat "$MARKER")" == "${EXPECTED,,}" ]] || { echo 'Account QQ package differs; preserve state and explicitly migrate it' >&2; exit 1; }
@@ -61,6 +63,8 @@ else
     dpkg-deb --extract "$PACKAGE" "$ACCOUNT/qq-root"
     printf '%s\n' "${EXPECTED,,}" >"$MARKER"
 fi
+FWD_QQ_WRAPPER_SHA256="$(node tools/qq-runtime-entry.cjs --verify-wrapper "$ACCOUNT/qq-root")"
+export FWD_QQ_WRAPPER_SHA256
 QQ="$ACCOUNT/qq-root/opt/QQ/qq"
 [[ -x "$QQ" ]] || { echo 'Account QQ executable is missing' >&2; exit 1; }
 if [[ "${FWD_BRIDGE_ENABLED:-1}" == 0 ]]; then

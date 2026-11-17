@@ -6,7 +6,7 @@ const { Capture } = require('../src/qq/capture.cjs');
 const { OneBotService } = require('../src/onebot/service.cjs');
 
 function fixture(t, account = '12345') {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.ready = true; capture.online = true; capture.qqVersion = '3.2.35-54395';
     capture.epoch = 'group-files-' + account; capture.self = { uin: account, uid: 'u_' + account };
     capture.registrations.push({ name: 'msg', service: {}, remove: 'none' });

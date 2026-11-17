@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { fault } = require('../errors.cjs');
+const { annotate } = require('../diagnostics.cjs');
 const { VERSION, METHODS, cancellable, privateDirectory, readJson, writeJson, remove } = require('./common.cjs');
 
 class RpcClient {
@@ -44,7 +45,7 @@ class RpcClient {
                 catch (error) { if (error.code !== 'ENOENT') throw error; }
                 if (value !== undefined) {
                     if (value.version !== VERSION || value.id !== id || typeof value.ok !== 'boolean') throw fault('INVALID_RESPONSE', 'Invalid RPC response');
-                    if (!value.ok) throw fault(value.error?.code || 'KERNEL_ERROR', value.error?.message || 'Kernel request failed');
+                    if (!value.ok) throw annotate(fault(value.error?.code || 'KERNEL_ERROR', value.error?.message || 'Kernel request failed'), value.error?.diagnostic);
                     return value.result;
                 }
                 await new Promise(resolve => setTimeout(resolve, 20));

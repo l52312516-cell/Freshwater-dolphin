@@ -1,12 +1,19 @@
 'use strict';
 
 const codec = require('./codec.cjs');
+const { isPartial } = require('./message-compat.cjs');
+const { annotate } = require('../diagnostics.cjs');
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'INVALID_REQUEST' }); }
 
 async function executeQuickOperation(event, operation, invoke) {
     if (!event || typeof event !== 'object' || Array.isArray(event) || !operation || typeof operation !== 'object' || Array.isArray(operation)) {
         throw invalid('Quick operation requires event and operation objects');
+    }
+    if (isPartial(event) && (operation.delete === true || operation.kick === true || operation.ban === true ||
+        event.post_type === 'request' && operation.approve !== undefined)) {
+        throw annotate(Object.assign(new Error('Quick operations require complete original message content'), { code: 'UNSUPPORTED' }),
+            { reason: 'partial_quick_operation', phase: 'quick_operation' });
     }
     for (const key of ['auto_escape', 'at_sender', 'delete', 'kick', 'ban', 'approve', 'reject_add_request']) {
         if (operation[key] !== undefined && typeof operation[key] !== 'boolean') throw invalid(key + ' must be boolean');

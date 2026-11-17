@@ -2,12 +2,12 @@
 
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
+const { setTimeout: delay } = require('node:timers/promises');
 const protocol = require('./flash-transfer-protocol.cjs');
 const media = require('./media.cjs');
 const { createFlashRecovery } = require('./flash-recovery.cjs');
 const { createFlashDelete } = require('./flash-delete.cjs');
 const MAX_FILE_BYTES = 1024 * 1024, MAX_FILES = 8;
-const UNVERIFIED_CREATE_VERSIONS = new Set(['3.2.35-54395']);
 const OPERATIONS = Object.freeze({ list: [], detail: ['filesetId'], metadata: ['filesetId'], share: ['filesetId'],
     download: ['filesetId', 'fileIndex', 'fileName'], resolve: ['shareCode'], delete: ['filesetId'], rename: ['filesetId', 'name'],
     send: ['filesetId', 'userId', 'groupId'], create: ['files', 'name', 'thumbnail'] });
@@ -105,12 +105,11 @@ function createFlashTransfer(capture, options = {}) {
         const msf = native.available(), http = typeof fetchImpl === 'function';
         return { flashRead: msf, flashDownload: msf, flashResolve: msf && http, flashWrite: msf,
             flashDelete: msf && nativeDelete.available(),
-            flashCreate: msf && http && typeof capture.mediaDirectory === 'string' && !UNVERIFIED_CREATE_VERSIONS.has(capture.qqVersion) };
+            flashCreate: msf && http && typeof capture.mediaDirectory === 'string' };
     }
     async function execute(params, callerContext = {}) {
         const input = request(params); capture.ensureReady(); synchronize();
         if (params.expectedEpoch !== capture.epoch) fail('SESSION_CHANGED', 'Flash operation must bind the current QQ session');
-        if (input.operation === 'create' && UNVERIFIED_CREATE_VERSIONS.has(capture.qqVersion)) fail('UNSUPPORTED', 'Flash creation completion is not verified on this QQ version');
         if (input.operation === 'delete' && !nativeDelete.available()) fail('UNSUPPORTED', 'QQ lacks verified flash history deletion');
         if (!native.available() || ['create', 'resolve'].includes(input.operation) && typeof fetchImpl !== 'function') fail('UNSUPPORTED', 'This session lacks the fixed flash transfer channel');
         if (input.operation === 'create' && typeof capture.mediaDirectory !== 'string') fail('UNSUPPORTED', 'Flash upload needs an account media directory');
@@ -224,11 +223,13 @@ function createFlashTransfer(capture, options = {}) {
                         ...(item.thumbType ? { thumbType: item.thumbType } : {}) };
                     const prepared = await call('prepare', data);
                     if (prepared.filesetId !== id || prepared.fileUuid !== item.fileUuid || prepared.uploadKey !== null && !/^[A-Za-z0-9_-]{1,8192}$/.test(prepared.uploadKey)) fail('INVALID_RESPONSE', 'QQ returned another flash upload credential');
-                    const appid = item.thumbType === 'png' ? 14903 : 14902;
-                    const fileId = protocol.buildFileId(sha1, item.size, appid);
-                    const confirmed = await call('apply', { ...data, fileId, md5: crypto.createHash('md5').update(item.bytes).digest('hex') });
+                    const grant = protocol.uploadGrant(prepared);
+                    // Preserve the server grant. A slice ACK must precede commit;
+                    // no missing token may be replaced with a local file ID.
+                    await upload({ item, uploadKey: prepared.uploadKey });
+                    const confirmed = await call('apply', { ...data, fileId: grant.token, time: grant.time, ttl: grant.ttl, md5: crypto.createHash('md5').update(item.bytes).digest('hex') });
                     acknowledged(confirmed, id); if (confirmed.fileUuid !== item.fileUuid) fail('INVALID_RESPONSE', 'QQ registered another flash file');
-                    return { item, uploadKey: prepared.uploadKey, fileId };
+                    return { item, fileId: grant.token };
                 }
                 async function upload(registered) {
                     if (registered.uploadKey === null) return;
@@ -240,17 +241,31 @@ function createFlashTransfer(capture, options = {}) {
                 }
                 const registered = []; for (const item of items) registered.push(await register(item));
                 advance('registered');
-                for (const item of registered) await upload(item);
-                for (const item of covers) await upload(await register(item));
+                for (const item of covers) await register(item);
                 advance('uploaded');
                 acknowledged(await call('ready', { filesetId: id }), id);
                 advance('ready');
                 // Confirm main file IDs and exact metadata, not just task acceptance.
-                const observed = await metadata(id);
-                if (observed.items.length !== items.length || items.some((item, index) => {
-                    const actual = observed.items.find(row => row.fileIndex === item.fileIndex);
-                    return !actual || actual.fileUuid !== item.fileUuid || actual.name !== item.name || String(actual.size) !== String(item.size) || actual.fileId !== registered[index].fileId;
-                })) fail('INVALID_RESPONSE', 'QQ did not read back every uploaded main file');
+                let confirmed = false;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const observed = await metadata(id), seen = new Set();
+                    for (const actual of observed.items) {
+                        const index = items.findIndex(item => item.fileIndex === actual.fileIndex), item = items[index];
+                        if (!item || seen.has(actual.fileIndex) || actual.fileUuid !== item.fileUuid || actual.name !== item.name ||
+                            String(actual.size) !== String(item.size) || actual.fileId !== undefined && actual.fileId !== registered[index].fileId)
+                            fail('INVALID_RESPONSE', 'QQ returned conflicting uploaded main file metadata');
+                        seen.add(actual.fileIndex);
+                    }
+                    confirmed = observed.items.length === items.length && observed.items.every(actual => actual.fileId !== undefined);
+                    if (confirmed) break;
+                    if (attempt < 2) {
+                        // Only metadata may lag. Never replay a dispatched write.
+                        try { await delay(1000, undefined, { signal: context.signal }); }
+                        catch (error) { active(); throw error; }
+                        active();
+                    }
+                }
+                if (!confirmed) fail('INVALID_RESPONSE', 'QQ did not read back every uploaded main file');
                 advance('confirmed'); created.add(id);
                 result = { filesetId: id, confirmed: true, confirmation: 'upload_ack_and_metadata_readback', fileCount: items.length };
                 } catch (error) {

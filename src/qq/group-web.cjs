@@ -157,7 +157,7 @@ function createGroupWeb(capture, { fetchImpl = globalThis.fetch } = {}) {
             form = { qid: data.groupId, ft: '23', s: data.page ? String(data.page) : '-1', n: String(data.count ?? 20), i: '1', ni: '1' };
         } else if (operation === 'group.noticePublish') {
             url = 'https://web.qun.qq.com/cgi-bin/announce/add_qun_notice';
-            form = { qid: data.groupId, text: data.content, pinned: '0', type: '1', settings: JSON.stringify({ is_show_edit_card: 1, tip_window_type: 1, confirm_required: 0 }) };
+            form = { qid: data.groupId, text: data.content, pinned: '0', type: '1', settings: JSON.stringify({ is_show_edit_card: 1, tip_window_type: 1, confirm_required: 1 }) };
         } else if (operation === 'group.noticeDelete') { url = 'https://web.qun.qq.com/cgi-bin/announce/del_feed'; form = { qid: data.groupId, fid: data.noticeId }; }
         else if (operation === 'group.essenceList') url = 'https://qun.qq.com/cgi-bin/group_digest/digest_list?' + new URLSearchParams({ group_code: data.groupId, page_start: String(data.start ?? 0), page_limit: String(data.count ?? 50), bkn: auth.urlKey });
         else if (operation === 'group.honor') {

@@ -121,7 +121,7 @@ test('fixed methods reject unknown versions and arbitrary execution', async () =
 
 test('removed QR RPCs stay unavailable and capture does not access the official login service', async () => {
   let loginAccesses = 0;
-  const capture = new Capture({ install: false });
+  const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
   try {
     const exports = {};
     Object.defineProperty(exports, 'NodeIKernelLoginService', { get() { loginAccesses++; throw new Error('Login service must remain untouched'); } });
@@ -355,17 +355,44 @@ test('bounded status diagnostics survive unavailable console logging and never e
   assert.equal(f.capture.state().sendDiagnostics.length, 1); assert.equal(f.capture.state().sendDiagnostics[0].phase, 'confirmation');
 });
 
+test('a send deadline exhausted before its first operation expires without native submission or diagnostics', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let clock = 1800000000000;
+  t.mock.method(Date, 'now', () => clock);
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let sends = 0;
+  f.msg.sendMsg = () => { sends++; assert.fail('An expired request must not submit a native message'); };
+  const task = correlatedSend(f, 25), rejected = assert.rejects(task, { code: 'EXPIRED' });
+  // Model a scheduling pause after the deadline is established but before its
+  // first Promise microtask runs, without first executing the timeout timer.
+  clock += 25;
+  await rejected;
+  assert.equal(sends, 0); assert.deepEqual(f.capture.state().sendDiagnostics, []);
+  assert.equal(f.capture.pending.size, 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
+});
+
 test('status diagnostics preserve pending acceptance and ignore its late settlement', async t => {
-  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let release;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1800000000000 });
+  const f = fixture(); t.after(() => f.capture.close()); f.init()(); let release, entered, sends = 0, settled = false;
+  const nativePending = new Promise(resolve => { entered = resolve; });
   f.msg.sendMsg = (_zero, peer) => {
+    sends++;
     f.listeners.msg.onMsgInfoListUpdate([earlyOwn(peer)]);
-    return new Promise(resolve => { release = resolve; });
+    return new Promise(resolve => { release = resolve; entered(); });
   };
-  await assert.rejects(correlatedSend(f, 25), { code: 'TIMEOUT' });
+  const task = correlatedSend(f, 25), rejected = assert.rejects(task, { code: 'TIMEOUT' });
+  task.then(() => { settled = true; }, () => { settled = true; });
+  await nativePending;
+  const pending = f.capture.state().sendDiagnostics[0];
+  assert.equal(pending.dispatched, true); assert.equal(pending.phase, 'confirmation');
+  assert.equal(pending.acceptance, 'pending'); assert.equal(pending.acceptanceThenable, true); assert.equal(pending.pinned, true);
+  t.mock.timers.tick(24); await Promise.resolve();
+  assert.equal(settled, false); assert.equal(f.capture.state().sendDiagnostics[0].outcome, 'pending');
+  t.mock.timers.tick(1); await rejected;
   const before = f.capture.state().sendDiagnostics;
   assert.equal(before[0].acceptance, 'pending'); assert.equal(before[0].outcome, 'timeout'); assert.equal(before[0].pinned, true);
   release({ result: 0 }); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(f.capture.state().sendDiagnostics, before);
+  assert.equal(sends, 1); assert.equal(f.capture.pending.size, 0); assert.equal(f.capture.bus.listenerCount('sendObservation'), 0);
 });
 
 test('a pinned exact readback proves delivery while the native acceptance Promise is pending', async t => {

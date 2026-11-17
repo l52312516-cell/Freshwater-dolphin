@@ -7,7 +7,7 @@ const { createGroupFiles } = require('../src/qq/group-files.cjs');
 const { ACTIONS, ACTION_REQUIREMENTS, runGroupFiles } = require('../src/onebot/group-files.cjs');
 
 function fixture(t) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     t.after(() => capture.close());
     capture.ready = true; capture.qqVersion = '3.2.35-54395'; capture.epoch = 'management-session';
     capture.self = { uid: 'u_self', uin: '12345' };

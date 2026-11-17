@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `translate_en2zh` | `words`：1–50 个非空字符串，总计最多 16 KiB，单项最多 4 KiB | 固定 `0x990_2` 英译中，返回 `{words:[...]}`；结果数量与原词一一匹配。服务返回原词或语言标识时逐项核对，翻译业务失败不当作空列表。 |
 | `get_unidirectional_friend_list` | 无 | 专用 `MQUpdateSvc_com_qq_ti.web.OidbSvc.0xe17_0` JSON 契约，返回单向好友数组。请求与参考契约相同，固定读取首屏最多 99 条；不宣称完整账号清单，尚无经过核实的后续分页契约。只输出服务实际给出的 `uin/uid/nick_name/age/source`，不编造缺失年龄或来源。 |
-| `set_input_status` | `user_id`；可省 `event_type`，默认 `0` | 核对 UIN→UID 后执行固定 `0xcd4_1` 私聊输入状态；成功返回 `{}`。事件类型为 uint32，零值保留。成功仅证明服务确认操作，不能证明对方界面已经显示。 |
+| `set_input_status` | `user_id`；可省 `event_type`，默认 `0` | 核对 UIN→UID 后，派发前检查当前 QQ 是否有 `sendShowInputStatusReq`：存在且事件值在 `0..0x7fffffff` 时，以私聊类型 `1`、原事件值、精确 UID 调用；方法不存在或事件值超出 int32 时使用可用的固定 `0xcd4_1`，否则明确不支持。原生方法必须明确返回数值 `result=0`，附带错误码也必须为 `0`；成功返回 `{}`。公共事件类型仍为 uint32，零值和高位值保留，不传原生方法导致 int32 截断。成功仅证明服务或原生方法确认操作，不能证明对方界面已经显示。 |
 | `_mark_all_as_read` | 无 | 调用当前 QQ 的 `setAllC2CAndGroupMsgRead()`，仅明确 `result=0` 时返回 `null`；void、缺少状态或非零状态均失败。会影响当前账号全部私聊与群聊的已读状态。 |
 | `get_doubt_friends_add_request` | 可省 `count`，默认 `50`，范围 1–100 | 独立 `0xd69_0` 过滤好友申请收件箱，不是普通好友申请的子集。返回本屏数组，`reqTime` 保持精确字符串；Linux 数字账号与 UID 两类响应均识别，再核对另一种真实身份。 |
 | `set_doubt_friends_add_request` | `flag`；可省布尔 `approve`，默认 `true` | 仅接受上项返回的本账号、本会话短期 opaque flag。派发前重新读取过滤收件箱、核对同一申请人与时间。批准使用 `0xd72_0`，拒绝使用 `0xd69_0` 的删除操作，成功返回 `null`。 |
@@ -18,5 +18,7 @@
 过滤好友 `flag` 有效期十分钟、工作进程重启或会话切换后失效；未取得可核实申请时间时返回 `flag:null`，该项不能通过本接口审批。它与普通好友请求 flag 分开，不能传入任意 UIN/UID 替代。一个 flag 派发一次后不允许再次审批；超时不能证明服务未执行，不自动重试，也不因重新查询同一请求而生成新的可重放 flag。
 
 每个账号同时最多保留八个尚未实际结束的本族操作，调用者取消、超时或切换会话不会提前释放仍在运行的底层请求额度。动作总期限十秒，单个协议响应和公开结果分别最多 1 MiB，原生字段数与字符串大小另设上限。没有方法、凭据、身份、业务确认或完整结果时明确失败；来源错误信息、原始封包及无关原生扩展不透传给客户端。
+
+输入状态在写入前选定一条路径；方法拒绝、返回 void/null/缺少确认、超时、取消或会话变化后均不会自动切换路径或重写。目标 UIN、解析 UID、原事件值和当前账号会话贯穿该次调用；迟到的回执不能补成成功，尚未结束的原生调用继续占用原额度。
 
 契约参考为 SnowLuma 的 `translate-en-to-zh`、`get-unidirectional-friend-list`、`get-doubt-buddy-req`、`approve-doubt-buddy-req`、`reject-doubt-buddy-req`、`fetch-group-requests` 独立协议模块，以及 NapCat 的 `setAllC2CAndGroupMsgRead` 原生入口。运行时只依赖本项目实现，不载入参考项目。

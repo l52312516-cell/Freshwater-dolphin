@@ -17,6 +17,7 @@ const image = (id = 'photo-1') => join(s(1, 'photo.png'), s(3, id), b(5, join(s(
 const media = (id = 'photo-1', extra = Buffer.alloc(0)) => join(b(2, image(id)), s(6, '22222'), n(7, 0xffffffffffffffffn), n(8, 1700000000), extra);
 function list(albums = [album()], attachInfo = '', hasMore = false) { return join(n(1, 3331), b(4, join(...albums.map(value => b(1, value)), s(2, attachInfo), n(3, hasMore ? 1 : 0)))); }
 function mediaList(items = [media()], attachInfo = '', albumId = 'album-1') { return b(4, join(b(1, s(1, albumId)), ...items.map(value => b(3, value)), s(5, attachInfo))); }
+const resetMediaCursor = '{"IndexType":"next","DirectType":"next","Lloc":"","StartIndex":0,"Loc":{"batch_id":0,"batch_time":0,"order":0,"lloc":"","album_total":0,"return_num":0}}';
 function fixture() {
     const calls = [], overrides = {}, state = { media: [media()] }, capture = { epoch: 'album-epoch', self: { uin: '11111', uid: 'u_self' }, session: {}, ensureReady() {}, deadline: operation => operation() };
     const native = { available: () => true, async run(bound, params) {
@@ -96,6 +97,105 @@ test('media decoder retains real image/video schemas and exact uint64 batch/time
     const value = protocol.decode(mediaList([media(), video], 'next'), prepared);
     assert.equal(value.mediaList[0].batchId, '18446744073709551615'); assert.equal(value.mediaList[1].video.videoTime, '18446744073709551615'); assert.equal(value.mediaList[1].video.cover.lloc, 'video-cover');
     assert.equal(value.nextAttachInfo, 'next'); assert.equal(value.mediaList[0].type, undefined);
+});
+
+test('an empty continuation page with the observed all-zero media reset cursor terminates pagination', () => {
+    const prepared = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1', attachInfo: 'previous-live-page' });
+    const value = protocol.decode(mediaList([], resetMediaCursor), prepared);
+    assert.deepEqual(value.mediaList, []); assert.equal(value.nextAttachInfo, '');
+});
+
+test('media reset recognition leaves first pages, nonempty pages and every other opaque cursor unchanged', () => {
+    const first = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1' });
+    const next = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1', attachInfo: 'previous-live-page' });
+    assert.equal(protocol.decode(mediaList([], resetMediaCursor), first).nextAttachInfo, resetMediaCursor);
+    assert.equal(protocol.decode(mediaList([media()], resetMediaCursor), next).nextAttachInfo, resetMediaCursor);
+    const variants = ['opaque-next', 'not-json', '{}', 'null', ' ' + resetMediaCursor,
+        resetMediaCursor.replace('"IndexType":"next","DirectType":"next"', '"DirectType":"next","IndexType":"next"'),
+        resetMediaCursor.replace('"IndexType":"next"', '"IndexType":"prev"'),
+        resetMediaCursor.replace('"DirectType":"next"', '"DirectType":"prev"'),
+        resetMediaCursor.replace('"StartIndex":0', '"StartIndex":1'),
+        resetMediaCursor.replace('"Lloc":""', '"Lloc":"another-location"'),
+        resetMediaCursor.replace('"lloc":""', '"lloc":"another-location"'),
+        resetMediaCursor.replace('"return_num":0', '"return_num":0,"unknown":0'),
+        resetMediaCursor.replace('"batch_id":0,', ''),
+        resetMediaCursor.replace('"batch_id":0', '"batch_id":1,"batch_id":0')];
+    for (const key of ['StartIndex', 'batch_id', 'batch_time', 'order', 'album_total', 'return_num']) {
+        for (const value of ['1', '"0"', 'null', 'false', '-0', '0.0']) variants.push(resetMediaCursor.replace('"' + key + '":0', '"' + key + '":' + value));
+    }
+    for (const attachInfo of variants) assert.equal(protocol.decode(mediaList([], attachInfo), next).nextAttachInfo, attachInfo);
+    const same = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1', attachInfo: resetMediaCursor });
+    assert.throws(() => protocol.decode(mediaList([], resetMediaCursor), same), { code: 'INVALID_RESPONSE' });
+    const catalog = protocol.prepare('album.list', { groupId: 12345, attachInfo: 'previous-catalog-page' });
+    const page = protocol.decode(list([], resetMediaCursor, true), catalog);
+    assert.equal(page.attachInfo, resetMediaCursor); assert.equal(page.hasMore, true);
+});
+
+test('the public album media walk stops after the observed reset page before it can replay the first page', async () => {
+    const f = onebotFixture(), seen = [], firstItems = Array.from({ length: 5 }, (_, index) => media('photo-' + index));
+    const continuation = JSON.stringify({ IndexType: 'next', DirectType: 'next', Lloc: '', StartIndex: 0,
+        Loc: { batch_id: 19, batch_time: 1700000000, order: 1794876459, lloc: 'photo-4', album_total: 5, return_num: 5 } });
+    f.overrides.run = params => {
+        seen.push(params.request.attachInfo);
+        const bytes = params.request.attachInfo === continuation ? mediaList([], resetMediaCursor) : mediaList(firstItems, continuation);
+        return protocol.decode(bytes, protocol.prepare(params.operation, params.request));
+    };
+    let attachInfo = ''; const identities = new Set(); let terminal = false;
+    for (let page = 0; page < 3; page++) {
+        const value = await f.invoke('get_group_album_media_list', { group_id: 12345, album_id: 'album-1', attach_info: attachInfo });
+        for (const item of value.mediaList) { assert.equal(identities.has(item.image.lloc), false); identities.add(item.image.lloc); }
+        if (!value.nextAttachInfo) { terminal = true; break; }
+        attachInfo = value.nextAttachInfo;
+    }
+    assert.equal(terminal, true); assert.equal(identities.size, 5); assert.deepEqual(seen, ['', continuation]);
+});
+
+test('terminal media reset handling preserves target, cursor wire and repeated-field validation', () => {
+    const prepared = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1', attachInfo: 'same' });
+    for (const bytes of [mediaList([], resetMediaCursor, 'another-album'), mediaList([], 'same'),
+        b(4, join(s(5, resetMediaCursor), s(5, resetMediaCursor))), b(4, n(5, 0)), b(4, b(5, Buffer.from([255])))]) {
+        assert.throws(() => protocol.decode(bytes, prepared), { code: 'INVALID_RESPONSE' });
+    }
+});
+
+test('media protobuf booleans accept every nonzero varint without truncating high bits', () => {
+    const prepared = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1' });
+    // Independent wire fixtures include 2, 2^32 and the largest uint64.
+    const flags = [[0, false], [1, true], [2, true], [[0x80, 0x80, 0x80, 0x80, 0x10], true],
+        [[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01], true]];
+    for (const [encoded, expected] of flags) {
+        const flag = Buffer.from(Array.isArray(encoded) ? encoded : [encoded]);
+        const photo = join(s(3, 'photo-flag'), Buffer.from([0x30]), flag, Buffer.from([0x38, 0]));
+        const cover = join(s(3, 'cover-flag'), Buffer.from([0x30, 0, 0x38]), flag);
+        const bytes = mediaList([b(2, photo), b(3, join(s(1, 'video-flag'), b(3, cover)))]);
+        const value = protocol.decode(bytes, prepared).mediaList;
+        assert.deepEqual([value[0].image.isGif, value[0].image.hasRaw], [expected, false]);
+        assert.deepEqual([value[1].video.cover.isGif, value[1].video.cover.hasRaw], [false, expected]);
+    }
+});
+
+test('album, creator and nested cover flags use the same protobuf boolean semantics', () => {
+    const prepared = protocol.prepare('album.list', { groupId: 12345 });
+    const flags = join(s(1, 'album-flags'), n(15, 2), n(16, 0), n(18, 0x100000000n),
+        b(10, join(n(5, 2), n(6, 0), n(7, 0xffffffffffffffffn))),
+        b(9, b(2, join(s(3, 'cover-flags'), n(6, 0), n(7, 2)))));
+    const value = protocol.decode(list([flags]), prepared).albums[0];
+    assert.deepEqual([value.allowShare, value.isSubscribe, value.isShareAlbum], [true, false, true]);
+    assert.deepEqual(value.creator, { isSweet: true, isSpecial: false, isSuperLike: true });
+    assert.deepEqual(value.cover.image, { lloc: 'cover-flags', isGif: false, hasRaw: true });
+});
+
+test('nonzero boolean support retains wire, varint, duplicate and numeric range checks', () => {
+    const prepared = protocol.prepare('album.media', { groupId: 12345, albumId: 'album-1' });
+    const badFlags = [b(6, Buffer.from([2])), Buffer.from([0x35, 2, 0, 0, 0]), join(n(6, 0), n(6, 2)),
+        Buffer.from([0x30, 0x80]), Buffer.from([0x30, ...Array(9).fill(0xff), 0x02])];
+    for (const flag of badFlags)
+        assert.throws(() => protocol.decode(mediaList([b(2, join(s(3, 'photo-flags'), flag))]), prepared), { code: 'INVALID_RESPONSE' });
+    const invalidWidth = b(2, join(s(3, 'photo-width'), n(6, 2), b(5, n(2, 0x100000000n))));
+    assert.throws(() => protocol.decode(mediaList([invalidWidth]), prepared), { code: 'INVALID_RESPONSE' });
+    const listRequest = protocol.prepare('album.list', { groupId: 12345 });
+    for (const extra of [join(n(15, 2), n(12, 0x100000000n)), join(n(15, 2), b(12, Buffer.from([2])))])
+        assert.throws(() => protocol.decode(list([album('album-numeric', extra)]), listRequest), { code: 'INVALID_RESPONSE' });
 });
 
 test('media decoder refuses wrong albums, duplicate or missing resource identity and repeated cursor', () => {

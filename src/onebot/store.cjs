@@ -268,6 +268,35 @@ class MessageStore {
 
     get(account, id) { return this.state(account).byId.get(Number(id)) || null; }
 
+    findPrivateFile(account, { fileId, peerUid, fileHash = '' } = {}) {
+        const state = this.state(account), matches = [];
+        const fileUrl = require('../qq/private-file-url.cjs');
+        for (const id of state.recent) {
+            const entry = state.byId.get(id), record = entry?.record;
+            if (!record || entry.recalled || Number(record.chatType) !== 1 ||
+                peerUid !== undefined && record.peerUid !== peerUid) continue;
+            for (const element of record.elements || []) {
+                if (element?.elementType !== 3 || element.fileElement?.fileUuid !== fileId) continue;
+                let file;
+                try { file = fileUrl.fromFileElement(element.fileElement); }
+                catch { throw problem('INVALID_RESPONSE', 'Known private file metadata is incomplete'); }
+                // An incomplete candidate cannot disappear and make another
+                // record look unique, even when an optional hash was supplied.
+                if (typeof element.elementId !== 'string' || !element.elementId) {
+                    throw problem('INVALID_RESPONSE', 'Known private file has no exact element identity');
+                }
+                if (fileHash && file.fileHash !== fileHash) continue;
+                const where = locator(record);
+                if (where.peer.chatType !== entry.locator.peer.chatType || where.peer.peerUid !== entry.locator.peer.peerUid ||
+                    where.nativeId !== entry.locator.nativeId) throw problem('INVALID_RESPONSE', 'Known private file message identity changed');
+                matches.push({ messageId: entry.id, locator: where, elementId: element.elementId, ...file });
+                if (matches.length > 1) throw problem('INVALID_REQUEST', 'Private file selector is ambiguous; specify message_id, user_id or file_hash');
+            }
+        }
+        if (!matches.length) throw problem('NOT_FOUND', 'Private file is outside the retained account history');
+        return snapshot(matches[0]);
+    }
+
     find(account, { peer, nativeId, seq, clientSeq, senderUin, senderUid, time } = {}) {
         if (!peer || (!nativeId && (!seq || seq === '0') && !clientSeq)) return null;
         const state = this.state(account);

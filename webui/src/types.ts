@@ -1,6 +1,7 @@
 export type Json = Record<string, unknown>;
 export interface Account {
-  id: string; label: string; expectedUin?: string; boundUin?: string | null; bridgeInstalled?: boolean; desired: 'running' | 'stopped'; state: string;
+  qqRuntime?: { packageId: string | null; profileId: string; experimental: boolean };
+  id: string; label: string; expectedUin?: string; boundUin?: string | null; bridgeInstalled?: boolean; revision?: number; desired: 'running' | 'stopped'; state: string;
   health?: Json; maintenance?: { operation?: string; phase?: string; previous?: string; at?: number } | null; error?: string;
 }
 export interface Overview { accounts: Account[]; resources: { totalMemory: number; freeMemory: number }; version: string; maxAccounts: number }
@@ -30,15 +31,20 @@ export interface MessageState {
 }
 export interface ActionCapability {
   name: string; implemented: boolean; available: boolean; verification: string;
+  runtime_verification?: string; availability_basis?: string; reason?: string;
   variants?: { custom_text_image_nodes: boolean; existing_message_id_nodes: boolean; existing_scope: string };
   target_validation?: { qq_version: string; platform: string; date: string; scopes: string[]; reference: string };
 }
 export interface SegmentCapability {
   name: string; implemented: boolean; send: boolean; receive: boolean; verification: string;
+  runtime_verification?: string;
   receive_scope?: string; send_contexts?: string[]; receive_contexts?: string[];
 }
 export interface CapabilityCatalogue {
   schema_version: 1; qq_version: string | null; ready: boolean;
+  runtime_profile?: { profile_id: string; package_id: string | null; platform: string; architecture: string;
+    qq_version: string | null; admission: string; evidence: string; native_eligible: boolean; reason: string;
+    package_sha256: string | null; wrapper_sha256: string | null; experimental: boolean };
   actions: ActionCapability[]; extensions: ActionCapability[];
   segments: SegmentCapability[]; segment_extensions: SegmentCapability[];
   events: { name: string; implemented: boolean; available: boolean; subtypes: string[] }[];

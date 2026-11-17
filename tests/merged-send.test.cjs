@@ -12,7 +12,7 @@ const text = content => ({ elementType: 1, textElement: { content, atType: 0 } }
 const fails = code => error => { assert.equal(error.code, code, error.stack); return true; };
 function fixture(t) {
     const calls = [], records = new Map(), merged = new Map(), hooks = {}; let sequence = 0;
-    const capture = new Capture({ install: false, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
     capture.ready = true; capture.epoch = EPOCH; capture.self = { ...SELF };
     const native = {
         generateMsgUniqueId() { return String(80000 + sequence); },
@@ -147,6 +147,9 @@ test('stale epochs and unsupported methods cannot stage messages', async t => {
     const f = fixture(t); await assert.rejects(f.run({ expectedEpoch: 'old' }), fails('SESSION_CHANGED'));
     delete f.native.multiForwardMsgWithComment; await assert.rejects(f.run(), fails('UNSUPPORTED')); assert.equal(f.calls.length, 0);
     const g = fixture(t); g.capture.qqVersion = 'unknown';
+    assert.equal(g.api.capabilities().mergeCustom, false); await assert.rejects(g.run(), fails('UNSUPPORTED')); assert.equal(g.calls.length, 0);
+    g.capture.qqVersion = '3.2.36-70000'; g.capture.runtimeIdentity.experimental = true;
+    assert.equal(g.capture.hasMethods('msg', ['multiForwardMsgWithComment']), true);
     assert.equal(g.api.capabilities().mergeCustom, false); await assert.rejects(g.run(), fails('UNSUPPORTED')); assert.equal(g.calls.length, 0);
 });
 

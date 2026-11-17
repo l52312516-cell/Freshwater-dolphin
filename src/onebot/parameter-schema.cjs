@@ -5,7 +5,7 @@
 const HTTP_PARAMETER_TYPES = Object.freeze(Object.fromEntries([
     ...['self_id', 'user_id', 'group_id', 'message_id', 'message_seq', 'duration', 'times', 'delay', 'count', 'font',
         'cache', 'proxy', 'timeout', 'file_size', 'busid', 'start_index', 'category_id', 'page', 'page_start', 'chat_type', 'face_id',
-        'status', 'ext_status', 'battery_status', 'category', 'start', 'uin', 'categoryId', 'group_class', 'add_type',
+        'status', 'ext_status', 'battery_status', 'category', 'start', 'uin', 'categoryId', 'group_class', 'add_type', 'sex', 'target_id',
         'no_finger_open', 'no_code_finger_open', 'robot_member_switch', 'robot_member_examine', 'src_id', 'reply_to', 'event_type', 'file_index',
         'face_type', 'bot_appid', 'msg_seq', 'target_uin', 'page_num', 'num', 'ugc_right', 'comment_uin', 'reply_uin',
         'chunk_index', 'total_chunks', 'file_retention', 'chunk_size'].map(key => [key, 'integer']),

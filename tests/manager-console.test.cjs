@@ -86,6 +86,19 @@ test('long escaped original content stays visible within a bounded reader respon
     assert.ok(Buffer.byteLength(JSON.stringify(rows)) < 512 * 1024);
     reader.close(); assert.equal(reader.cacheBytes, 0);
 });
+
+test('message filtering reaches chat logs when adapter I/O would exhaust the time budget', async t => {
+    const { manager, root } = await fixture(t);
+    const log = createLogger(path.join(manager.accounts.location('one'), 'logs'));
+    log('node_failed', { code: 'UNSUPPORTED' });
+    log.message({ kind: 'message', event: 'message_received', profileId: 'one', selfId: '123', messageId: 44,
+        messageType: 'private', userId: '456', content: 'filter-budget-regression' });
+    let time = 0;
+    const reader = new LogReader(root, manager.accounts, { maxScanMs: 1, now: () => time += 10 });
+    const rows = reader.read({ profileId: 'one', component: 'message', level: 'SUCCESS', query: 'filter-budget-regression' });
+    assert.equal(rows.length, 1); assert.equal(rows[0].messageId, 44);
+    reader.close();
+});
 test('management SSE limits open streams for one authenticated session', async t => {
     const { manager, api, headers } = await fixture(t);
     const origin = await manager.app.listen({ host: '127.0.0.1', port: 0 });

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { fault } = require('../errors.cjs');
+const { safeDiagnostic } = require('../diagnostics.cjs');
 const { VERSION, LIMIT, METHODS, cancellable, privateDirectory, readJson, writeJson, remove, claimOwner } = require('./common.cjs');
 
 async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, pollMs = 25,
@@ -96,7 +97,8 @@ async function startServer({ dir, backend, maxPending = 32, queueSize = 1000, po
         } catch (error) {
             if (!closed && !controller.signal.aborted && (!request || !Number.isFinite(request.expiresAt) || request.expiresAt > Date.now())) {
                 try { writeJson(path.join(responses, id + '.json'), { version: VERSION, id, ok: false,
-                    error: { code: error.code || 'KERNEL_ERROR', message: error.message || 'Kernel operation failed' } }); }
+                    error: { code: error.code || 'KERNEL_ERROR', message: error.message || 'Kernel operation failed',
+                        diagnostic: safeDiagnostic(error.diagnostic) } }); }
                 catch (_) { logger('rpc_response_failed'); }
             }
         } finally { clearTimeout(deadline); activeRequests.delete(id); controllers.delete(controller); remove(file); }

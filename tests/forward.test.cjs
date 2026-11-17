@@ -33,7 +33,7 @@ function fixture() {
         async buildMultiForwardMsg(...args) { calls.push({ method: 'buildMultiForwardMsg', args }); return handlers.build ? handlers.build(...args) :
             { result: 0, rspInfo: { elements: [merged('built-resource')] } }; }
     };
-    const capture = new Capture({ install: false, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
     capture.epoch = state().epoch; capture.self = state().self; capture.ready = true;
     capture.session = { getMsgService: () => native };
     const forward = createForward(capture);
@@ -469,11 +469,38 @@ test('get_forward_msg accepts only the observed opaque handle and preserves node
     assert.equal(value.messages[0].sender.user_id, 1000000003);
     assert.equal(value.messages[0].sender.nickname, 'Real author');
     assert.equal(value.messages[0].content[0].data.text, '  original\nmessage  ');
-    assert.deepEqual(value.message[0], { type: 'node', data: { user_id: '1000000003', nickname: 'Real author', content: value.messages[0].content } });
+    assert.deepEqual(value.message[0], { type: 'node', data: { user_id: '1000000003', nickname: 'Real author', time: 1794614400, content: value.messages[0].content } });
     const standard = await f.run('get_forward_msg', { id: value.id });
     assert.deepEqual(standard.messages, value.messages);
     await assert.rejects(f.run('get_forward_msg', { id: ROOT }), fails('INVALID_PARAMS'));
     await assert.rejects(f.run('get_forward_msg', { id: 'root-resource' }), fails('INVALID_PARAMS'));
+});
+
+test('both forward response formats preserve each native node timestamp through fresh reads', async () => {
+    const f = protocolFixture();
+    let times = ['1700000002', 1700000001, '4294967295'];
+    f.handlers.read = () => ({ result: 0, msgList: times.map((msgTime, index) => ({
+        ...message(String(100 + index), [text('equal content')]), msgTime
+    })) });
+    const first = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    assert.deepEqual(first.messages.map(node => node.time), times.map(Number));
+    assert.deepEqual(first.message.map(node => node.data.time), times.map(Number));
+    times = [1, '1700000003', 1700000004];
+    const next = await f.run('get_forward_msg', { id: first.id });
+    assert.deepEqual(next.messages.map(node => node.time), times.map(Number));
+    assert.deepEqual(next.message.map(node => node.data.time), times.map(Number));
+    assert(next.message.every(node => typeof node.data.time === 'number'));
+    assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 2);
+});
+
+test('missing or malformed native node timestamps fail the whole query without a time fallback', async () => {
+    const f = protocolFixture();
+    for (const msgTime of [undefined, null, '', 0, '0', -1, 1.5, '01', '1.0', '1e3', '1700000001 ', NaN, Infinity,
+        9007199254740992, '9007199254740992']) {
+        f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('valid first')]),
+            { ...message('100', [text('invalid timestamp')]), msgTime }] });
+        await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
+    }
 });
 
 test('OneBot merged query rejects a wrong resource response and disabled capability', async () => {
@@ -528,7 +555,10 @@ test('merged images with complete official URLs work without a new media-query o
         assert.equal(result.messages[0].content[0].data.url, input);
     }
     f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('no partial output'), picture('/download?appid=1407&fileid=native-file')])] });
-    await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('UNSUPPORTED'));
+    const partial = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    assert.equal(partial._freshwater.content_status, 'partial');
+    assert.equal(partial.messages[0].content[0].data.text, 'no partial output');
+    assert.match(partial.messages[0].content[1].data.text, /QQ媒体暂不可读取/);
 });
 
 test('merged NT images with an observed old key still consult the account resolver without changing resource identity', async () => {
@@ -574,10 +604,10 @@ test('rkey resolution cannot change the observed merged image resource or cross 
     await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('SESSION_CHANGED'));
 });
 
-test('unsupported media inside merged messages is an explicit whole-query failure', async () => {
+test('malformed media inside merged messages remains a whole-query failure', async () => {
     const f = protocolFixture();
     f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('must not leak partial text'), { elementType: 999 }])] });
-    await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('UNSUPPORTED'));
+    await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
 });
 
 test('forward parameter tampering never exposes an arbitrary kernel action or custom merge construction', async () => {
@@ -598,9 +628,9 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     f.handlers.read = (_peer, root, parent) => {
         assert.equal(root, ROOT);
         return { result: 0, msgList: parent === ROOT ? [{ ...message(CHILD,
-            [text('  first layer\n'), merged('nested-resource')]), senderUin: '3000000002', sendNickName: 'Inner author' }] :
+            [text('  first layer\n'), merged('nested-resource')]), senderUin: '3000000002', sendNickName: 'Inner author', msgTime: '1700000001' }] :
             [{ ...message(grandchild, [text('second layer\n  '), { elementType: 6, faceElement: { faceIndex: 14, faceType: 1 } }]),
-                senderUin: '3000000004', sendNickName: 'Different author' }] };
+                senderUin: '3000000004', sendNickName: 'Different author', msgTime: 1700000002 }] };
     };
     const store = new MessageStore({ directory });
     const rootEntry = store.remember(f.capture.self.uin, message());
@@ -615,7 +645,9 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     assert.equal(mergedResponse.status, 'ok', mergedResponse.message);
     assert.equal(mergedResponse.data.message[0].type, 'node');
     assert.equal(mergedResponse.data.message[0].data.user_id, '3000000002');
+    assert.equal(mergedResponse.data.message[0].data.time, 1700000001);
     const inner = mergedResponse.data.messages[0];
+    assert.equal(inner.time, 1700000001);
     assert.equal(inner.sender.user_id, 3000000002);
     assert.equal(inner.sender.nickname, 'Inner author');
     assert.equal(inner.content[0].data.text, '  first layer\n');
@@ -624,6 +656,8 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     assert.notEqual(nestedHandle, rootHandle);
     const nested = await action('get_forward_msg', { id: nestedHandle });
     assert.equal(nested.status, 'ok', nested.message);
+    assert.equal(nested.data.message[0].data.time, 1700000002);
+    assert.equal(nested.data.messages[0].time, 1700000002);
     assert.equal(nested.data.messages[0].sender.user_id, 3000000004);
     assert.equal(nested.data.messages[0].sender.nickname, 'Different author');
     assert.equal(nested.data.messages[0].content[0].data.text, 'second layer\n  ');
@@ -634,4 +668,370 @@ test('real Capture, persistent store, service and codec retain nested merged aut
     assert.equal(stale.status, 'failed');
     assert.equal(stale.retcode, 1404);
     assert.equal(f.calls.filter(value => value.method === 'getMultiMsg').length, 2);
+});
+
+// Exercise the new read fallback through its actual protobuf decoder, Capture
+// session/deadline checks and public codec. Only the fixed MSF transport is a
+// test double; display nodes never enter the normal-message locator or store.
+const fallbackProto = require('../src/qq/proto.cjs');
+const fallbackProtocol = require('../src/qq/forward-upload-protocol.cjs');
+const { createForwardResourceRead } = require('../src/qq/forward-resource-read.cjs');
+const { gzipSync: fallbackGzip } = require('node:zlib');
+const fbN = fallbackProto.varintField, fbB = fallbackProto.bytesField;
+const fbS = (field, value) => fbB(field, Buffer.from(value, 'utf8'));
+const fbJoin = (...parts) => Buffer.concat(parts);
+const fbText = value => fbB(1, fbS(1, value));
+const fbBody = (...elements) => fbB(1, fbJoin(...elements.map(element => fbB(2, element))));
+function fallbackImage() {
+    const file = fbJoin(fbN(1, 70), fbS(2, '0123456789ABCDEF0123456789ABCDEF'), fbS(4, 'wire.png'),
+        fbB(5, fbJoin(fbN(1, 1), fbN(2, 1001))), fbN(6, 12), fbN(7, 13));
+    const index = fbJoin(fbB(1, file), fbS(2, 'wire-uuid'));
+    const pic = fbJoin(fbS(1, '/download?appid=1406&fileid=wire-resource'), fbB(2, fbS(1, '&spec=0')),
+        fbS(3, 'multimedia.nt.qq.com.cn'));
+    const media = fbJoin(fbB(1, fbJoin(fbB(1, index), fbB(2, pic))), fbB(2, fbB(1, fbJoin(fbN(1, 0), fbS(2, 'wire summary')))));
+    return fbB(53, fbJoin(fbN(1, 48), fbB(2, media), fbN(3, 10)));
+}
+function fallbackPayload(nodes, variant) {
+    const encoded = nodes.map(node => {
+        const head = fbJoin(fbN(1, node.authorUin), fbS(2, node.authorUid), fbB(7, fbJoin(fbS(6, node.nickname), fbN(11, 1))));
+        const native = variant === 'native';
+        const meta = fbJoin(fbN(1, 9), fbN(2, native ? 175 : 4), fbN(3, native ? 175 : 0), fbN(4, node.random),
+            fbN(5, node.sequence), fbN(6, node.time), ...(native ? [fbN(7, 1), fbN(11, '18446744073709551615'),
+                fbB(15, fbJoin(fbN(1, 0), fbN(2, 0), fbN(3, 2), fbB(4, Buffer.alloc(44, 1)), fbB(5, Buffer.alloc(158, 2))))] : []));
+        return fbB(1, fbJoin(fbB(1, head), fbB(2, meta), fbB(3, node.body)));
+    });
+    return fbB(2, fbJoin(fbS(1, 'MultiMsg'), fbB(2, fbJoin(...encoded))));
+}
+function fallbackFixture(variant = 'fixed') {
+    const f = protocolFixture(), rawCalls = [], authorCalls = [], keyCalls = [];
+    const nodes = [{ authorUin: '1000000003', authorUid: 'u_sender', nickname: '  Wire author😀  ', time: '1700000002',
+        random: '123', sequence: '456', body: fbBody(fbText('  before\n'), fallbackImage(), fbText('\n after  ')) },
+    { authorUin: '1000000001', authorUid: 'u_self', nickname: 'Self author', time: '1700000001', random: '789',
+        sequence: '987', body: fbBody(fbText('second node')) }];
+    f.handlers.read = () => ({ result: 1, msgList: [] });
+    f.capture.resolve = async params => { authorCalls.push(params); return { uin: params.uin, uid: 'u_sender' }; };
+    const native = { available: () => true, async run(bound, params) {
+        assert.equal(bound, f.capture); rawCalls.push(params);
+        const prepared = fallbackProtocol.prepare('forward.readUploaded', { selfUid: 'u_self', resId: 'root-resource' });
+        assert.equal(params.op, 'rawPacket'); assert.equal(params.cmd, prepared.name);
+        assert.equal(params.data, prepared.body.toString('hex')); assert.equal(params.rsp, true);
+        assert.equal(params.expectedEpoch, f.state.epoch); assert.equal(params.expectedUin, f.state.self.uin);
+        const response = fbB(1, fbJoin(fbS(3, 'root-resource'), fbB(4, fallbackGzip(fallbackPayload(nodes, variant)))));
+        return { responseHex: response.toString('hex') };
+    } };
+    f.capture.forwardResourceReadApi = createForwardResourceRead(f.capture, { native });
+    f.service.globalServices = { async resolveImageUrl(input, isGroup, context) {
+        keyCalls.push({ input, isGroup, context });
+        const url = new URL(input); url.searchParams.set('rkey', 'current-reader-key'); return url.href;
+    } };
+    return { ...f, nodes, rawCalls, authorCalls, keyCalls, rawTransport: native };
+}
+
+test('fixed and native resource fallbacks preserve both public aliases, historical times and mixed text/images without child IDs', async () => {
+    for (const variant of ['fixed', 'native']) for (const trigger of ['rejected', 'empty']) {
+        const f = fallbackFixture(variant);
+        if (trigger === 'empty') f.handlers.read = () => ({ result: 0, msgList: [] });
+        const first = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+        assert.deepEqual(first.messages.map(node => node.time), [1700000002, 1700000001]);
+        assert.deepEqual(first.message.map(node => node.data.time), [1700000002, 1700000001]);
+        assert.deepEqual(first.messages.map(node => node.sender), [{ user_id: 1000000003, nickname: '  Wire author😀  ' },
+            { user_id: 1000000001, nickname: 'Self author' }]);
+        assert.deepEqual(first.messages[0].content, [{ type: 'text', data: { text: '  before\n' } }, { type: 'image', data: {
+            file: '0123456789abcdef0123456789abcdef', url: 'https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=wire-resource&spec=0&rkey=current-reader-key',
+            file_size: '70', file_name: 'wire.png', width: 12, height: 13, sub_type: 0, summary: 'wire summary'
+        } }, { type: 'text', data: { text: '\n after  ' } }]);
+        for (let index = 0; index < first.messages.length; index++) {
+            const publicNode = first.messages[index], alias = first.message[index];
+            assert.deepEqual(Object.keys(publicNode).sort(), ['content', 'sender', 'time']);
+            assert.deepEqual(alias, { type: 'node', data: { user_id: String(publicNode.sender.user_id),
+                nickname: publicNode.sender.nickname, time: publicNode.time, content: publicNode.content } });
+        }
+        const standard = await f.run('get_forward_msg', { id: first.id });
+        assert.deepEqual(standard, { message: first.message, messages: first.messages });
+        assert.equal(JSON.stringify(first).includes(CHILD), false);
+        assert.equal(JSON.stringify(first).includes('msgId'), false);
+        assert.equal(JSON.stringify(first).includes('sourcePath'), false);
+        assert.equal(f.rawCalls.length, variant === 'fixed' ? 2 : 4);
+        assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, variant === 'fixed' ? 0 : 2);
+        assert.equal(f.calls.filter(call => call.method === 'getMsgsByMsgId').length, variant === 'fixed' ? 4 : 6);
+        for (const call of f.calls.filter(call => call.method === 'getMsgsByMsgId')) {
+            assert.deepEqual(call.peer, { ...SOURCE, guildId: '' }); assert.deepEqual(call.ids, [ROOT]);
+        }
+        assert.deepEqual(f.authorCalls, [{ uin: '1000000003' }, { uin: '1000000003' }]);
+        assert.equal(f.keyCalls.length, 2); assert(f.keyCalls.every(call => call.isGroup === false));
+        assert(f.rawCalls.every(call => call.signal.aborted));
+        assert.equal(f.capture.pending.size, 0);
+    }
+});
+
+test('resource fallback performs fresh reads and preserves each new time in both aliases', async () => {
+    const f = fallbackFixture(), first = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    f.nodes[0].time = '4294967295'; f.nodes[1].time = '1'; f.nodes[1].body = fbBody(fbText('new exact body\n'));
+    const next = await f.run('get_forward_msg', { id: first.id });
+    assert.deepEqual(next.messages.map(node => node.time), [4294967295, 1]);
+    assert.deepEqual(next.message.map(node => node.data.time), [4294967295, 1]);
+    assert.equal(next.messages[1].content[0].data.text, 'new exact body\n');
+    assert.deepEqual(next.message[1].data.content, next.messages[1].content);
+    assert.equal(f.rawCalls.length, 2);
+});
+
+test('custom probe rechecks the exact root binding before issuing the fixed resource read', async () => {
+    const changes = [root => { root.msgId = CHILD; }, root => { root.chatType = 1; }, root => { root.peerUid = '2000000002'; },
+        root => { root.elements = [merged('substituted-resource')]; }, root => { root.elements.push(merged('ambiguous-root')); }];
+    for (const change of changes) {
+        const f = fallbackFixture(); let reads = 0;
+        f.handlers.get = (_peer, ids) => {
+            assert.deepEqual(ids, [ROOT]); const root = message();
+            if (++reads === 2) change(root);
+            return { result: 0, msgList: [root] };
+        };
+        await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
+        assert.equal(reads, 2); assert.equal(f.rawCalls.length, 0);
+        assert.equal(f.authorCalls.length, 0); assert.equal(f.keyCalls.length, 0);
+        assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 0);
+    }
+});
+
+test('custom resources preserve raw nicknames and times when native expansion would succeed with replaced metadata', async () => {
+    const f = fallbackFixture();
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('native replacement')])] });
+    const first = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    assert.deepEqual(first.messages.map(value => value.sender.nickname), f.nodes.map(value => value.nickname));
+    assert.deepEqual(first.messages.map(value => value.time), f.nodes.map(value => Number(value.time)));
+    const standard = await f.run('get_forward_msg', { id: first.id });
+    assert.deepEqual(standard.message, first.message); assert.deepEqual(standard.messages, first.messages);
+    assert.equal(f.calls.some(call => call.method === 'getMultiMsg'), false);
+    assert.equal(f.rawCalls.length, 2);
+});
+
+test('unknown custom rich content remains an ordered partial resource without replacing display metadata', async () => {
+    const f = fallbackFixture();
+    f.nodes[1].body = fbBody(fbB(99, Buffer.from([1])));
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('silently omitted custom content')])] });
+    const result = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    assert.equal(result._freshwater.content_status, 'partial');
+    assert.equal(result.messages[1].content[0].type, 'text');
+    assert.match(result.messages[1].content[0].data.text, /协议字段99/);
+    assert.equal(f.rawCalls.length, 1); assert.ok(f.authorCalls.length > 0);
+    assert.equal(f.calls.some(call => call.method === 'getMultiMsg'), false);
+});
+
+test('native 175 probing retains 1000-node, 8 MiB rich content and native nested parent identities', async () => {
+    const f = fallbackFixture('native');
+    f.nodes[0].body = fbBody(fbB(99, Buffer.alloc(300000, 1)));
+    const records = Array.from({ length: 1000 }, (_, index) => message(String(100000 + index), [text('x'.repeat(6000)),
+        { elementType: 6, faceElement: { faceIndex: 14 } }]));
+    records[0].elements.push(merged('nested-native-resource'));
+    f.handlers.read = () => ({ result: 0, msgList: records });
+    const result = await f.read();
+    assert.equal(result.records.length, 1000); assert.equal(Object.hasOwn(result, 'resourceNodes'), false);
+    assert.equal(result.records[1].elements[1].faceElement.faceIndex, 14);
+    assert.ok(Buffer.byteLength(JSON.stringify(result.records)) > fallbackProtocol.MAX_BYTES);
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('nested native contents')])] });
+    const nested = await f.read({ parentMsgId: records[0].msgId });
+    assert.equal(nested.records[0].elements[0].textElement.content, 'nested native contents');
+    assert.equal(f.rawCalls.length, 1); assert.equal(f.authorCalls.length, 0);
+    assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 2);
+});
+
+test('unavailable preclassification transports preserve successful native reads without decoding custom authors', async () => {
+    for (const code of ['BUSY', 'QUERY_FAILED', 'UNSUPPORTED', 'INVALID_CONFIG', 'KERNEL_ERROR', 'INVALID_RESPONSE']) {
+        const f = fallbackFixture('native');
+        f.rawTransport.run = async () => { throw Object.assign(Error('private transport failure'), { code }); };
+        f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('ordinary native content')])] });
+        const result = await f.read();
+        assert.equal(result.records[0].elements[0].textElement.content, 'ordinary native content');
+        assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 1);
+        assert.equal(f.authorCalls.length, 0); assert.equal(f.capture.pending.size, 0);
+    }
+});
+
+test('a short pending probe yields to native reading and aborts a late positive candidate', async () => {
+    const f = fallbackFixture(), original = f.rawTransport.run; let release;
+    f.rawTransport.run = async (...args) => {
+        const value = await original(...args);
+        return new Promise(resolve => { release = () => resolve(value); });
+    };
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('native within caller deadline')])] });
+    const started = Date.now(), result = await f.read();
+    assert.equal(result.records[0].elements[0].textElement.content, 'native within caller deadline');
+    assert.ok(Date.now() - started < 4000);
+    assert.ok(f.rawCalls[0].timeoutMs <= 1500); assert.equal(f.rawCalls[0].signal.aborted, true);
+    const count = f.calls.length; release();
+    await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.calls.length, count); assert.equal(f.authorCalls.length, 0); assert.equal(f.capture.pending.size, 0);
+});
+
+test('a stalled probe root revalidation yields to native reading without a late raw packet', async () => {
+    const f = fallbackFixture(), original = f.handlers.get; let lookups = 0, release;
+    f.handlers.get = (target, ids) => {
+        if (++lookups === 2) return new Promise(resolve => { release = () => resolve({ result: 0, msgList: [message()] }); });
+        return original ? original(target, ids) : { result: 0, msgList: ids.map(id => message(id)) };
+    };
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [text('native after stalled probe root')])] });
+    assert.equal((await f.read()).records[0].elements[0].textElement.content, 'native after stalled probe root');
+    assert.equal(f.rawCalls.length, 0); assert.equal(f.authorCalls.length, 0);
+    release(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.rawCalls.length, 0); assert.equal(f.capture.pending.size, 0);
+});
+
+test('total expiry and scope loss during a probe prevent any native continuation', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1700000000000 });
+    for (const mode of ['deadline', 'session', 'notReady']) {
+        const f = fallbackFixture('native'), original = f.rawTransport.run;
+        if (mode === 'deadline') f.rawTransport.run = () => new Promise(() => {});
+        else f.rawTransport.run = async (...args) => {
+            const value = await original(...args);
+            if (mode === 'session') f.capture.session = {};
+            else f.capture.ready = false;
+            return value;
+        };
+        const pending = f.forward.run({ kind: 'read', peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT },
+            { expiresAt: Date.now() + (mode === 'deadline' ? 40 : 2000) });
+        const rejected = assert.rejects(pending,
+        error => {
+            if (mode === 'deadline') assert.ok(['TIMEOUT', 'EXPIRED'].includes(error.code));
+            else assert.equal(error.code, mode === 'session' ? 'SESSION_CHANGED' : 'NOT_READY');
+            return true;
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        if (mode === 'deadline') t.mock.timers.tick(40);
+        await rejected;
+        assert.equal(f.calls.some(call => call.method === 'getMultiMsg'), false);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(f.authorCalls.length, 0); assert.equal(f.capture.pending.size, 0);
+    }
+});
+
+test('fallback receives the observed root, peer, resource, epoch and original cancellation context', async () => {
+    const f = fixture(), controller = new AbortController(); let called = 0;
+    const endsAt = Date.now() + 9000;
+    f.handlers.read = () => ({ result: 1 });
+    const expected = { peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT, resId: 'root-resource', resourceNodes: [] };
+    f.capture.forwardResourceReadApi = { async read(params, context) {
+        called++;
+        assert.deepEqual(params, { peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT, resId: 'root-resource', expectedEpoch: state().epoch });
+        assert.equal(context.signal, controller.signal); assert.equal(context.expiresAt, endsAt);
+        return expected;
+    } };
+    const result = await f.forward.run({ kind: 'read', peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT, resId: 'root-resource' },
+        { signal: controller.signal, expiresAt: endsAt });
+    assert.equal(result, expected); assert.equal(called, 1);
+    assert.deepEqual(f.calls.map(call => call.method), ['getMsgsByMsgId', 'getMultiMsg']);
+});
+
+test('native success and malformed native responses do not activate resource fallback', async () => {
+    const responses = [{ result: 0, msgList: [message(CHILD, [text('native wins')])] }, undefined, {}, { result: 0 },
+        { result: 0, msgList: null }, { result: 0, msgList: [message(CHILD), message(CHILD)] }];
+    for (const [index, response] of responses.entries()) {
+        const f = fixture(); let reads = 0;
+        f.capture.forwardResourceReadApi = { async read() { reads++; throw new Error('fallback must remain unused'); } };
+        f.handlers.read = () => response;
+        if (index === 0) assert.equal((await f.read()).records[0].elements[0].textElement.content, 'native wins');
+        else await assert.rejects(f.read(), fails('INVALID_RESPONSE'));
+        assert.equal(reads, 0); assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 1);
+    }
+});
+
+test('native read session, cancellation, deadline and other non-kernel errors do not fall back', async () => {
+    for (const code of ['SESSION_CHANGED', 'EXPIRED', 'TIMEOUT', 'NOT_READY', 'UNSUPPORTED', 'INVALID_RESPONSE']) {
+        const f = fixture(); let reads = 0;
+        f.capture.forwardResourceReadApi = { async read() { reads++; throw new Error('must not read'); } };
+        f.handlers.read = () => { throw Object.assign(new Error('synthetic native failure'), { code }); };
+        await assert.rejects(f.read(), fails(code)); assert.equal(reads, 0);
+    }
+    for (const mode of ['epoch', 'session', 'uid', 'uin', 'ready', 'cancel', 'expired']) {
+        const f = fixture(), controller = new AbortController(); let reads = 0, clock = Date.now();
+        const forward = createForward(f.capture, { now: () => clock });
+        f.capture.forwardResourceReadApi = { async read() { reads++; throw new Error('must not read'); } };
+        f.handlers.read = () => {
+            if (mode === 'epoch') f.capture.epoch = 'another-session';
+            if (mode === 'session') f.capture.session = { ...f.capture.session };
+            if (mode === 'uid') f.capture.self = { ...f.capture.self, uid: 'u_other' };
+            if (mode === 'uin') f.capture.self = { ...f.capture.self, uin: '1000000002' };
+            if (mode === 'ready') f.capture.ready = false;
+            if (mode === 'cancel') controller.abort();
+            if (mode === 'expired') clock += 10001;
+            return { result: 1 };
+        };
+        await assert.rejects(forward.run({ kind: 'read', peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT },
+            { signal: controller.signal }), fails(mode === 'ready' ? 'NOT_READY' : ['cancel', 'expired'].includes(mode) ? 'EXPIRED' : 'SESSION_CHANGED'));
+        assert.equal(reads, 0); assert.equal(f.calls.filter(call => call.method === 'getMultiMsg').length, 1);
+        assert.equal(f.capture.pending.size, 0);
+    }
+});
+
+test('observed nested native parents never fall back to the outer root resource', async () => {
+    const f = fixture(); let reads = 0;
+    f.capture.forwardResourceReadApi = { async read() { reads++; throw new Error('nested fallback must not be called'); } };
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [merged('inner-resource')])] });
+    await f.read();
+    f.handlers.read = () => ({ result: 1 });
+    await assert.rejects(f.read({ parentMsgId: CHILD }), fails('KERNEL_ERROR'));
+    assert.equal(reads, 0);
+    assert.deepEqual(f.calls.filter(call => call.method === 'getMultiMsg').at(-1).args, [{ ...SOURCE, guildId: '' }, ROOT, CHILD]);
+});
+
+test('public resource variant rejects mixed representations, forged child identities and unsupported content atomically', async () => {
+    const source = () => ({ authorUin: '1000000003', authorUid: 'u_sender', nickname: 'Resource author', time: '1700000001', elements: [text('safe content')] });
+    const response = () => ({ peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT, resId: 'root-resource', resourceNodes: [source()] });
+    const cases = [value => { value.records = []; }, value => { value.records = undefined; }, value => { value.resourceNodes = undefined; },
+        value => { value.resourceNodes = []; }, value => { value.resourceNodes = Array.from({ length: 101 }, source); },
+        value => { value.resourceNodes.push({ ...source(), msgId: CHILD }); },
+        value => { value.resourceNodes.push({ ...source(), authorUid: 'not-a-native-uid' }); },
+        value => { value.resourceNodes.push({ ...source(), nickname: 1 }); },
+        value => { value.resourceNodes.push({ ...source(), time: '01' }); },
+        value => { value.resourceNodes.push({ ...source(), elements: [text('no partial output'), { elementType: 999 }] }); }];
+    for (const change of cases) {
+        const f = protocolFixture(), value = response(); change(value);
+        f.service.sessionCall = async (_state, method) => { assert.equal(method, 'forwardOperation'); return value; };
+        await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
+    }
+    const conflicts = [{ ...text('conflicting payload'), arkElement: { bytesData: '{}' } }];
+    for (const element of conflicts) {
+        const f = protocolFixture(), value = response(); value.resourceNodes.push({ ...source(), elements: [element] });
+        f.service.sessionCall = async () => value;
+        await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
+    }
+    for (const element of [merged('unbound-inner-resource'), { ...picture(''), picElement: { ...picture('').picElement, isFlashPic: true } }]) {
+        const f = protocolFixture(), value = response(); value.resourceNodes.push({ ...source(), elements: [element] });
+        f.service.sessionCall = async () => value;
+        const partial = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+        assert.equal(partial._freshwater.content_status, 'partial');
+        assert.equal(partial.messages[1].content[0].type, 'text');
+    }
+});
+
+test('resource fallback results remain bound to the exact public root, parent, peer and resource', async () => {
+    for (const change of [value => { value.rootMsgId = CHILD; }, value => { value.parentMsgId = CHILD; },
+        value => { value.peer = DESTINATION; }, value => { value.resId = 'different-resource'; }]) {
+        const f = protocolFixture();
+        const value = { peer: SOURCE, rootMsgId: ROOT, parentMsgId: ROOT, resId: 'root-resource', resourceNodes: [
+            { authorUin: '1000000003', authorUid: 'u_sender', nickname: 'Verified author', time: '1700000001', elements: [text('exact body')] }
+        ] };
+        change(value); f.service.sessionCall = async () => value;
+        await assert.rejects(f.run('qqapi_get_forward_messages', { message_id: 1 }), fails('INVALID_RESPONSE'));
+    }
+});
+
+test('a resourceNodes response cannot be used below an independently observed native nested handle', async () => {
+    const f = protocolFixture();
+    f.handlers.read = () => ({ result: 0, msgList: [message(CHILD, [merged('inner-resource')])] });
+    const initial = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    const nested = initial.messages[0].content[0].data.id;
+    f.service.sessionCall = async () => ({ peer: SOURCE, rootMsgId: ROOT, parentMsgId: CHILD, resId: 'root-resource', resourceNodes: [
+        { authorUin: '1000000003', authorUid: 'u_sender', nickname: 'Resource author', time: '1700000001', elements: [text('unbound nested resource')] }
+    ] });
+    await assert.rejects(f.run('get_forward_msg', { id: nested }), fails('INVALID_RESPONSE'));
+});
+
+test('unknown wire content in a resource fallback returns explicit ordered partial nodes', async () => {
+    const f = fallbackFixture();
+    f.nodes[1].body = fbBody(fbText('must not return the preceding node'), fbB(51, fbS(1, 'unhandled content')));
+    const result = await f.run('qqapi_get_forward_messages', { message_id: 1 });
+    assert.equal(result._freshwater.content_status, 'partial');
+    assert.equal(result.messages[1].content[0].data.text, 'must not return the preceding node');
+    assert.match(result.messages[1].content[1].data.text, /协议字段51/);
+    assert.equal(f.rawCalls.length, 1); assert.ok(f.authorCalls.length > 0); assert.equal(f.keyCalls.length, 1);
+    assert.equal(f.capture.pending.size, 0);
 });

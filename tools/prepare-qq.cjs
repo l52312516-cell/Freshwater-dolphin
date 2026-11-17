@@ -81,6 +81,17 @@ function prepare(options = {}) {
   if (!inside(permitted, app)) throw new Error('QQ application must remain inside this workspace QQ directory');
   const packageFile = path.join(app, 'package.json');
   regular(packageFile);
+  const runtime = options.runtimeIdentity || (process.env.FWD_QQ_VERSION ? {
+    profileId: process.env.FWD_QQ_PROFILE_ID, qqVersion: process.env.FWD_QQ_VERSION,
+    packageSha256: process.env.FWD_QQ_PACKAGE_SHA256, wrapperSha256: process.env.FWD_QQ_WRAPPER_SHA256
+  } : null);
+  if (runtime) {
+    const metadata = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+    const version = metadata.version?.includes('-') ? metadata.version : metadata.buildVersion ? metadata.version + '-' + metadata.buildVersion : metadata.version;
+    if (version !== runtime.qqVersion || !/^[a-f0-9]{64}$/.test(runtime.packageSha256 || '') || !/^[a-f0-9]{64}$/.test(runtime.wrapperSha256 || '')) {
+      throw new Error('Private QQ copy does not match the selected runtime identity');
+    }
+  }
   const files = Object.fromEntries(Object.entries(names).map(([name, value]) => [name, path.join(app, value)]));
 
   if (fs.existsSync(files.manifest)) {
@@ -94,6 +105,10 @@ function prepare(options = {}) {
         state.preparedHash !== digest(current) || state.proxyHash !== digest(fs.readFileSync(files.proxy))) {
       throw new Error('QQ entry ownership check failed; preserve local changes and repair the workspace copy manually');
     }
+    if (runtime && state.runtime && ['profileId', 'qqVersion', 'packageSha256', 'wrapperSha256'].some(key => state.runtime[key] !== runtime[key])) {
+      throw new Error('Prepared QQ entry belongs to another runtime; preserve and explicitly migrate the private copy');
+    }
+    if (runtime && !state.runtime && !options.restore) fs.writeFileSync(files.manifest, JSON.stringify({ ...state, runtime }) + '\n');
     if (!options.restore) return { prepared: true, changed: false, appDir: app };
     fs.writeFileSync(packageFile, original);
     fs.unlinkSync(files.proxy);
@@ -115,7 +130,7 @@ function prepare(options = {}) {
   regular(bootstrap);
   const proxy = Buffer.from("'use strict';\nmodule.exports = require(" + JSON.stringify(bootstrap) + ').bootstrap(' + JSON.stringify(originalMain) + ');\n');
   const prepared = Buffer.from(JSON.stringify({ ...metadata, main: names.proxy }, null, 2) + '\n');
-  const state = { version: 1, originalHash: digest(original), preparedHash: digest(prepared), proxyHash: digest(proxy) };
+  const state = { version: 1, originalHash: digest(original), preparedHash: digest(prepared), proxyHash: digest(proxy), ...(runtime ? { runtime } : {}) };
   const created = [];
   try {
     for (const [file, body] of [[files.backup, original], [files.proxy, proxy], [files.manifest, JSON.stringify(state) + '\n']]) {

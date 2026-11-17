@@ -7,7 +7,11 @@ const { randomUUID, createHash } = require('node:crypto');
 const media = require('./media.cjs');
 const { createSocial } = require('./social.cjs');
 const { validateMusicCard } = require('./music.cjs');
+const { createFileUploadObserver } = require('./private-file-upload-observer.cjs');
 const path = require('node:path');
+const fs = require('node:fs');
+const runtimeProfile = require('./runtime-profile.cjs');
+const { annotate } = require('../diagnostics.cjs');
 const { createAudioProcessor } = require('./audio.cjs');
 const { downloadVideo } = require('./video-download.cjs');
 const { kickMember } = require('./group-kick.cjs');
@@ -17,6 +21,7 @@ const { isGrayTip } = require('./gray-tip.cjs');
 const { createShareCards } = require('./share-card.cjs');
 const { createVideoProcessor } = require('./video-send.cjs');
 const { createForward } = require('./forward.cjs');
+const { createForwardResourceRead } = require('./forward-resource-read.cjs');
 const { createMergedSend } = require('./merged-send.cjs');
 const { createExtended } = require('./extended.cjs');
 const { createGroupQueries } = require('./group-queries.cjs');
@@ -31,6 +36,7 @@ const { createFlashTransfer } = require('./flash-transfer.cjs');
 const { createQzone } = require('./qzone.cjs');
 const { createFriendDress } = require('./friend-dress.cjs');
 const { createForwardUpload } = require('./forward-upload.cjs');
+const { createCustomMergedResource } = require('./custom-merged-resource.cjs');
 const { createVoiceExtra } = require('./voice-extra.cjs');
 const { createGroupAlbum } = require('./group-album.cjs');
 const { createMiscExtra } = require('./misc-extra.cjs');
@@ -51,6 +57,11 @@ const METHODS = new Set(['status', 'resolve', 'user', 'friends', 'groups', 'grou
   'groupMember', 'groupMembers', 'getMessage', 'history', 'recall', 'prepareMedia', 'prepareMusic', 'prepareShare', 'receiveMedia', 'imageInfo', 'groupAction', 'socialQuery', 'socialAction', 'interaction', 'groupFiles', 'forwardOperation', 'sendMessage', 'nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl', 'nativeStatus', 'rawPacket', 'packetStatus', 'authQuery', 'modelShow', 'urlSafetyQuery', 'urlSafetyNativeQuery', 'collectionCreate', 'emojiSummaryQuery', 'anonymousAction', 'extendedQuery', 'extendedQuery2', 'shareQuery', 'adminQuery', 'adminAction', 'customFaceQuery', 'customFaceAction', 'contactExtra', 'flashTransfer', 'qzoneQuery', 'qzoneAction', 'voiceExtra', 'forwardUpload', 'friendDressQuery', 'groupAlbumQuery', 'groupAlbumAction', 'miscExtra', 'extendedAction', 'recordExport', 'groupQuery', 'collectionQuery', 'accountQuery']);
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
+function wrapperDigest(file) {
+  const fd = fs.openSync(file, 'r'), hash = createHash('sha256'), buffer = Buffer.allocUnsafe(1024 * 1024);
+  try { let count; while ((count = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count)); return hash.digest('hex'); }
+  finally { fs.closeSync(fd); }
+}
 function numeric(value, label = 'QQ number') {
   const text = String(value ?? '');
   if (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text))) {
@@ -136,6 +147,8 @@ class Capture extends EventEmitter {
     this.processObject = options.processObject || process;
     this.log = options.log || (() => {});
     this.versionHint = options.qqVersion || this.processObject.env?.FWD_QQ_VERSION || '';
+    this.runtimeIdentity = options.runtimeIdentity || {};
+    this.observedWrapperHash = null;
     this.mediaDirectory = options.mediaDirectory || this.processObject.env?.FWD_MEDIA_DIR || null;
     this.mediaTargetRoots = options.mediaTargetRoots || ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME']
       .map(name => this.processObject.env?.[name]).filter(Boolean);
@@ -178,7 +191,9 @@ class Capture extends EventEmitter {
     this.interactions = createInteractions(this);
     this.groupFilesApi = createGroupFiles(this);
     this.forwardApi = createForward(this);
+    this.forwardResourceReadApi = createForwardResourceRead(this);
     this.mergedSendApi = createMergedSend(this);
+    this.customMergedResourceApi = createCustomMergedResource(this);
     this.extendedApi = createExtended(this);
     this.groupQueriesApi = createGroupQueries(this);
     this.collectionQueries = createCollectionQueries(this);
@@ -203,12 +218,22 @@ class Capture extends EventEmitter {
     const accountRoot = this.processObject.env?.FWD_ACCOUNT_ROOT;
     this.authExtraApi = createAuthExtra(this, { databaseRoots: typeof accountRoot === 'string' && path.isAbsolute(accountRoot) ?
       [path.join(accountRoot, 'config/QQ'), path.join(accountRoot, 'home/.config/QQ')] : [] });
+    require('./msf-native.cjs').bindProfile(() => this.runtimeProfile());
     if (options.install !== false) this.install();
   }
 
   diagnostic(error) { try { this.log({ code: error?.code || 'CAPTURE_ERROR', message: error?.message || String(error) }); } catch {} }
+  runtimeProfile() {
+    const env = this.processObject.env || {};
+    return runtimeProfile.fromEnvironment(env, { platform: this.processObject.platform || 'linux', architecture: this.processObject.arch || 'x64',
+      ...this.runtimeIdentity, qqVersion: this.qqVersion,
+      // An environment assertion alone cannot certify the native module that
+      // was actually loaded. Hash the observed loader target before enabling it.
+      wrapperSha256: this.observedWrapperHash || this.runtimeIdentity.wrapperSha256 || null });
+  }
   state() {
-    const compatible = this.qqVersion === TARGET_VERSION;
+    const profile = this.runtimeProfile();
+    const compatible = profile.admission !== 'denied';
     const observed = this.registrations.some(value => value.name === 'msg');
     const messageEvents = compatible && this.ready && observed;
     const groupEvents = compatible && this.ready && this.registrations.some(value => value.name === 'group');
@@ -218,14 +243,15 @@ class Capture extends EventEmitter {
     const text = messageEvents && this.hasMethods('msg', ['sendMsg', 'generateMsgUniqueId']) && this.hasMethods('msf', ['getServerTime']);
     const member = groupEvents && resolve && this.hasMethods('group', ['getMemberInfo']);
     return { epoch: this.epoch, ready: this.ready && !this.closed, readyAt: this.readyAt, online: this.online,
-      self: this.self ? { ...this.self } : null, qqVersion: this.qqVersion,
+      self: this.self ? { ...this.self } : null, qqVersion: this.qqVersion, runtime_profile: profile,
       // Bounded scalar evidence remains available even when QQ redirects its
       // console. It contains no message IDs, peers, contents, paths or tokens.
-      sendDiagnostics: this.sendDiagnostics.map(value => ({ ...value })),
+      sendDiagnostics: this.sendDiagnostics.map(value => ({ ...value, ...(value.privateFileUpload
+        ? { privateFileUpload: structuredClone(value.privateFileUpload) } : {}) })),
       forwardDiagnostics: this.forwardApi.diagnostics?.() || [],
-      capabilities: { compatible, messages: messageEvents, text, at: text && member,
+      capabilities: runtimeProfile.limitFlags(profile, { compatible, messages: messageEvents, text, at: text && member,
         wordSlices: typeof Intl.Segmenter === 'function', packetStatus: compatible && this.ready,
-        rawPacket: compatible && this.ready && require('./msf-native.cjs').available(),
+        rawPacket: compatible && this.ready && require('./msf-native.cjs').available(this),
         reply: text && (this.hasMethods('msg', ['getMsgsByMsgId']) || this.hasMethods('msg', ['getSingleMsg'])),
         resolve, user: resolve && this.hasMethods('profile', ['getCoreAndBaseInfo']),
         friends: compatible && this.ready && this.hasMethods('buddy', ['getBuddyListV2']) && this.hasMethods('profile', ['getCoreAndBaseInfo']),
@@ -244,7 +270,7 @@ class Capture extends EventEmitter {
         // not expose downloadRichMedia. No local file still fails explicitly.
         recordReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']),
         recordReceiveDownload: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId', 'downloadRichMedia']),
-        videoReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']) && require('./msf-native.cjs').available(),
+        videoReceive: messageEvents && typeof this.mediaDirectory === 'string' && this.mediaTargetRoots.length > 0 && this.hasMethods('msg', ['getMsgsByMsgId']) && require('./msf-native.cjs').available(this),
         groupName: compatible && this.ready && this.hasMethods('group', ['modifyGroupName']),
         groupWholeBan: compatible && this.ready && this.hasMethods('group', ['setGroupShutUp']),
         groupMemberBan: member && this.hasMethods('group', ['setMemberShutUp']),
@@ -253,27 +279,32 @@ class Capture extends EventEmitter {
         groupKick: compatible && this.ready && resolve && this.hasMethods('group', ['kickMember', 'getAllMemberList']),
         groupAdmin: member && this.hasMethods('group', ['modifyMemberRole']), ...this.social.capabilities(),
         ...this.interactions.capabilities(), ...this.groupFilesApi.capabilities(),
-        groupFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
-        groupFileSpace: compatible && this.ready && require('./msf-native.cjs').available(),
-        privateFileUrl: compatible && this.ready && require('./msf-native.cjs').available(),
-        downloadRkey: compatible && this.ready && require('./msf-native.cjs').available(),
+        groupFileUrl: compatible && this.ready && require('./msf-native.cjs').available(this),
+        groupFileSpace: compatible && this.ready && require('./msf-native.cjs').available(this),
+        privateFileUrl: compatible && this.ready && require('./msf-native.cjs').available(this),
+        downloadRkey: compatible && this.ready && require('./msf-native.cjs').available(this),
         ...(compatible && this.ready ? this.forwardApi.capabilities() : { forwardExisting: false, forwardRead: false }),
         mergeCustom: compatible && this.ready && text && this.mergedSendApi.capabilities().mergeCustom,
+        mergeCustomMetadata: compatible && this.ready && text && this.customMergedResourceApi.capabilities().mergeCustomMetadata,
         recordExport: compatible && this.ready && this.recordExporter.available(),
         ...(compatible && this.ready ? { ...this.extendedApi.capabilities(), ...this.groupQueriesApi.capabilities(),
           ...this.collectionQueries.capabilities(), ...this.accountQueriesApi.capabilities(), ...this.extendedQueries2Api.capabilities(),
           ...this.shareQueriesApi.capabilities(), ...this.adminQueriesApi.capabilities(), ...this.customFaceApi.capabilities(),
           ...this.contactExtraApi.capabilities(), ...this.flashTransferApi.capabilities(), ...this.qzoneApi.capabilities(),
-          ...this.groupAlbumApi.capabilities(), ...this.miscExtraApi.capabilities(), ...this.friendDressApi.capabilities(), ...this.forwardUploadApi.capabilities(), ...this.voiceExtraApi.capabilities(), ...this.authExtraApi.capabilities(), ...this.modelShowApi.capabilities(), ...this.urlSafetyApi.capabilities(), ...this.collectionCreateApi.capabilities(), ...this.emojiSummaryApi.capabilities(), ...this.anonymousApi.capabilities() } : {}) } };
+          ...this.groupAlbumApi.capabilities(), ...this.miscExtraApi.capabilities(), ...this.friendDressApi.capabilities(), ...this.forwardUploadApi.capabilities(), ...this.voiceExtraApi.capabilities(), ...this.authExtraApi.capabilities(), ...this.modelShowApi.capabilities(), ...this.urlSafetyApi.capabilities(), ...this.collectionCreateApi.capabilities(), ...this.emojiSummaryApi.capabilities(), ...this.anonymousApi.capabilities() } : {}) }) };
   }
   publish(event) { this.emit('event', { ...event, epoch: this.epoch, selfUin: this.self?.uin || null }); }
   publishState() { this.publish({ kind: 'state', status: this.state() }); }
   ensureReady() {
+    this.ensureSessionReady();
+    if (this.runtimeProfile().admission === 'denied') throw annotate(problem('UNSUPPORTED', 'QQ runtime profile is not admitted'),
+      { reason: 'runtime_profile_denied', phase: 'session' });
+  }
+  ensureSessionReady() {
     if (this.closed || !this.ready || !this.session) throw problem('NOT_READY', 'QQ session is not ready');
-    if (this.qqVersion !== TARGET_VERSION) throw problem('UNSUPPORTED', `QQ version is not verified: ${this.qqVersion || 'unknown'}`);
   }
   service(name) {
-    this.ensureReady();
+    this.ensureSessionReady();
     const getter = SERVICES[name];
     if (!getter || typeof this.session[getter] !== 'function') throw problem('UNSUPPORTED', `QQ lacks ${name} service`);
     const value = Reflect.apply(this.session[getter], this.session, []);
@@ -315,6 +346,10 @@ class Capture extends EventEmitter {
     this.dlopenHook = function (module, filename, ...args) {
       const result = Reflect.apply(original, this, [module, filename, ...args]);
       if (!capture.closed && /(?:^|[\\/])wrapper\.node$/i.test(String(filename))) {
+        try {
+          const stat = fs.lstatSync(filename);
+          if (stat.isFile() && !stat.isSymbolicLink()) capture.observedWrapperHash = wrapperDigest(filename);
+        } catch { capture.observedWrapperHash = null; }
         try { module.exports = capture.observeExports(module.exports); } catch (error) { capture.diagnostic(error); }
       }
       return result;
@@ -387,8 +422,7 @@ class Capture extends EventEmitter {
         this.remember(uin, uid);
       }
       const client = String(config.clientVer ?? '');
-      this.qqVersion = client === TARGET_VERSION || client === '3.2.35-54395'
-        ? TARGET_VERSION : (this.versionHint === TARGET_VERSION && client === '3.2.35' ? TARGET_VERSION : client || this.versionHint);
+      this.qqVersion = this.versionHint && client === this.versionHint.split('-')[0] ? this.versionHint : client || this.versionHint;
     }
     this.publishState();
   }
@@ -449,11 +483,13 @@ class Capture extends EventEmitter {
   }
 
   attach() {
+    if (this.runtimeProfile().admission === 'denied') return;
     const epoch = this.epoch, generation = this.observerGeneration;
     const active = fn => (...args) => { if (!this.closed && this.ready && this.epoch === epoch && this.observerGeneration === generation) {
       try { fn(...args); } catch (error) { this.diagnostic(error); }
     } };
     const msg = listener({
+      ...Object.fromEntries(Object.entries(this.social.listenerMethods.msg).map(([name, method]) => [name, active(method)])),
       ...Object.fromEntries(Object.entries(this.extendedQueries2Api.listenerMethods?.msg || {}).map(([name, method]) => [name, active(method)])),
       ...Object.fromEntries(Object.entries(this.groupFilesApi.listenerMethods.msg).map(([name, method]) => [name, active(method)])),
       // Private synchronous observers can preserve an early native record
@@ -486,6 +522,10 @@ class Capture extends EventEmitter {
         }
       } }),
       onRichMediaDownloadComplete: active(value => this.bus.emit('mediaDownload', value)),
+      // Raw upload arguments stay on this internal bus. Only an active private
+      // single-file send may retain a bounded, sanitized observation snapshot.
+      ...Object.fromEntries(['onRichMediaProgerssUpdate', 'onRichMediaUploadComplete', 'onSendMsgError']
+        .map(callback => [callback, active((...args) => this.bus.emit('fileUploadObservation', { callback, args }))])),
       onKickedOffLine: active(() => { this.online = false; this.publishState(); })
     });
     const profile = listener({
@@ -550,7 +590,7 @@ class Capture extends EventEmitter {
   retryObservers() {
     const complete = () => ['msg', 'profile', 'group', ...(typeof this.session?.getBuddyService === 'function' ? ['buddy'] : [])]
       .every(name => this.registrations.some(item => item.name === name));
-    if (this.closed || !this.ready || this.qqVersion !== TARGET_VERSION || this.observerTimer || complete()) return;
+    if (this.closed || !this.ready || this.runtimeProfile().admission === 'denied' || this.observerTimer || complete()) return;
     this.observerTimer = setInterval(() => {
       if (this.closed || !this.ready) { clearInterval(this.observerTimer); this.observerTimer = null; return; }
       const count = this.registrations.length;
@@ -561,6 +601,7 @@ class Capture extends EventEmitter {
     this.observerTimer.unref?.();
   }
   detach() {
+    this.social.clearUnread();
     // Native QQ can retain a callback even after removing its registration.
     // A failed initialization followed by recovery may reuse the same epoch;
     // retired listeners must not become active again when ready returns.
@@ -1107,15 +1148,25 @@ class Capture extends EventEmitter {
   async nativePrivateFileUrl(params, context = {}) {
     const epoch = this.epoch;
     if (params.expectedEpoch !== epoch || String(params.expectedUin) !== String(this.self?.uin)) throw problem('SESSION_CHANGED', 'Private file lookup must be bound to the QQ session');
+    if (params.diagnostic !== undefined && (params.diagnostic !== 'resource-metadata' || params.transport !== undefined && params.transport !== 'oidb')) {
+      throw problem('INVALID_PARAMS', 'Private file diagnostics require the fixed OIDB query');
+    }
+    const privateFiles = require('./private-file-url.cjs');
+    // Older internal diagnostics omit both fields; a supplied binding is always complete.
+    const expectedFile = Object.hasOwn(params, 'expectedFileId') || Object.hasOwn(params, 'expectedFileHash')
+      ? privateFiles.fromFileElement({ fileUuid: params.expectedFileId, file10MMd5: params.expectedFileHash }) : null;
     const peer = plainPeer(params.peer);
     if (peer.chatType !== 1 || typeof params.elementId !== 'string' || !params.elementId) throw problem('INVALID_PARAMS', 'Private file lookup requires an exact private message element');
     const record = await this.getMessage({ peer, nativeId: params.nativeId });
     if (this.epoch !== epoch || context.signal?.aborted) throw problem('SESSION_CHANGED', 'QQ changed while locating the private file');
     const matches = record.elements?.filter(item => item?.elementType === 3 && item.elementId === params.elementId) || [];
     if (matches.length !== 1) throw problem('NOT_FOUND', 'QQ returned no unique matching private file');
-    const file = require('./private-file-url.cjs').fromFileElement(matches[0].fileElement);
+    const file = privateFiles.fromFileElement(matches[0].fileElement);
+    if (expectedFile && (file.fileId !== expectedFile.fileId || file.fileHash !== expectedFile.fileHash)) {
+      throw problem('INVALID_RESPONSE', 'QQ private file does not match the expected resource');
+    }
     return require('./msf-native.cjs').run(this, { op: 'fetchPrivateFileUrl', ...file,
-      transport: params.transport, expectedEpoch: epoch, expectedUin: this.self.uin, signal: context.signal,
+      transport: params.transport, diagnostic: params.diagnostic, expectedEpoch: epoch, expectedUin: this.self.uin, signal: context.signal,
       timeoutMs: Math.min(params.timeoutMs ?? 10000, Math.max(1, (context.expiresAt ?? Date.now() + 10000) - Date.now())) });
   }
   async nativeGroupFileUrl(params, context = {}) {
@@ -1167,6 +1218,7 @@ class Capture extends EventEmitter {
   async forwardOperation(params, context) {
     if (params.expectedEpoch !== this.epoch) throw problem('SESSION_CHANGED', 'Forward operation must be bound to the current QQ session');
     if (params.kind === 'customMerge') return this.mergedSendApi.run(params, context);
+    if (params.kind === 'customResourceMerge') return this.customMergedResourceApi.run(params, context);
     return this.forwardApi.run(params, context);
   }
   async socialAction(params, context) { return this.social.action(params, context); }
@@ -1441,6 +1493,7 @@ class Capture extends EventEmitter {
       return { elementType: 10, elementId: '', arkElement: { ...element.arkElement } };
     });
     return this.sendNativeElements(peer, elements, context, { expectedEpoch: epoch, timeoutMs: params.timeoutMs ?? 10000,
+      observePrivateFile: peer.chatType === 1 && elements.length === 1 && elements[0].elementType === 3,
       verifyBeforeSubmit: () => {
         for (const element of elements) {
           const filename = element.picElement?.sourcePath || element.fileElement?.filePath || element.pttElement?.filePath || element.videoElement?.filePath;
@@ -1457,7 +1510,8 @@ class Capture extends EventEmitter {
   // Internal only: this method is deliberately absent from the RPC method
   // allowlist. Callers must validate and own every native element before entry.
   // Normal sends and native merge probes share exactly the same delivery proof.
-  async sendNativeElements(peer, elements, context, { expectedEpoch, timeoutMs = 10000, verifyBeforeSubmit, requireSenderUid = false } = {}) {
+  async sendNativeElements(peer, elements, context, { expectedEpoch, timeoutMs = 10000, verifyBeforeSubmit, requireSenderUid = false,
+    observePrivateFile = false } = {}) {
     this.ensureReady();
     const epoch = this.epoch, selfUin = this.self?.uin, selfUid = this.self?.uid, session = this.session;
     if (!selfUin || !selfUid || expectedEpoch !== epoch) throw problem('SESSION_CHANGED', 'Native send does not match the authenticated QQ session');
@@ -1476,6 +1530,18 @@ class Capture extends EventEmitter {
     const evidence = { at: Date.now(), phase, outcome: 'pending', dispatched: false, acceptance: acceptanceState,
       acceptanceThenable, callbackCount, ownPeerCallbacks, nonemptyGuildCallbacks, exactCallbacks,
       pinned: false, lastStatus, queryCount, queryResult, deliverySettled: false };
+    // The flag is internal and is enabled only after sendMessage validates a
+    // prepared private single-file payload. It never changes delivery proof.
+    const fileUpload = observePrivateFile && peer.chatType === 1 && elements.length === 1 && elements[0].elementType === 3
+      ? createFileUploadObserver({ selfUin, selfUid, peer, isActive: () => !stopped && !this.closed && this.ready &&
+        this.epoch === epoch && this.self?.uin === selfUin && this.self?.uid === selfUid && this.session === session &&
+        !context.signal?.aborted && Date.now() < expiresAt }) : null;
+    let fileUploadHandler;
+    const closeFileUpload = () => {
+      if (!fileUpload) return;
+      if (fileUploadHandler) this.bus.removeListener('fileUploadObservation', fileUploadHandler);
+      fileUploadHandler = undefined; fileUpload.close(); evidence.privateFileUpload = fileUpload.snapshot();
+    };
     this.sendDiagnostics.push(evidence);
     if (this.sendDiagnostics.length > 8) this.sendDiagnostics.shift();
     const updateEvidence = () => {
@@ -1483,11 +1549,13 @@ class Capture extends EventEmitter {
       Object.assign(evidence, { phase, dispatched, acceptance: acceptanceState, acceptanceThenable, callbackCount,
         ownPeerCallbacks, nonemptyGuildCallbacks, exactCallbacks, pinned: Boolean(pinnedId), lastStatus,
         queryCount, queryResult, deliverySettled: deliveredDone });
+      if (fileUpload) evidence.privateFileUpload = fileUpload.snapshot();
     };
     let evidenceTimer;
     const finishEvidence = outcome => {
       if (evidence.outcome !== 'pending') return;
       updateEvidence(); evidence.outcome = outcome; evidence.finishedAt = Date.now();
+      closeFileUpload();
       clearTimeout(evidenceTimer); context.signal?.removeEventListener('abort', evidenceAbort);
     };
     const evidenceAbort = () => finishEvidence(Date.now() >= expiresAt ? 'timeout' : 'cancelled');
@@ -1542,6 +1610,7 @@ class Capture extends EventEmitter {
               queryResult = 'identity-mismatch';
             } else {
               queryResult = 'exact'; lastStatus = Number.isInteger(record.sendStatus) ? record.sendStatus : null;
+              fileUpload?.bind(record, pinnedId);
               if (record.sendStatus === 2) { settle(null, record); return; }
               if (record.sendStatus === 0) { settle(problem('SEND_FAILED', 'QQ reported failed message delivery')); return; }
             }
@@ -1574,7 +1643,7 @@ class Capture extends EventEmitter {
             if (pinnedId && pinnedId !== record.msgId) {
               settle(problem('INVALID_RESPONSE', 'QQ changed the correlated native message identity')); return;
             }
-            pinnedId = record.msgId; updateEvidence(); schedulePoll();
+            pinnedId = record.msgId; fileUpload?.bind(record, pinnedId); updateEvidence(); schedulePoll();
           }
         };
         this.bus.on('sendObservation', observer);
@@ -1593,6 +1662,13 @@ class Capture extends EventEmitter {
       });
       // Observe rejection immediately even if QQ rejects its acceptance Promise.
       delivered.catch(() => {});
+      if (fileUpload) {
+        fileUploadHandler = observation => {
+          if (!dispatched || stopped || evidence.outcome !== 'pending') return;
+          fileUpload.observe(observation?.callback, observation?.args); updateEvidence();
+        };
+        this.bus.on('fileUploadObservation', fileUploadHandler);
+      }
       try {
         return await this.deadline(async () => {
           ensureActive();
@@ -1637,6 +1713,7 @@ class Capture extends EventEmitter {
         }
         throw error;
       } finally {
+        closeFileUpload();
         stopped = true; clearTimeout(pollTimer); queryController.abort();
         this.bus.removeListener('sent', handler); this.bus.removeListener('sendObservation', observer);
       }
@@ -1646,6 +1723,7 @@ class Capture extends EventEmitter {
       throw error;
     } finally {
       if (evidence.outcome === 'pending') finishEvidence('failed');
+      closeFileUpload();
     }
   }
 
@@ -1654,13 +1732,17 @@ class Capture extends EventEmitter {
     if (method === 'status') return this.state();
     this.ensureReady();
     if (!params || typeof params !== 'object' || Array.isArray(params)) throw problem('INVALID_PARAMS', 'Expected parameters object');
+    const profile = this.runtimeProfile();
+    if (!runtimeProfile.permitsMethod(profile, method, params)) throw annotate(problem('UNSUPPORTED',
+      profile.admission === 'denied' ? 'QQ runtime profile is not admitted' : 'This operation is disabled in the experimental QQ profile'),
+      { reason: profile.admission === 'denied' ? 'runtime_profile_denied' : 'experimental_operation_disabled', phase: 'session' });
     if (params.expectedEpoch !== undefined && params.expectedEpoch !== this.epoch) {
       throw problem('SESSION_CHANGED', 'Kernel request belongs to a different QQ session');
     }
     const controller = new AbortController();
     const timeoutMs = method === 'sendMessage' ? (params.timeoutMs ?? 10000) :
       method === 'voiceExtra' || method === 'forwardUpload' || method === 'flashTransfer' && params.operation === 'create' || method === 'groupAlbumAction' && ['album.uploadImage', 'album.uploadVideo'].includes(params.operation) || method === 'qzoneAction' && params.operation === 'qzone.publish' ? 60000 :
-      method === 'forwardOperation' && ['customMerge', 'existingMerge'].includes(params.kind) ? (params.timeoutMs ?? 60000) :
+      method === 'forwardOperation' && ['customMerge', 'customResourceMerge', 'existingMerge'].includes(params.kind) ? (params.timeoutMs ?? 60000) :
         ['prepareMedia', 'receiveMedia', 'recordExport', 'customFaceQuery', 'customFaceAction'].includes(method) ? 60000 :
           ['nativeRkey', 'nativeGroupFileUrl', 'nativeGroupFileSpace', 'nativePrivateFileUrl'].includes(method) ? (params.timeoutMs ?? 10000) : 10000;
     // All preparation, native calls and confirmation reads share the same

@@ -1,4 +1,5 @@
 'use strict';
+const { isPartial } = require('./message-compat.cjs');
 
 const REQUIREMENTS = Object.freeze({ nc_get_user_status: 'userStatus', get_group_todo_list: 'groupTodoList', get_group_signed_list: 'groupSignedList', get_online_clients: 'onlineClients' });
 const ACTIONS = new Set(Object.keys(REQUIREMENTS));
@@ -72,6 +73,7 @@ async function runExtendedQueries2(service, state, action, params) {
         const entry = mapping(service, state, identifier, item);
         return { message_id: entry?.id ?? null, message_seq: item.sequence, message_random: item.random,
             message: Array.isArray(entry?.event?.message) ? entry.event.message : null, text: item.text,
+            ...(isPartial(entry?.event) ? { _freshwater: entry.event._freshwater } : {}),
             ...(item.createdAt !== undefined ? { create_time: item.createdAt } : {}), ...(item.updatedAt !== undefined ? { update_time: item.updatedAt } : {}) };
     });
 }

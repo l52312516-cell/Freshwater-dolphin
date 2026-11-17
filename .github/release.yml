@@ -1,0 +1,21 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+    authors:
+      - dependabot
+  categories:
+    - title: 功能与兼容性
+      labels:
+        - enhancement
+        - compatibility
+    - title: 修复
+      labels:
+        - bug
+    - title: 文档与维护
+      labels:
+        - documentation
+        - maintenance
+    - title: 其他变更
+      labels:
+        - '*'

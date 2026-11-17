@@ -53,7 +53,7 @@ test('send_like accepts exact bounded times and rejects malformed variants befor
         assert.equal(f.calls.at(-1).params.count, Number(times));
     }
     f.calls.length = 0;
-    for (const times of [0, 11, -1, 1.5, true, null, [], {}, '01', '1.0', ' 2 ', 'NaN']) {
+    for (const times of [11, -1, 1.5, true, null, [], {}, '01', '1.0', ' 2 ', 'NaN']) {
         failed(await f.action('send_like', { user_id: '45678', times }), 1400);
     }
     for (const user_id of [0, true, 'u_target', '45678junk', 9007199254740992]) {

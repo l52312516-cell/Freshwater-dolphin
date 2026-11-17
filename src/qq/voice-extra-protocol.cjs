@@ -2,6 +2,10 @@
 
 const wire = require('./proto.cjs');
 const p = require('./qzone-protocol.cjs');
+const { annotate } = require('../diagnostics.cjs');
+function rejected(message, phase, businessCode) {
+    throw annotate(Object.assign(new Error(message), { code: 'KERNEL_ERROR' }), { reason: 'business_rejected', phase, businessCode });
+}
 const n = wire.varintField, b = wire.bytesField, m = wire.messageField, s = (field, value) => b(field, Buffer.from(value));
 function one(fields, field, type, required = false) { const entries = fields.get(field); if (!entries && !required) return undefined; if (!entries || entries.length !== 1 || entries[0].wire !== type) p.fail('INVALID_RESPONSE', 'Malformed voice protocol field'); return entries[0].value; }
 function text(fields, field, maximum = 1024, required = false) { const bytes = one(fields, field, 2, required); if (bytes === undefined) return undefined; if (bytes.length > maximum) p.fail('INVALID_RESPONSE', 'Voice protocol text exceeded its byte budget'); try { const value = new TextDecoder('utf8', { fatal: true }).decode(bytes); p.string(value, maximum, !required, 'INVALID_RESPONSE'); return value; } catch { p.fail('INVALID_RESPONSE', 'Voice protocol text is invalid UTF-8'); } }
@@ -55,17 +59,26 @@ function decode(buffer, prepared) {
     const outer = wire.fields(buffer);
     if (small(outer, 1, true) !== prepared.command || (small(outer, 2) ?? 0) !== prepared.sub || small(outer, 12) !== undefined && small(outer, 12) !== prepared.mode) p.fail('INVALID_RESPONSE', 'AI voice OIDB command or mode mismatch');
     const envelopeCode = small(outer, 3) ?? 0;
-    if (envelopeCode !== 0) p.fail('KERNEL_ERROR', 'QQ rejected the AI voice operation; phase=oidb-envelope; business_code=' + envelopeCode);
+    if (envelopeCode !== 0) rejected('QQ rejected the AI voice operation; phase=oidb-envelope; business_code=' + envelopeCode, 'dispatch', envelopeCode);
     const body = nested(outer, 4, prepared.operation !== 'voice.synthesize') || new Map();
     if (prepared.operation === 'voice.synthesize') {
         const synthesisCode = small(body, 1) ?? 0;
-        if (synthesisCode !== 0) p.fail('KERNEL_ERROR', 'QQ rejected AI voice synthesis; phase=synthesis-body; business_code=' + synthesisCode);
+        // The target build returned status 1 with a complete msgInfo and an
+        // independently confirmed new group PTT. The code alone is not success.
+        if (synthesisCode !== 0 && synthesisCode !== 1) rejected('QQ rejected AI voice synthesis; phase=synthesis-body; business_code=' + synthesisCode, 'synthesize', synthesisCode);
         const info = nested(body, 4);
-        if (!info) return { ...prepared.data, pending: true };
+        if (!info) {
+            if (synthesisCode === 1) p.fail('QUERY_FAILED', 'AI voice status 1 omitted its complete media index; no synthesis retry is permitted');
+            return { ...prepared.data, pending: true };
+        }
         const entries = info.get(1) || [];
-        if (!entries.length) return { ...prepared.data, pending: true };
+        if (!entries.length) {
+            if (synthesisCode === 1) p.fail('QUERY_FAILED', 'AI voice status 1 omitted its complete media index; no synthesis retry is permitted');
+            return { ...prepared.data, pending: true };
+        }
         if (entries.length !== 1 || entries[0].wire !== 2) p.fail('INVALID_RESPONSE', 'QQ returned ambiguous AI voice media nodes');
         const index = nested(wire.fields(entries[0].value), 1, true), file = nested(index, 1, true), type = nested(file, 5);
+        if (synthesisCode === 1 && (!type || small(type, 1, true) !== 3)) p.fail('INVALID_RESPONSE', 'AI voice status 1 did not identify an exact voice media index');
         const decoded = { fileUuid: text(index, 2, 512, true), info: { fileSize: small(file, 1, true), fileHash: text(file, 2, 32, true) } };
         for (const [field, key] of [[3, 'fileSha1'], [4, 'fileName']]) { const value = text(file, field); if (value !== undefined) decoded.info[key] = value; }
         for (const [field, key] of [[6, 'width'], [7, 'height'], [8, 'time'], [9, 'original']]) { const value = small(file, field); if (value !== undefined) decoded.info[key] = value; }
@@ -74,7 +87,7 @@ function decode(buffer, prepared) {
         return { ...prepared.data, pending: false, node: node(decoded, 'INVALID_RESPONSE') };
     }
     const head = nested(body, 1, true), downloadCode = small(head, 2) ?? 0;
-    if (downloadCode !== 0) p.fail('KERNEL_ERROR', 'QQ rejected the voice download query; phase=download-head; business_code=' + downloadCode);
+    if (downloadCode !== 0) rejected('QQ rejected the voice download query; phase=download-head; business_code=' + downloadCode, 'download', downloadCode);
     const download = nested(body, 3, true), source = nested(download, 3, true), domain = text(source, 1, 253, true), path = text(source, 2, 8192, true), key = text(download, 1, 8192) || '';
     if (!/^[a-z0-9.-]+\.qq\.com(?:\.cn)?$/i.test(domain) || !path.startsWith('/') || path.startsWith('//')) p.fail('INVALID_RESPONSE', 'QQ supplied no fixed official voice source');
     const url = new URL('https://' + domain + path + key);

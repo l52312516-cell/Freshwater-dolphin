@@ -26,7 +26,7 @@ async function fixture(t) {
         getCoreAndBaseInfo(_from, values) { return new Map(values.map(uid => [uid, { uid, uin: uid.slice(2), coreInfo: { uid, nick: 'Friend' }, baseInfo: { categoryId } }])); },
         async setHeader(file) { calls.push({ method: 'self.avatar', file }); return { result: 0 }; }
     };
-    const capture = new Capture({ install: false, mediaDirectory: directory });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, mediaDirectory: directory });
     capture.session = { getProfileService: () => profile, getMsgService: () => ({
         async getMsgsByMsgId() { return { result: 0, msgList: [{ ...source }] }; },
         async setStatus(data) { calls.push({ method: 'self.status', data }); return { result: 0 }; }
@@ -93,4 +93,15 @@ test('new OneBot actions cross real file RPC and Capture with consistent request
     }
     assert.equal(f.calls.filter(call => call.method === 'friend.delete').length, 1);
     assert.equal(f.calls.find(call => call.method === 'group.essence').data.random, '0');
+});
+
+test('friend_poke independent self target crosses real RPC without replacing the private peer', async t => {
+    const f = await fixture(t);
+    for (const [params, targetUin] of [[{ user_id: 54321 }, '54321'], [{ user_id: 54321, target_id: 12345 }, '12345'],
+        [{ user_id: 54321, target_id: 67890 }, '67890']]) {
+        const result = await f.service.action({ action: 'friend_poke', params });
+        assert.equal(result.retcode, 0, JSON.stringify(result)); assert.equal(result.data, null);
+        assert.deepEqual(f.calls.at(-1), { method: 'message.poke', data: { chatType: 1, peerUin: '54321', targetUin } });
+    }
+    assert.equal(f.calls.filter(call => call.method === 'message.poke').length, 3);
 });

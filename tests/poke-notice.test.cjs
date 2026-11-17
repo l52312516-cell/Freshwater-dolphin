@@ -78,6 +78,109 @@ test('incoming and outgoing private pokes preserve actual actor and target witho
     const sent = await f.service.event(f.event(outgoing));
     assert.equal(sent.user_id, 11111); assert.equal(sent.target_id, 22222);
 });
+
+test('all four private poke combinations retain actual identities symmetrically for both accounts', async t => {
+    const f = fixture(t); let nativeId = 1000;
+    for (const [selfUid, peerUid] of [['u_self', 'u_actor'], ['u_actor', 'u_self']]) {
+        f.state.self = { uid: selfUid, uin: f.ids[selfUid] };
+        for (const actorUid of [selfUid, peerUid]) for (const targetUid of [selfUid, peerUid]) {
+            for (const peerUin of [f.ids[peerUid], '0', undefined, '']) {
+                const input = record({ chatType: 1, peerUid, peerUin, msgId: String(++nativeId) });
+                input.elements[0].grayTipElement.jsonGrayTipElement.jsonStr = JSON.stringify({ items: [
+                    { type: 'qq', uid: actorUid }, { type: 'qq', uid: targetUid }] });
+                const event = f.event(input), result = await f.service.event(event);
+                assert.deepEqual(result, { time: Number(input.msgTime), self_id: Number(f.ids[selfUid]), post_type: 'notice',
+                    notice_type: 'notify', sub_type: 'poke', user_id: Number(f.ids[actorUid]), target_id: Number(f.ids[targetUid]) });
+                assert.equal(await f.service.event(event), null);
+            }
+        }
+        assert.equal(f.store.state(f.ids[selfUid]).nextId, 1); assert.equal(f.store.state(f.ids[selfUid]).byId.size, 0);
+    }
+});
+
+test('private self-pokes independently verify the real peer and never admit third-party participants or broad zero sentinels', async t => {
+    const f = fixture(t);
+    function selfPoke(overrides = {}, actorUid = 'u_self', targetUid = actorUid) {
+        const input = record({ chatType: 1, peerUid: 'u_actor', peerUin: '22222', ...overrides });
+        input.elements[0].grayTipElement.jsonGrayTipElement.jsonStr = JSON.stringify({ items: [
+            { type: 'qq', uid: actorUid }, { type: 'qq', uid: targetUid }] });
+        return input;
+    }
+    for (const input of [selfPoke({}, 'u_other'), selfPoke({}, 'u_self', 'u_other'), selfPoke({ peerUin: '11111' }),
+        selfPoke({ peerUid: 'not-a-real-uid', peerUin: '0' }), selfPoke({ peerUin: 0 }), selfPoke({ peerUin: null }),
+        selfPoke({ peerUin: false }), selfPoke({ peerUin: '00' })]) {
+        assert.equal(await f.service.event(f.event(input)), null);
+    }
+    f.ids.u_actor = '11111';
+    assert.equal(await f.service.event(f.event(selfPoke({ peerUin: '0' }))), null);
+    f.ids.u_actor = '22222'; f.ids.u_self = '55555';
+    assert.equal(await f.service.event(f.event(selfPoke({ peerUin: '0' }))), null);
+    assert.equal(f.service.noticeSeen.size, 0); assert.equal(f.store.state('11111').nextId, 1);
+});
+
+test('private self-poke aborts when its independently resolved peer belongs to a changed session', async t => {
+    const f = fixture(t), original = f.backend.call, input = record({ chatType: 1, peerUid: 'u_actor', peerUin: '0' });
+    input.elements[0].grayTipElement.jsonGrayTipElement.jsonStr = JSON.stringify({ items: [
+        { type: 'qq', uid: 'u_self' }, { type: 'qq', uid: 'u_self' }] });
+    f.backend.call = async (method, params) => {
+        const result = await original(method, params);
+        if (method === 'resolve' && params.uid === 'u_actor') f.state.epoch = 'changed';
+        return result;
+    };
+    assert.equal(await f.service.event(f.event(input)), null); assert.equal(f.service.noticeSeen.size, 0);
+    assert.deepEqual(f.calls.filter(call => call.method === 'resolve').map(call => call.params.uid), ['u_self', 'u_actor']);
+});
+
+test('observed private string-zero peer UIN preserves both poke directions and exact native deduplication', async t => {
+    const f = fixture(t), incoming = record({ chatType: 1, peerUid: 'u_actor', peerUin: '0' });
+    const input = f.event(incoming);
+    assert.deepEqual(await f.service.event(input), { time: Number(incoming.msgTime), self_id: 11111,
+        post_type: 'notice', notice_type: 'notify', sub_type: 'poke', user_id: 22222, target_id: 11111 });
+    assert.equal(await f.service.event(input), null);
+    const outgoing = structuredClone(incoming); outgoing.msgId = '900';
+    outgoing.elements[0].grayTipElement.jsonGrayTipElement.jsonStr = JSON.stringify({ items: [
+        { type: 'qq', uid: 'u_self' }, { type: 'qq', uid: 'u_actor' }] });
+    const results = await Promise.all([f.service.event(f.event(outgoing)), f.service.event(f.event(outgoing))]);
+    assert.equal(results.filter(Boolean).length, 1);
+    assert.deepEqual(results.find(Boolean), { time: Number(outgoing.msgTime), self_id: 11111,
+        post_type: 'notice', notice_type: 'notify', sub_type: 'poke', user_id: 11111, target_id: 22222 });
+    assert.equal(f.calls.filter(call => call.method === 'resolve').length, 4);
+    assert.equal(f.store.state('11111').nextId, 1); assert.equal(f.store.state('11111').byId.size, 0);
+});
+
+test('only the observed string-zero sentinel bypasses the private peer UIN check', async t => {
+    const f = fixture(t);
+    for (const peerUin of ['00', '0.0', ' 0', '0 ', 0, -0, 0.0, false, true, null, [], {}, 'false', '1e3', '+22222', '022222', '9007199254740992']) {
+        assert.equal(await f.service.event(f.event(record({ chatType: 1, peerUid: 'u_actor', peerUin }))), null);
+        assert.equal(f.service.noticeSeen.size, 0);
+    }
+    for (const peerUin of [undefined, '', '0', '22222', 22222]) {
+        const input = record({ chatType: 1, peerUid: 'u_actor', peerUin, msgId: String(900 + f.service.noticeSeen.size) });
+        assert.equal((await f.service.event(f.event(input))).target_id, 11111);
+    }
+});
+
+test('private string-zero sentinel never bypasses participant, conversation, positive UIN, session or time checks', async t => {
+    const f = fixture(t), base = record({ chatType: 1, peerUid: 'u_actor', peerUin: '0' });
+    const foreign = structuredClone(base);
+    foreign.elements[0].grayTipElement.jsonGrayTipElement.jsonStr = JSON.stringify({ items: [
+        { type: 'qq', uid: 'u_actor' }, { type: 'qq', uid: 'u_other' }] });
+    for (const input of [foreign, { ...base, peerUid: 'u_other' }, { ...base, peerUin: '99999' }, { ...base, peerUin: '11111' },
+        { ...base, sourceType: 3 }, { ...base, msgTime: String(Math.floor(Date.now() / 1000) - 120) }]) {
+        assert.equal(await f.service.event(f.event(input)), null);
+    }
+    assert.equal(await f.service.event({ ...f.event(base), epoch: 'another-session' }), null);
+    assert.equal(await f.service.event({ ...f.event(base), selfUin: '99999' }), null);
+    assert.equal(f.service.noticeSeen.size, 0); assert.equal(f.store.state('11111').nextId, 1);
+});
+
+test('the private string-zero convention does not apply to group peer UINs', async t => {
+    const f = fixture(t);
+    for (const peerUin of ['0', '00', '0.0', true]) assert.equal(await f.service.event(f.event(record({ peerUin }))), null);
+    assert.equal(f.calls.some(call => call.method === 'resolve'), false);
+    assert.equal(f.service.noticeSeen.size, 0);
+    assert.equal((await f.service.event(f.event())).group_id, 33333);
+});
 test('private poke rejects unrelated conversations and inconsistent peer UINs', async t => {
     const f = fixture(t);
     for (const data of [{ peerUid: 'u_other', peerUin: '44444' }, { peerUid: 'u_actor', peerUin: '99999' },

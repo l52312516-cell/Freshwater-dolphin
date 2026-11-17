@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeMergedNodes, MAX_NODES, MAX_SEGMENTS, MAX_TEXT_BYTES, MAX_NAME_BYTES, MAX_IMAGE_BYTES } = require('../src/onebot/merged-nodes.cjs');
+const { normalizeMergedNodes, existingNodeIds, MAX_NODES, MAX_SEGMENTS, MAX_TEXT_BYTES, MAX_NAME_BYTES, MAX_IMAGE_BYTES } = require('../src/onebot/merged-nodes.cjs');
 
 const SELF = '1000000001';
 const PNG = 'base64://iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -47,14 +47,44 @@ test('CQ strings use ordinary escaping while preserving raw text array contents'
     rejects([node('[CQ:at,qq=all]')], 'UNSUPPORTED');
 });
 
-test('a verified exact self author is required and other authors are explicitly unsupported', () => {
+test('a verified self account remains required while exact custom uint32 authors are preserved', () => {
     assert.throws(() => normalizeMergedNodes([node()]), { code: 'NOT_READY' });
     assert.throws(() => normalizeMergedNodes([node()], {}), { code: 'NOT_READY' });
-    rejects([node(undefined, { user_id: '3000000002' })], 'UNSUPPORTED');
-    for (const user_id of ['', 0, -1, 1.5, '01000000001', '+1000000001', '1000000001 ', '9e8', 9007199254740992, '9007199254740992', {}, null]) {
+    for (const user_id of [1, '3000000002', 4294967295, '4294967295']) {
+        assert.equal(normalize([node(undefined, { user_id })])[0].user_id, String(user_id));
+    }
+    assert.equal(normalize([{ type: 'node', data: { uin: 3000000002, name: '原作者', content: [text('same')] } }])[0].user_id, '3000000002');
+    for (const user_id of ['', 0, -1, 1.5, 4294967296, '4294967296', '01000000001', '+1000000001', '1000000001 ', '9e8', 9007199254740992, '9007199254740992', {}, null]) {
         rejects([node(undefined, { user_id })]);
     }
+    for (const selfId of ['', 0, '4294967296', '01', {}, null]) {
+        assert.throws(() => normalizeMergedNodes([node()], { selfId }), { code: 'INVALID_PARAMS' });
+    }
+    assert.equal(normalize([node(undefined, { user_id: '3000000002', uin: 3000000002 })])[0].user_id, '3000000002');
     const missing = node(); delete missing.data.user_id; rejects([missing]);
+});
+
+test('optional node times preserve zero and positive uint32 seconds as numbers without inventing missing times', () => {
+    assert.equal(Object.hasOwn(normalize([node()])[0], 'time'), false);
+    for (const time of [0, '0', 1, '1', 1794614400, '1794614400', 4294967295, '4294967295']) {
+        const output = normalize([node(undefined, { user_id: '3000000002', time })])[0];
+        assert.equal(output.time, Number(time));
+        assert.equal(typeof output.time, 'number');
+        assert.equal(output.user_id, '3000000002');
+    }
+    for (const time of [undefined, null, false, true, '', ' ', '01', '+1', '-0', '1 ', '1.0', '1e3', '0x10', -1, 1.5,
+        NaN, Infinity, 4294967296, '4294967296', 9007199254740992, '9007199254740992', {}, []]) {
+        rejects([node(undefined, { time })]);
+    }
+});
+
+test('existing-node detection recognizes custom times but never accepts metadata on an ID node', () => {
+    assert.equal(existingNodeIds([node(undefined, { user_id: '3000000002', time: '0' })]), null);
+    assert.deepEqual(existingNodeIds([{ type: 'node', data: { id: -1 } }, { type: 'node', data: { id: '2' } }]), [-1, 2]);
+    for (const [key, value] of Object.entries({ time: 0, user_id: SELF, uin: SELF, nickname: '原作者', name: '原作者', content: [text('same')] })) {
+        assert.throws(() => existingNodeIds([{ type: 'node', data: { id: 1, [key]: value } }]), { code: 'INVALID_PARAMS' });
+    }
+    assert.throws(() => existingNodeIds([{ type: 'node', data: { id: 1 } }, node(undefined, { time: 0 })]), { code: 'UNSUPPORTED' });
 });
 
 test('count and aggregate segment bounds permit useful reports without splitting oversized requests', () => {
@@ -115,7 +145,6 @@ test('node ID references, nested forwards and every unsupported message segment 
         rejects([node([text('valid first')]), node([{ type, data: {} }])], 'UNSUPPORTED');
     }
     rejects([{ type: 'forward', data: { id: 'fwd_handle' } }], 'UNSUPPORTED');
-    rejects([node(undefined, { time: 1794614400 })], 'UNSUPPORTED');
     rejects([node([{ type: 'image', data: { file: PNG, url: 'https://example.test/' } }])], 'UNSUPPORTED');
     rejects([node([{ type: 'text', data: { text: 'allowed', raw: 'ignored?' } }])], 'UNSUPPORTED');
 });

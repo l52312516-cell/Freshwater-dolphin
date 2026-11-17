@@ -10,7 +10,7 @@ function allowance(extra = {}) {
         RemainAtAllCountForGroup: 7, atTimesMsg: '', canNotAtAllMsg: '今日额度不足', ...extra } };
 }
 function fixture(t, services = {}) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.ready = true; capture.epoch = 'generation-one'; capture.qqVersion = '3.2.35-54395';
     capture.self = { uin: '12345', uid: 'u_self' }; capture.session = {};
     capture.service = name => { capture.ensureReady(); return services[name] || {}; };
@@ -40,7 +40,7 @@ test('omitted count defaults to one while supplied invalid counts and raw UINs a
     let calls = 0;
     const f = fixture(t, { profileLike: { setBuddyProfileLike() { calls++; return { result: '0', succCounts: 1 }; } } });
     assert.equal((await f.interactions.dispatch('profile.like', { uid: 'u_target' })).count, 1);
-    for (const count of [null, 0, -1, 11, 1.5, '1', true, NaN, Infinity]) {
+    for (const count of [null, -1, 11, 1.5, '1', true, NaN, Infinity]) {
         await assert.rejects(f.interactions.dispatch('profile.like', { uid: 'u_target', count }), { code: 'INVALID_PARAMS' });
     }
     for (const uid of [12345, '12345', '', 'u_', 'u_bad space', 'u_' + 'a'.repeat(200)]) {

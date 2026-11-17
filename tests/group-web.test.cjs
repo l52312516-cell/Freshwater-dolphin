@@ -67,6 +67,23 @@ test('notice publishing happens once and an account change rejects even a succes
     await assert.rejects(changed.run('group.noticePublish', { content: '测试' }), { code: 'SESSION_CHANGED' });
 });
 
+test('ordinary notice publishing preserves content and uses the reference member-confirmation default', async () => {
+    const f = fixture({ result: { ec: 0 } }), content = '普通公告 A&B\n<原文> + 100% 🐬';
+    await f.run('group.noticePublish', { content });
+    const posts = f.calls.filter(call => call.url.pathname.endsWith('/add_qun_notice'));
+    assert.equal(posts.length, 1);
+    const { url, request } = posts[0], form = new URLSearchParams(request.body);
+    assert.equal(url.origin, 'https://web.qun.qq.com');
+    assert.equal(request.method, 'POST');
+    assert.equal(request.headers['Content-Type'], 'application/x-www-form-urlencoded');
+    assert.deepEqual([...form.keys()].sort(), ['bkn', 'pinned', 'qid', 'settings', 'text', 'type']);
+    assert.equal(form.get('qid'), '2000000001');
+    assert.equal(form.get('text'), content);
+    assert.equal(form.get('pinned'), '0');
+    assert.equal(form.get('type'), '1');
+    assert.deepEqual(JSON.parse(form.get('settings')), { is_show_edit_card: 1, tip_window_type: 1, confirm_required: 1 });
+});
+
 test('essence and honor queries require real page flags and exact message/account identities', async () => {
     const essence = fixture({ result: { retcode: 0, data: { is_end: true, msg_list: [{ group_code: 2000000001, msg_seq: 77, msg_random: 0, msg_content: [] }] } } });
     assert.equal((await essence.run('group.essenceList', { count: 1 })).messages[0].msg_random, 0);

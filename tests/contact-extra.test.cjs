@@ -33,13 +33,14 @@ function fixture() {
         action: (action, params = {}) => runContactExtraActions(service, state, action, params) };
 }
 
-test('all eight actions dispatch real fixed operations and mark-read uses its native method', async () => {
+test('all eight actions dispatch fixed operations and input/mark-read use available native methods', async () => {
     const f = fixture(); assert.equal(ACTIONS.size, 8); assert.equal(WRITE_ACTIONS.size, 3);
     assert.deepEqual(await f.action('translate_en2zh', { words: ['hello', 'A\nB'] }), { words: ['中hello', '中A\nB'] });
     assert.deepEqual(await f.action('get_unidirectional_friend_list'), [{ uin: 54321, uid: 'u_person', nick_name: 'Person' }]);
     assert.deepEqual(await f.action('set_input_status', { user_id: 54321, event_type: 0 }), {});
     assert.equal(await f.action('_mark_all_as_read'), null);
-    assert.deepEqual(f.reads, [{ service: 'msg', method: 'setAllC2CAndGroupMsgRead', args: [] }]);
+    assert.deepEqual(f.reads, [{ service: 'msg', method: 'sendShowInputStatusReq', args: [1, 0, 'u_person'] },
+        { service: 'msg', method: 'setAllC2CAndGroupMsgRead', args: [] }]);
     const ignored = await f.action('get_group_ignored_notifies'), adds = await f.action('get_group_ignore_add_request');
     assert.equal(ignored.length, 2); assert.equal(adds.length, 1);
     assert.equal(adds[0].request_id, '18446744073709551614'); assert.equal(adds[0].requester_uin, 54321);
@@ -143,4 +144,136 @@ test('OneBot independently checks identity, scope, word pairing, list types and 
     await assert.rejects(f.action('get_group_ignored_notifies'), { code: 'INVALID_RESPONSE' });
     f.service.sessionCall = async () => ({ operation: 'input.status', selfUin: '11111', result: { confirmed: true, confirmation: 'server_ack', uin: '65432', targetUid: 'u_other', eventType: 0 } });
     await assert.rejects(f.action('set_input_status', { user_id: '54321' }), { code: 'INVALID_RESPONSE' });
+});
+
+test('typing prefers the exact native target without requiring MSF and preserves default zero and int32 events', async () => {
+    const f = fixture(); f.native.available = () => false;
+    assert.equal(f.api.capabilities().inputStatus, true);
+    for (const eventType of [undefined, 0, 1, 0x7fffffff]) {
+        const params = { user_id: '54321', ...(eventType === undefined ? {} : { event_type: eventType }) };
+        assert.deepEqual(await f.action('set_input_status', params), {});
+        assert.deepEqual(f.reads.at(-1), { service: 'msg', method: 'sendShowInputStatusReq', args: [1, eventType ?? 0, 'u_person'] });
+    }
+    const result = await f.execute({ operation: 'input.status', uin: '54321', eventType: 0 });
+    assert.deepEqual(result, { operation: 'input.status', selfUin: '11111', result: {
+        confirmed: true, confirmation: 'kernel_ack', targetUid: 'u_person', eventType: 0, uin: '54321' } });
+    assert.equal(f.calls.length, 0);
+});
+
+test('typing preserves high uint32 events through preselected OIDB without int32 truncation', async () => {
+    const f = fixture();
+    for (const eventType of [0x80000000, 0xffffffff]) {
+        assert.deepEqual(await f.action('set_input_status', { user_id: '54321', event_type: eventType }), {});
+        assert.deepEqual(f.calls.at(-1).request, { targetUid: 'u_person', eventType });
+    }
+    assert.equal(f.reads.length, 0);
+    const g = fixture(); g.native.available = () => false;
+    for (const eventType of [0x80000000, 0xffffffff]) {
+        await assert.rejects(g.execute({ operation: 'input.status', uin: '54321', eventType }), { code: 'UNSUPPORTED' });
+    }
+    assert.equal(g.reads.length + g.calls.length, 0);
+});
+
+test('typing uses fixed OIDB only when the native method was unavailable before dispatch', async () => {
+    const f = fixture();
+    f.capture.hasMethods = (_service, methods) => !methods.includes('sendShowInputStatusReq');
+    f.capture.resolve = async () => {
+        f.capture.hasMethods = () => true;
+        return { uin: '54321', uid: 'u_person' };
+    };
+    assert.deepEqual(await f.action('set_input_status', { user_id: '54321', event_type: 0 }), {});
+    assert.deepEqual(f.calls.map(call => [call.operation, call.request]), [['input.status', { targetUid: 'u_person', eventType: 0 }]]);
+    assert.equal(f.reads.length, 0, 'method appearance after selection cannot add another write');
+    const g = fixture(); g.capture.hasMethods = () => false; g.native.available = () => false;
+    assert.equal(g.api.capabilities().inputStatus, false);
+    await assert.rejects(g.execute({ operation: 'input.status', uin: '54321', eventType: 0 }), { code: 'UNSUPPORTED' });
+    assert.equal(g.reads.length + g.calls.length, 0);
+});
+
+test('typing requires an explicit numeric zero ACK and never falls back after rejection or an unknown return', async () => {
+    for (const value of [undefined, null, [], {}, 0, true, { result: '0' }, { result: false }, { result: 1 },
+        { result: 0, errCode: 5 }, { result: 0, errorCode: -1 }, { result: 0, errCode: undefined },
+        { result: 0, errorCode: null }, { result: 0, errorCode: '0' }, Object.create({ result: 0 })]) {
+        const f = fixture(); let writes = 0;
+        f.capture.invoke = async () => { writes++; return value; };
+        await assert.rejects(f.action('set_input_status', { user_id: '54321' }), { code: 'KERNEL_ERROR' });
+        assert.equal(writes, 1); assert.equal(f.calls.length, 0);
+    }
+    const g = fixture(); let writes = 0;
+    g.capture.invoke = async () => { writes++; throw Object.assign(new Error('native write outcome unknown'), { code: 'KERNEL_ERROR' }); };
+    await assert.rejects(g.action('set_input_status', { user_id: '54321' }), { code: 'KERNEL_ERROR' });
+    assert.equal(writes, 1); assert.equal(g.calls.length, 0);
+    const h = fixture(); h.capture.invoke = async () => ({ result: 0, errCode: 0, errorCode: 0 });
+    assert.deepEqual(await h.action('set_input_status', { user_id: '54321' }), {});
+});
+
+test('typing freezes the resolved UID, rejects mismatched targets and does not switch if the method disappears', async () => {
+    for (const who of [{ uin: '65432', uid: 'u_person' }, { uin: '54321', uid: '' }, { uin: '54321', uid: '54321' }]) {
+        const f = fixture(); f.capture.resolve = async () => who;
+        await assert.rejects(f.action('set_input_status', { user_id: '54321' }));
+        assert.equal(f.reads.length + f.calls.length, 0);
+    }
+    const g = fixture(); const who = { uin: '54321', uid: 'u_person' };
+    g.capture.resolve = async () => who;
+    g.capture.invoke = async (_service, _method, args) => {
+        assert.deepEqual(args, [1, 0, 'u_person']); who.uid = 'u_changed'; return { result: 0 };
+    };
+    assert.equal((await g.execute({ operation: 'input.status', uin: '54321', eventType: 0 })).result.targetUid, 'u_person');
+    const h = fixture(); let writes = 0;
+    h.capture.resolve = async () => { h.capture.hasMethods = () => false; return { uin: '54321', uid: 'u_person' }; };
+    h.capture.invoke = async () => { writes++; throw Object.assign(new Error('method disappeared'), { code: 'UNSUPPORTED' }); };
+    await assert.rejects(h.action('set_input_status', { user_id: '54321' }), { code: 'UNSUPPORTED' });
+    assert.equal(writes, 1); assert.equal(h.calls.length, 0);
+});
+
+test('typing checks cancellation and session identity after resolution before any write', async () => {
+    const f = fixture(), controller = new AbortController();
+    f.capture.resolve = async () => { controller.abort(); return { uin: '54321', uid: 'u_person' }; };
+    await assert.rejects(f.execute({ operation: 'input.status', uin: '54321', eventType: 0 }, { signal: controller.signal }), { code: 'EXPIRED' });
+    await tick(); assert.equal(f.reads.length + f.calls.length, 0);
+    const g = fixture(); let resolveWho;
+    g.capture.resolve = () => new Promise(resolve => { resolveWho = resolve; });
+    const pending = g.action('set_input_status', { user_id: '54321' });
+    const rejected = assert.rejects(pending, { code: 'SESSION_CHANGED' }); await tick();
+    g.capture.epoch = 'e2'; resolveWho({ uin: '54321', uid: 'u_person' }); await rejected;
+    assert.equal(g.reads.length + g.calls.length, 0);
+});
+
+test('typing rejects late native ACKs after epoch, session or self identity changes without a second write', async () => {
+    for (const mutate of [f => { f.capture.epoch = 'e2'; }, f => { f.capture.session = {}; },
+        f => { f.capture.self.uin = '22222'; }, f => { f.capture.self.uid = 'u_changed'; }]) {
+        const f = fixture(); let finish, writes = 0;
+        f.capture.invoke = () => { writes++; return new Promise(resolve => { finish = resolve; }); };
+        const pending = f.action('set_input_status', { user_id: '54321' });
+        const rejected = assert.rejects(pending, { code: 'SESSION_CHANGED' }); await tick();
+        mutate(f); finish({ result: 0 }); await rejected;
+        assert.equal(writes, 1); assert.equal(f.calls.length, 0);
+    }
+});
+
+test('typing retains all physical slots after cancellation until native writes really settle', async () => {
+    const f = fixture(), finish = []; let writes = 0;
+    f.capture.invoke = () => { writes++; return new Promise(resolve => finish.push(resolve)); };
+    for (let index = 0; index < 8; index++) {
+        const controller = new AbortController();
+        const pending = f.execute({ operation: 'input.status', uin: '54321', eventType: 0 }, { signal: controller.signal });
+        const rejected = assert.rejects(pending, { code: 'EXPIRED' }); await tick(); controller.abort(); await rejected;
+    }
+    f.capture.epoch = 'e2'; f.capture.session = {};
+    await assert.rejects(f.execute({ operation: 'input.status', uin: '54321', eventType: 1 }), { code: 'BUSY' });
+    assert.equal(writes, 8); assert.equal(f.calls.length, 0);
+    finish[0]({ result: 0 }); await tick();
+    f.capture.invoke = async () => { writes++; return { result: 0 }; };
+    assert.equal((await f.execute({ operation: 'input.status', uin: '54321', eventType: 1 })).result.eventType, 1);
+    for (const resolve of finish.slice(1)) resolve({ result: 0 }); await tick();
+    assert.equal(writes, 9); assert.equal(f.calls.length, 0);
+});
+
+test('typing does not turn a late native ACK into success after the absolute deadline', async () => {
+    const f = fixture(); let finish, writes = 0;
+    f.capture.invoke = () => { writes++; return new Promise(resolve => { finish = resolve; }); };
+    const pending = f.execute({ operation: 'input.status', uin: '54321', eventType: 0 }, { expiresAt: Date.now() + 30 });
+    const rejected = assert.rejects(pending, error => ['TIMEOUT', 'EXPIRED'].includes(error.code));
+    await tick(); await rejected; finish({ result: 0 }); await tick();
+    assert.equal(writes, 1); assert.equal(f.calls.length, 0);
 });

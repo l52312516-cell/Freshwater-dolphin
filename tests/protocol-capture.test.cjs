@@ -56,7 +56,7 @@ function fixture(t, options = {}) {
         },
         ...Object.fromEntries(Object.entries(getters).map(([name, getter]) => [getter, () => services[name]]))
     };
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.observeSession(session);
     function initialize(config = {}) {
         const result = session.init({ selfUin: '23456', selfUid: 'u_self', clientVer: TARGET_VERSION, ...config }, {}, {},

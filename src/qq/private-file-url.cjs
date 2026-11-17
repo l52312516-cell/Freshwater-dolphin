@@ -93,17 +93,40 @@ function downloadUrl(host, port, target, thumbnail = true, scheme = 'http:') {
     return thumbnail ? value + (target.includes('?') ? '&' : '?') + 'isthumb=0' : value;
 }
 
-function decodeResponse(buffer, expected) {
+function metadataDiagnostic(item) {
+    return { diagnosticOnly: true, diagnostic: 'resource-metadata', version: 2, businessSuccess: false,
+        decoderAccepted: false, phase: 'envelope', errorCode: null, metadataPresent: false, metadataParsed: false,
+        failedChecks: [], checks: {
+            id6Present: false, id144Present: false, hash140Present: false, hash145Present: false, checksum100Present: false,
+            id6EqualsInput: false, id144EqualsInput: false, hash140EqualsInput: false, hash145EqualsInput: false,
+            checksum100LengthIs16: false, inputHashIs32Hex: /^[a-fA-F0-9]{32}$/.test(item.fileHash),
+            checksumComparisonApplicable: false, checksum100EqualsInput: false, originalChecksumMatches: false, directChecksumMatches: false,
+            idCheckRequired: false, hashCheckRequired: false, idMatches: false, hashMatches: false, aliasChecksumRequired: false
+        } };
+}
+
+function decodeResponse(buffer, expected, diagnostic) {
+    if (diagnostic !== undefined && diagnostic !== 'resource-metadata') {
+        throw problem('INVALID_PARAMS', 'Invalid private file diagnostic mode');
+    }
     const item = resource(expected?.fileId, expected?.fileHash);
+    const observation = diagnostic === 'resource-metadata' ? metadataDiagnostic(item) : null;
+    let phase = 'envelope';
+    try {
     const top = fields(buffer);
     if (integer(top, 1, true) !== BigInt(COMMAND) || integer(top, 2, true) !== BigInt(SUBCOMMAND) ||
         (integer(top, 12) ?? 0n) !== 0n) throw problem('INVALID_RESPONSE', 'Private file response identity mismatch');
+    phase = 'envelope-status';
     if ((integer(top, 3) ?? 0n) !== 0n) throw problem('QUERY_FAILED', 'QQ rejected the private file URL query');
+    phase = 'payload';
     const payload = nested(nested(top, 4), 14);
     // The meaning of nonzero field10 is not established by the schema.
     if ((integer(payload, 10) ?? 0n) !== 0n) throw problem('UNSUPPORTED', 'Private file response contains an unverified status');
+    phase = 'routing-fields';
     const result = nested(payload, 30);
     const host = string(result, 20, 253, true), port = integer(result, 40, true), target = string(result, 50, 8192, true);
+    phase = 'resource-metadata';
+    if (observation) observation.metadataPresent = payload.has(40);
     const metadata = field(payload, 40, 2);
     let fileName;
     if (metadata !== undefined) {
@@ -117,16 +140,49 @@ function decodeResponse(buffer, expected) {
         const checksum = field(info, 100, 2);
         const originalChecksumMatches = originalId === item.fileId && /^[a-fA-F0-9]{32}$/.test(item.fileHash) &&
             checksum?.length === 16 && checksum.equals(Buffer.from(item.fileHash, 'hex'));
+        // The directly returned UUID can identify the same original file while
+        // field140 carries an opaque addon. Trust its checksum only together
+        // with that exact UUID; checksum alone never identifies a resource.
+        const directChecksumMatches = returnedId === item.fileId && /^[a-fA-F0-9]{32}$/.test(item.fileHash) &&
+            checksum?.length === 16 && checksum.equals(Buffer.from(item.fileHash, 'hex'));
         const idMatches = returnedId === item.fileId || originalId === item.fileId;
-        const hashMatches = returnedHash === item.fileHash || originalHash === item.fileHash || originalChecksumMatches;
-        if ((returnedId !== undefined || originalId !== undefined) && !idMatches ||
-            (returnedHash !== undefined || originalHash !== undefined) && !hashMatches ||
-            originalId === item.fileId && returnedId !== item.fileId && originalHash !== item.fileHash && !originalChecksumMatches) {
+        const hashMatches = returnedHash === item.fileHash || originalHash === item.fileHash || originalChecksumMatches || directChecksumMatches;
+        const idCheckRequired = returnedId !== undefined || originalId !== undefined;
+        const hashCheckRequired = returnedHash !== undefined || originalHash !== undefined;
+        const aliasChecksumRequired = originalId === item.fileId && returnedId !== item.fileId && originalHash !== item.fileHash;
+        if (observation) {
+            const applicable = observation.checks.inputHashIs32Hex && checksum?.length === 16;
+            observation.metadataParsed = true;
+            observation.checks = { ...observation.checks,
+                id6Present: returnedId !== undefined, id144Present: originalId !== undefined,
+                hash140Present: returnedHash !== undefined, hash145Present: originalHash !== undefined, checksum100Present: checksum !== undefined,
+                id6EqualsInput: returnedId === item.fileId, id144EqualsInput: originalId === item.fileId,
+                hash140EqualsInput: returnedHash === item.fileHash, hash145EqualsInput: originalHash === item.fileHash,
+                checksum100LengthIs16: checksum?.length === 16, checksumComparisonApplicable: applicable === true,
+                checksum100EqualsInput: applicable === true && checksum.equals(Buffer.from(item.fileHash, 'hex')),
+                originalChecksumMatches: originalChecksumMatches === true, directChecksumMatches: directChecksumMatches === true,
+                idCheckRequired, hashCheckRequired, idMatches, hashMatches, aliasChecksumRequired };
+            if (idCheckRequired && !idMatches) observation.failedChecks.push('ID_ALIAS_NOT_MATCHED');
+            if (hashCheckRequired && !hashMatches) observation.failedChecks.push('HASH_ALIAS_NOT_MATCHED');
+            if (aliasChecksumRequired && !originalChecksumMatches) observation.failedChecks.push('ORIGINAL_ALIAS_CHECKSUM_REQUIRED');
+        }
+        if (idCheckRequired && !idMatches || hashCheckRequired && !hashMatches || aliasChecksumRequired && !originalChecksumMatches) {
             throw problem('INVALID_RESPONSE', 'Private file response belongs to another resource');
         }
+        phase = 'resource-name';
         fileName = string(info, 7, 1024);
     }
-    return { fileId: item.fileId, url: downloadUrl(host, port, target), ...(fileName ? { fileName } : {}) };
+    phase = 'url-validation';
+    const url = downloadUrl(host, port, target);
+    if (observation) return { ...observation, decoderAccepted: true, phase: 'complete' };
+    return { fileId: item.fileId, url, ...(fileName ? { fileName } : {}) };
+    } catch (error) {
+        if (!observation) throw error;
+        // Never return the error text, raw fields, URL, resource identifiers or
+        // checksums. Diagnostic mode is a closed observation, never a URL result.
+        return { ...observation, phase, errorCode: ['INVALID_RESPONSE', 'QUERY_FAILED', 'UNSUPPORTED'].includes(error?.code)
+            ? error.code : 'INTERNAL_ERROR' };
+    }
 }
 
 function fromFileElement(element) {

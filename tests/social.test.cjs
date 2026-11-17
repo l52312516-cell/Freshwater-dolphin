@@ -8,7 +8,7 @@ const { runSocial, convertSocialEvent } = require('../src/onebot/social-actions.
 const { OneBotService } = require('../src/onebot/service.cjs');
 
 function fixture(overrides = {}, options = {}) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.epoch = 'one'; capture.ready = true; capture.readyAt = Date.now() - 1000;
     capture.qqVersion = '3.2.35-54395'; capture.self = { uin: '1000000001', uid: 'u_self' };
     const services = { buddy: {}, group: {}, profile: {}, recent: {}, msg: {}, ...overrides };
@@ -249,6 +249,24 @@ test('OneBot validates booleans, subtype and opaque flags before any kernel side
     assert.deepEqual(f.calls[1].params, { operation: 'read', peer: { chatType: 1, peerUid: 'u_friend' } });
 });
 
+test('OneBot group request type aliases and default preserve the opaque flag and confirmed result', async () => {
+    const f = onebotFixture(), flag = 'fwd_req_' + 'a'.repeat(48);
+    for (const [params, subType] of [[{}, 'add'], [{ type: 'invite' }, 'invite'], [{ sub_type: 'invite' }, 'invite'],
+        [{ sub_type: 'add', type: 'add' }, 'add']]) {
+        assert.equal(await runSocial(f.service, f.state, 'set_group_add_request', { flag, ...params }), null);
+        assert.deepEqual(f.calls.at(-1), { method: 'socialAction', params: { operation: 'groupRequest', flag, approve: true, subType, reason: '' } });
+    }
+    const before = f.calls.length;
+    for (const params of [{ sub_type: 'add', type: 'invite' }, { sub_type: 'invite', type: 'add' }, { type: '' }, { sub_type: '' },
+        { type: null }, { sub_type: null }, { type: true }, { sub_type: 1 }, { sub_type: 'add', type: 1 }, { approve: null },
+        { reason: null }, { reason: false }]) {
+        await assert.rejects(runSocial(f.service, f.state, 'set_group_add_request', { flag, ...params }), { code: 'INVALID_PARAMS' });
+    }
+    assert.equal(f.calls.length, before);
+    f.service.sessionCall = async () => ({ handled: false });
+    await assert.rejects(runSocial(f.service, f.state, 'set_group_add_request', { flag, type: 'add' }), { code: 'INVALID_RESPONSE' });
+});
+
 test('OneBot request events use real sender identity and session-bound opaque flags', async () => {
     const f = onebotFixture(); const event = { kind: 'request', epoch: 'one', selfUin: '1000000001', time: Math.floor(Date.now() / 1000),
         request: { type: 'group', subType: 'invite', groupId: '12345678', uid: 'u_friend', flag: 'fwd_req_' + 'a'.repeat(48), comment: 'space\nline' } };
@@ -277,9 +295,33 @@ test('OneBot service and Capture fixed-method dispatch integrate request event a
     assert.deepEqual(response, { status: 'ok', retcode: 0, data: null, echo: false });
 });
 
+test('OneBot group request defaults and aliases still bind the original native request subtype', async t => {
+    const f = fixture(); t.after(() => f.capture.close());
+    let writes = 0, activeRecord;
+    f.services.group.operateSysNotify = async (doubt, args) => {
+        writes++; assert.equal(doubt, false);
+        assert.equal(args.targetMsg.seq, activeRecord.seq); assert.equal(args.targetMsg.type, activeRecord.type);
+        observeGroup(f, { ...activeRecord, status: 3 });
+    };
+    const service = new OneBotService({ backend: { call: (method, params, options) => f.capture.call(method, params,
+        { expiresAt: Date.now() + options.timeoutMs }) }, store: {}, actionTimeoutMs: 1000 });
+    activeRecord = observeGroup(f);
+    const add = await service.event(f.events[0]);
+    assert.equal((await service.action({ action: 'set_group_add_request', params: { flag: add.flag, approve: false } })).retcode, 0);
+    activeRecord = observeGroup(f, group({ type: 1, seq: '9007199254740993123457', user2: { uid: 'u_friend' } }));
+    const invite = await service.event(f.events.at(-1));
+    assert.equal(invite.sub_type, 'invite');
+    assert.equal((await service.action({ action: 'set_group_add_request', params: { flag: invite.flag, approve: false } })).retcode, 1400);
+    assert.equal(writes, 1);
+    assert.equal((await service.action({ action: 'set_group_add_request', params: { flag: invite.flag, type: 'invite', approve: false } })).retcode, 0);
+    assert.equal(writes, 2);
+    assert.equal((await service.action({ action: 'set_group_add_request', params: { flag: invite.flag, type: 'invite', approve: false } })).retcode, 1503);
+    assert.equal(writes, 2);
+});
+
 test('native session observation registers social listeners and retired epoch callbacks cannot reappear', async t => {
     const listeners = {};
-    const capture = new Capture({ install: false }); t.after(() => capture.close());
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } }); t.after(() => capture.close());
     const events = []; capture.on('event', event => { if (event.kind === 'request') events.push(event); });
     const record = friend();
     let completion;

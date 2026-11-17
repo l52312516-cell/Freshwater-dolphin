@@ -75,7 +75,7 @@ test('ID merge capability is independent of custom-node support and disabled wit
 });
 
 test('the real target-build capability rejects public ID nodes while keeping the custom-node variant independently available', async t => {
-    const capture = new Capture({ install: false, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
     capture.session = { getMsgService: () => Object.fromEntries(['getMsgsByMsgId', 'multiForwardMsgWithComment',
         'generateMsgUniqueId', 'getMultiMsg'].map(name => [name, () => {}])), getMSFService: () => ({ getServerTime() {} }) };
     t.after(() => capture.close());

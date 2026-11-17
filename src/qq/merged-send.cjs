@@ -98,6 +98,8 @@ function createMergedSend(capture) {
     let owner, lock;
     const usedSourceIds = new Set(), usedSourceSignatures = new Set();
     function capabilities() {
+        try { capture.ensureReady(); } catch { return { mergeCustom: false, mergedText: false, mergedImage: false }; }
+        if (['denied', 'experimental-basic'].includes(capture.runtimeProfile?.().admission)) return { mergeCustom: false, mergedText: false, mergedImage: false };
         const present = capture.hasMethods('msg', ['sendMsg', 'generateMsgUniqueId', 'getMsgsByMsgId', 'multiForwardMsgWithComment', 'getMultiMsg']) &&
             capture.hasMethods('msf', ['getServerTime']);
         return { mergeCustom: present, mergedText: present, mergedImage: present && capture.preparedMedia instanceof Map };
@@ -289,4 +291,4 @@ function createMergedSend(capture) {
     return { run, capabilities };
 }
 
-module.exports = { createMergedSend };
+module.exports = { createMergedSend, elementsSignature };

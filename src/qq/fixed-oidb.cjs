@@ -37,7 +37,6 @@ function prepare(operation, data = {}) {
     case 'message.poke': {
         if (![1, 2].includes(data.chatType)) fail('INVALID_PARAMS', 'Poke requires a private or group peer');
         const peer = integer(data.peerUin, U32, true), target = integer(data.targetUin, U32, true);
-        if (data.chatType === 1 && target !== peer) fail('INVALID_PARAMS', 'Private poke target differs from peer');
         command = 0xed3; sub = 1;
         body = join([n(1, target), n(2, data.chatType === 2 ? peer : 0), n(5, data.chatType === 1 ? peer : 0), n(6, 0)]); break;
     }

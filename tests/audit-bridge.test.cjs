@@ -18,7 +18,7 @@ async function until(check) {
 }
 
 function captureFixture(t) {
-    const capture = new Capture({ install: false, qqVersion: TARGET_VERSION });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: TARGET_VERSION });
     const calls = [];
     const group = {
         getGroupDetailInfo(groupId) { calls.push(groupId); return Promise.resolve({ result: 0 }); }

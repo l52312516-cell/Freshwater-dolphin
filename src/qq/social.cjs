@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomBytes } = require('node:crypto');
+const { createPeerUnread } = require('./peer-unread.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function uid(value) {
@@ -31,10 +32,11 @@ function timestamp(value) {
 // Request flags are opaque capabilities for one native request in one QQ session.
 // A void native return never proves that an approval or remark was applied.
 function createSocial(capture, { requestTtlMs = 600000, maximumRequests = 1000 } = {}) {
+    const peerUnread = createPeerUnread(capture);
     const handles = new Map();
     const keys = new Map();
     let currentEpoch = capture.epoch;
-    function reset() { handles.clear(); keys.clear(); currentEpoch = capture.epoch; }
+    function reset() { peerUnread.clear(); handles.clear(); keys.clear(); currentEpoch = capture.epoch; }
     function ready() {
         capture.ensureReady();
         if (currentEpoch !== capture.epoch) reset();
@@ -146,6 +148,7 @@ function createSocial(capture, { requestTtlMs = 600000, maximumRequests = 1000 }
         } catch (error) { capture.diagnostic(error); }
     }
     const listenerMethods = {
+        msg: peerUnread.listenerMethods.msg,
         buddy: { onBuddyReqChange: observeFriend },
         group: {
             onGroupNotifiesUpdated: (doubt, records) => observeGroup(doubt, records),
@@ -212,6 +215,7 @@ function createSocial(capture, { requestTtlMs = 600000, maximumRequests = 1000 }
     }
     async function query(params = {}, context = {}) {
         const state = ready();
+        if (params.operation === 'unread.snapshot') return peerUnread.snapshot(params, context);
         if (params.operation === 'categories') return categories(state);
         if (params.operation === 'recent') return recent(params, state);
         if (params.operation === 'friendRequests') {
@@ -345,7 +349,7 @@ function createSocial(capture, { requestTtlMs = 600000, maximumRequests = 1000 }
             active(state, context); return { handled: true };
         } finally { item.inflight = false; }
     }
-    return { query, action, capabilities, listenerMethods, reset, close: reset };
+    return { query, action, capabilities, listenerMethods, reset, close: reset, clearUnread: peerUnread.clear };
 }
 
 module.exports = { createSocial };

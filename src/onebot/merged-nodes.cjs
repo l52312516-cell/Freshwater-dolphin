@@ -46,17 +46,22 @@ function array(value, maximum, label) {
     return result;
 }
 function account(value) {
-    if (!['string', 'number'].includes(typeof value) || !/^[1-9]\d{0,15}$/.test(String(value)) ||
-        !Number.isSafeInteger(Number(value))) throw problem('INVALID_PARAMS', 'Merged node requires an exact QQ account');
+    if (!['string', 'number'].includes(typeof value) || !/^[1-9]\d{0,9}$/.test(String(value)) ||
+        !Number.isSafeInteger(Number(value)) || Number(value) > 0xffffffff) throw problem('INVALID_PARAMS', 'Merged node requires an exact uint32 QQ account');
     return String(value);
 }
-function author(data, selfId) {
+function author(data) {
     const first = Object.hasOwn(data, 'user_id'), second = Object.hasOwn(data, 'uin');
     if (!first && !second) throw problem('INVALID_PARAMS', 'Merged node requires a user_id');
     const primary = account(first ? data.user_id : data.uin);
     if (first && second && primary !== account(data.uin)) throw problem('INVALID_PARAMS', 'Merged author aliases conflict');
-    if (primary !== selfId) throw problem('UNSUPPORTED', 'Custom merged nodes must use the authenticated account as author');
     return primary;
+}
+function time(value) {
+    if (!['string', 'number'].includes(typeof value) || !/^(?:0|[1-9]\d{0,9})$/.test(String(value)) ||
+        !Number.isInteger(Number(value)) || Number(value) > 0xffffffff) throw problem('INVALID_PARAMS', 'Merged time requires exact uint32 seconds');
+    // Explicit zero is retained for the sending layer to resolve server time.
+    return Number(value) || 0;
 }
 function nickname(data) {
     const first = Object.hasOwn(data, 'nickname'), second = Object.hasOwn(data, 'name');
@@ -135,15 +140,17 @@ function normalizeMergedNodes(messages, options) {
     if (options === undefined) throw problem('NOT_READY', 'A verified self account is required for merged nodes');
     const settings = record(options, ['selfId'], 'options');
     if (!Object.hasOwn(settings, 'selfId')) throw problem('NOT_READY', 'A verified self account is required for merged nodes');
-    const selfId = account(settings.selfId), budget = { segments: 0, textBytes: 0, imageBytes: 0 };
+    account(settings.selfId);
+    const budget = { segments: 0, textBytes: 0, imageBytes: 0 };
     const result = [];
     // This first pass validates every shape, author and aggregate budget before
     // decoding media. No filesystem, network, native calls or input mutation.
     for (const source of array(messages, MAX_NODES, 'nodes')) {
         const node = record(source, ['type', 'data'], 'node');
         if (node.type !== 'node') throw problem('UNSUPPORTED', 'Merged messages require custom node segments');
-        const data = record(node.data, ['user_id', 'uin', 'nickname', 'name', 'content'], 'node data');
-        result.push({ user_id: author(data, selfId), nickname: nickname(data), content: content(data.content, budget) });
+        const data = record(node.data, ['user_id', 'uin', 'nickname', 'name', 'time', 'content'], 'node data');
+        result.push({ user_id: author(data), nickname: nickname(data), ...(Object.hasOwn(data, 'time') ? { time: time(data.time) } : {}),
+            content: content(data.content, budget) });
     }
     if (Buffer.byteLength(JSON.stringify(result)) > MAX_REQUEST_BYTES) throw problem('INVALID_PARAMS', 'Merged request exceeds 16 MiB');
     // Reuse the existing canonical base64 and actual PNG/JPEG/GIF validation.
@@ -163,7 +170,7 @@ function existingNodeIds(messages) {
     for (const source of array(messages, MAX_NODES, 'nodes')) {
         const node = record(source, ['type', 'data'], 'node');
         if (node.type !== 'node') throw problem('UNSUPPORTED', 'Merged messages require node segments');
-        const data = record(node.data, ['id', 'user_id', 'uin', 'nickname', 'name', 'content'], 'node data');
+        const data = record(node.data, ['id', 'user_id', 'uin', 'nickname', 'name', 'time', 'content'], 'node data');
         if (!Object.hasOwn(data, 'id')) { allIds = false; continue; }
         anyId = true;
         if (Object.keys(data).length !== 1 || !['string', 'number'].includes(typeof data.id) || !/^-?[1-9]\d*$/.test(String(data.id)) ||

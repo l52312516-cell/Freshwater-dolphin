@@ -5,6 +5,7 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { workspacePath } = require('./paths.cjs');
 const { version: appVersion } = require('../package.json');
+const { isPartial } = require('./onebot/message-compat.cjs');
 
 const DEFAULT_STATUS_COMMAND = Object.freeze({ enabled: true, trigger: '#fd' });
 const ACCOUNT_COOLDOWN_MS = 5000;
@@ -77,7 +78,7 @@ class StatusCommand {
         this.generation++; this.session = null; this.senders.clear(); this.lastSentAt = -Infinity;
     }
     handle(event, expected) {
-        if (this.closed || event?.post_type !== 'message' || !['private', 'group'].includes(event.message_type) ||
+        if (this.closed || isPartial(event) || event?.post_type !== 'message' || !['private', 'group'].includes(event.message_type) ||
             !Array.isArray(event.message) || !event.message.length ||
             !event.message.every(segment => segment?.type === 'text' && typeof segment.data?.text === 'string')) return false;
         const config = this.settings();

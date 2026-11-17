@@ -4,6 +4,8 @@ const { decodeBase64Image, MAX_IMAGE_BYTES } = require('../qq/media.cjs');
 const { normalizeMusicData, MAX_CARD_BYTES } = require('../qq/music.cjs');
 const { descriptor: forwardDescriptor } = require('../qq/forward.cjs');
 const { decodeInlineMedia } = require('./media-input.cjs');
+const { annotate, errorDiagnostics } = require('../diagnostics.cjs');
+const compatibility = require('./message-compat.cjs');
 
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -360,43 +362,98 @@ function resourceDetails(type, element, data) {
 }
 function validateElements(elements, context) {
     const payloads = { 1: 'textElement', 2: 'picElement', 3: 'fileElement', 4: 'pttElement', 5: 'videoElement', 6: 'faceElement', 7: 'replyElement', 10: 'arkElement', 16: 'multiForwardMsgElement' };
-    for (const element of elements) {
-        if (!plain(element) || !Number.isInteger(element.elementType) || !Object.hasOwn(payloads, element.elementType)) throw problem('UNSUPPORTED', 'QQ message contains unsupported media');
+    const unsupported = new Map();
+    let nodes = 0, bytes, textBytes = 0;
+    try {
+        bytes = Buffer.byteLength(JSON.stringify(elements, (_key, value) => {
+            if (++nodes > 20000 || typeof value === 'bigint') throw new Error('bounds');
+            return value;
+        }));
+    } catch { throw annotate(problem('INVALID_RESPONSE', 'QQ message exceeds its structural budget'), { reason: 'invalid_structure', phase: 'element_validate' }); }
+    if (bytes > 1024 * 1024) throw annotate(problem('INVALID_RESPONSE', 'QQ message exceeds its byte budget'), { reason: 'invalid_structure', phase: 'element_validate' });
+    for (const [index, element] of elements.entries()) {
+        const details = { phase: 'element_validate', elementIndex: index, elementType: element?.elementType };
+        const reject = message => { throw annotate(problem('INVALID_RESPONSE', message), { ...details, reason: 'invalid_structure' }); };
+        const unavailable = (reason, extra = {}) => unsupported.set(index, { ...details, reason, ...extra });
+        if (!plain(element) || !Number.isSafeInteger(element.elementType) || element.elementType < 0 || element.elementType > 0x1fffffff) reject('QQ message has an invalid element type');
+        // Gray tips are control/recall records, not unknown user content. Their
+        // separate identity-aware event/history paths must recognize them.
+        if (element.elementType === 8) reject('An unverified QQ system record cannot become ordinary message text');
+        const active = Object.entries(element).filter(([name, value]) => name.endsWith('Element') && value !== null && value !== undefined);
+        if (active.length !== 1 || !plain(active[0][1])) reject('QQ message contains missing or conflicting native payloads');
+        if (!Object.hasOwn(payloads, element.elementType)) {
+            unavailable('unsupported_element', { wireType: element.unsupportedElement?.wireType });
+            continue;
+        }
         const key = payloads[element.elementType], payload = element[key];
-        if (!plain(payload)) throw problem('INVALID_RESPONSE', 'QQ message is missing its native element payload');
+        if (!plain(payload)) reject('QQ message is missing its native element payload');
         // Native envelopes contain many nullable payload fields. A second
         // non-null payload would otherwise be silently dropped by conversion.
         if (Object.entries(element).some(([name, value]) => name.endsWith('Element') && name !== key && value !== null && value !== undefined)) {
-            throw problem('UNSUPPORTED', 'QQ message contains conflicting native element payloads');
+            reject('QQ message contains conflicting native element payloads');
         }
         if (element.elementType === 1) {
-            if (typeof payload.content !== 'string') throw problem('INVALID_RESPONSE', 'Invalid QQ text element');
-            if (payload.atType !== undefined && ![0, 1, 2, 4].includes(payload.atType)) throw problem('UNSUPPORTED', 'Unsupported QQ mention type');
+            if (typeof payload.content !== 'string') reject('Invalid QQ text element');
+            textBytes += Buffer.byteLength(payload.content);
+            if (textBytes > 65536) reject('QQ text exceeds its byte budget');
+            if (payload.atType !== undefined && (!Number.isSafeInteger(payload.atType) || payload.atType < 0 || payload.atType > 0x1fffffff)) reject('Invalid QQ mention type');
+            if (payload.atType !== undefined && ![0, 1, 2, 4].includes(payload.atType)) unavailable('unsupported_mention', { atType: payload.atType });
+            if ([2, 4].includes(payload.atType)) {
+                const raw = mentionUin(payload.atUid), uid = payload.atNtUid;
+                if (uid !== undefined && uid !== null && uid !== '' && (typeof uid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(uid))) reject('Invalid QQ mention UID');
+                if (uid && uid !== context.selfUid && typeof context.resolveUid !== 'function') throw annotate(problem('NOT_FOUND', 'QQ mention UID cannot be verified'), { ...details, reason: 'invalid_identity' });
+                if (payload.atType === 4 && context.selfUin && context.selfUid &&
+                    (raw && raw !== mentionUin(context.selfUin) || uid && uid !== context.selfUid)) reject('QQ self mention identifies a different account');
+            }
         } else if (element.elementType === 3) {
-            if (context.queryFiles !== true && typeof context.file !== 'function') throw problem('UNSUPPORTED', 'QQ file metadata is only available in explicit message queries');
             queriedFile(element);
+            if (context.queryFiles !== true && typeof context.file !== 'function') unavailable('media_unavailable', { mediaType: 'file' });
         } else if ([2, 4, 5].includes(element.elementType)) {
             const type = ({ 2: 'image', 4: 'record', 5: 'video' })[element.elementType];
-            if (typeof context[type] !== 'function') throw problem('UNSUPPORTED', 'QQ media has no resource converter');
+            if (typeof context[type] !== 'function') unavailable('media_unavailable', { mediaType: type });
         } else if (element.elementType === 6) {
-            if (!Number.isInteger(payload.faceIndex) || payload.faceIndex < 0 || payload.faceIndex > 65535) throw problem('INVALID_RESPONSE', 'Invalid QQ face element');
-            if (![1, 2].includes(payload.faceType) || [358, 359].includes(payload.faceIndex)) throw problem('UNSUPPORTED', 'Animated, game and poke faces need a separate segment implementation');
+            if (!Number.isInteger(payload.faceIndex) || payload.faceIndex < 0 || payload.faceIndex > 65535 || !Number.isSafeInteger(payload.faceType)) reject('Invalid QQ face element');
+            if (![1, 2].includes(payload.faceType) || [358, 359].includes(payload.faceIndex)) unavailable('unsupported_face', { faceType: payload.faceType });
         } else if (element.elementType === 7) {
-            if (typeof context.reply !== 'function') throw problem('UNSUPPORTED', 'QQ quote has no locator converter');
+            for (const field of ['replayMsgId', 'replayMsgSeq', 'replyMsgClientSeq', 'replyMsgTime', 'sourceMsgIdInRecords', 'senderUin']) {
+                const value = payload[field];
+                if (value !== undefined && value !== null && value !== '' && (!['string', 'number'].includes(typeof value) || !/^(0|[1-9]\d{0,19})$/.test(String(value)) ||
+                    typeof value === 'number' && !Number.isSafeInteger(value))) reject('Invalid QQ quoted locator');
+            }
+            for (const field of ['senderUin', 'replyMsgTime']) if (payload[field] && !Number.isSafeInteger(Number(payload[field]))) reject('QQ quoted identity is outside the safe integer range');
+            const senderUid = payload.senderUidStr || (/^u_/.test(payload.senderUid || '') ? payload.senderUid : undefined);
+            if (senderUid !== undefined && (typeof senderUid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(senderUid))) reject('Invalid QQ quoted sender UID');
+            if (senderUid && /^u_/.test(payload.senderUid || '') && senderUid !== payload.senderUid) reject('QQ quoted sender UIDs disagree');
+            if (senderUid && payload.senderUin && payload.senderUin !== '0' &&
+                (senderUid === context.selfUid) !== (String(payload.senderUin) === String(context.selfUin))) reject('QQ quoted sender UID and account disagree');
+            if (context.peer?.chatType === 1 && senderUid && senderUid !== context.peer.peerUid && senderUid !== context.selfUid) reject('QQ quoted author is outside the private conversation');
+            if (typeof context.reply !== 'function') unavailable('quote_unavailable');
         } else if (element.elementType === 16) {
             forwardDescriptor(element);
-            if (typeof context.forward !== 'function') throw problem('UNSUPPORTED', 'QQ merged forward has no account-bound resource converter');
+            if (typeof context.forward !== 'function') unavailable('unsupported_element');
         } else arkJson(element);
     }
+    if (context.mode !== 'compatible' && unsupported.size) {
+        const details = unsupported.values().next().value;
+        throw annotate(problem('UNSUPPORTED', 'QQ message contains content unavailable for strict conversion'), details);
+    }
+    return unsupported;
 }
 
-async function fromKernel(record, context = {}) {
+async function decodeKernel(record, context = {}) {
     const elements = record.elements || record.elementList;
-    if (!Array.isArray(elements) || !elements.length || elements.length > 1000) throw problem('UNSUPPORTED', 'QQ message has no supported bounded elements');
+    if (!Array.isArray(elements) || !elements.length || elements.length > 1000) throw annotate(problem('INVALID_RESPONSE', 'QQ message has no bounded elements'), { reason: 'invalid_structure', phase: 'element_validate' });
     // Validate every native payload before any media download or UID lookup.
-    validateElements(elements, context);
-    const result = [];
-    for (const element of elements) {
+    const unsupported = validateElements(elements, context);
+    const result = [], issues = [];
+    for (const [index, element] of elements.entries()) {
+        const details = { phase: 'element_convert', elementIndex: index, elementType: element.elementType };
+        const preserve = info => {
+            issues.push(compatibility.issue(info));
+            result.push(compatibility.placeholder(info));
+        };
+        if (unsupported.has(index)) { preserve(unsupported.get(index)); continue; }
+        try {
         if (element.elementType === 1) {
             const text = element.textElement;
             if (!text || typeof text.content !== 'string') throw problem('INVALID_RESPONSE', 'Invalid QQ text element');
@@ -445,8 +502,21 @@ async function fromKernel(record, context = {}) {
             if (!Number.isInteger(id) || !id || id < -0x80000000 || id > 0x7fffffff) throw problem('NOT_FOUND', 'Quoted message cannot be located');
             result.push({ type: 'reply', data: { id: String(id) } });
         }
+        } catch (error) {
+            const mediaType = ({ 2: 'image', 3: 'file', 4: 'record', 5: 'video' })[element.elementType];
+            const recoveredReason = mediaType && ['UNSUPPORTED', 'NOT_FOUND', 'ENOENT'].includes(error.code) ? 'media_unavailable' :
+                element.elementType === 7 && error.code === 'NOT_FOUND' ? 'quote_unavailable' : undefined;
+            const diagnostic = errorDiagnostics(error, { ...details, ...(mediaType ? { mediaType } : {}), ...(recoveredReason ? { reason: recoveredReason } : {}) });
+            if (recoveredReason && diagnostic.reason === 'capability_missing') diagnostic.reason = recoveredReason;
+            // Identity, session, malformed responses and unknown failures are
+            // never converted into a successful-looking partial message.
+            if (context.mode !== 'compatible' || !['UNSUPPORTED', 'NOT_FOUND', 'ENOENT'].includes(error.code) || !compatibility.CONTENT_REASONS.has(diagnostic.reason)) throw annotate(error, diagnostic);
+            preserve(diagnostic);
+        }
     }
-    return result;
+    return { message: result, issues };
 }
 
-module.exports = { parse, stringify, toKernel, fromKernel, escape, decode };
+async function fromKernel(record, context = {}) { return (await decodeKernel(record, context)).message; }
+
+module.exports = { parse, stringify, toKernel, fromKernel, decodeKernel, escape, decode };

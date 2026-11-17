@@ -6,7 +6,7 @@ const { Capture } = require('../src/qq/capture.cjs');
 const { createGroupFiles } = require('../src/qq/group-files.cjs');
 
 function fixture(t) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     t.after(() => capture.close());
     capture.qqVersion = '3.2.35-54395'; capture.ready = true; capture.epoch = 'files-session';
     capture.self = { uin: '12345', uid: 'u_test' };

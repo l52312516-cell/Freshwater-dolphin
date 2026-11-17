@@ -17,7 +17,7 @@ function group(value) {
 }
 async function runInteraction(service, state, action, params) {
     if (!ACTIONS.has(action)) throw problem('UNSUPPORTED', 'Unknown profile interaction');
-    const allowed = action === 'set_qq_profile' ? ['nickname', 'personal_note', 'self_id'] : ['group_id', 'remark', 'self_id'];
+    const allowed = action === 'set_qq_profile' ? ['nickname', 'personal_note', 'sex', 'self_id'] : ['group_id', 'remark', 'self_id'];
     if (!object(params) || Object.keys(params).some(key => !allowed.includes(key))) throw problem('INVALID_PARAMS', 'Unexpected profile interaction parameters');
     if (params.self_id !== undefined && group(params.self_id) !== String(state.self?.uin)) {
         throw problem('INVALID_PARAMS', 'self_id belongs to another account');
@@ -25,12 +25,14 @@ async function runInteraction(service, state, action, params) {
     let request;
     if (action === 'set_qq_profile') {
         request = { operation: 'profile.update' };
-        if (Object.hasOwn(params, 'nickname')) request.nickname = text(params.nickname, 256, false, 'nickname');
+        if (Object.hasOwn(params, 'nickname')) request.nickname = text(params.nickname, 256, true, 'nickname');
         if (Object.hasOwn(params, 'personal_note')) request.personalNote = text(params.personal_note, 4096, true, 'personal_note');
-        if (!Object.hasOwn(request, 'nickname') && !Object.hasOwn(request, 'personalNote')) throw problem('INVALID_PARAMS', 'At least one profile field is required');
+        if (Object.hasOwn(params, 'sex')) request.sex = require('../qq/profile-update-protocol.cjs').sex(params.sex);
+        if (!['nickname', 'personalNote', 'sex'].some(key => Object.hasOwn(request, key))) return null;
         if (state.capabilities?.selfProfile !== true ||
             Object.hasOwn(request, 'nickname') && state.capabilities?.selfNickname !== true ||
-            Object.hasOwn(request, 'personalNote') && state.capabilities?.selfSignature !== true) {
+            Object.hasOwn(request, 'personalNote') && state.capabilities?.selfSignature !== true ||
+            Object.hasOwn(request, 'sex') && state.capabilities?.selfSex !== true) {
             throw problem('UNSUPPORTED', 'The QQ session cannot update and verify all requested profile fields');
         }
     } else {
@@ -42,9 +44,11 @@ async function runInteraction(service, state, action, params) {
         throw problem('INVALID_RESPONSE', 'QQ did not confirm the requested profile modification');
     }
     if (action === 'set_qq_profile') {
-        const keys = ['nickname', 'personalNote'].filter(key => Object.hasOwn(request, key));
+        const keys = ['nickname', 'personalNote', 'sex'].filter(key => Object.hasOwn(request, key));
         if (result.uin !== String(state.self?.uin) || result.uid !== state.self?.uid || !object(result.previous) ||
-            keys.some(key => result[key] !== request[key] || typeof result.previous[key] !== 'string')) {
+            keys.some(key => result[key] !== request[key] || (key === 'sex'
+                ? !Number.isInteger(result.previous[key]) || result.previous[key] < 0 || result.previous[key] > 2
+                : typeof result.previous[key] !== 'string'))) {
             throw problem('INVALID_RESPONSE', 'QQ profile confirmation belongs to another identity or value');
         }
     } else if (result.groupId !== request.groupId || result.remark !== request.remark || typeof result.previous !== 'string') {

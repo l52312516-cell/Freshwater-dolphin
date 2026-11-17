@@ -13,10 +13,11 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const directory = path.resolve(__dirname, '../work/temp'); fs.mkdirSync(directory, { recursive: true });
 const row = name => ({ filesetId: ID, name: name || 'A.txt', size: '3', shareUrl: 'https://qfile.qq.com/q/OfflineCode' });
 const meta = () => ({ filesetId: ID, fileUuid: FILE, name: 'A.txt', size: '3', fileIndex: 1, fileId: 'real_main' });
+const serverGrant = data => ({ token: 'server-grant:/+=' + data.fileUuid + ':' + (data.thumbType || 'main'), time: 1700000000, ttl: 3600 });
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(directory, 'flash-test-')); if (process.platform !== 'win32') fs.chmodSync(root, 0o700);
     t.after(() => fs.rmSync(root, { recursive: true, force: true })); fs.writeFileSync(path.join(root, 'A.txt'), 'abc');
-    const calls = [], httpCalls = [], registered = [], committed = [];
+    const calls = [], httpCalls = [], registered = [], committed = [], events = [];
     const capture = { epoch: 'e1', session: {}, self: { uin: '12345', uid: 'u_self', nickname: 'Self' }, mediaDirectory: root,
         pending: new Set(), ensureReady() {}, deadline: Capture.prototype.deadline,
         resolve: async who => ({ ...who, uid: 'u_person' }) };
@@ -31,7 +32,7 @@ function fixture(t) {
         if (op === 'rename') { name = data.name; return { confirmed: true, filesetId: ID }; }
         if (op === 'create') return { filesetId: ID };
         if (op === 'commit') { committed.push(...data.entries); return { confirmed: true, filesetId: ID }; }
-        if (op === 'prepare') return { filesetId: ID, fileUuid: data.fileUuid, uploadKey: 'offline_key' };
+        if (op === 'prepare') return { filesetId: ID, fileUuid: data.fileUuid, uploadKey: 'offline_key', ...serverGrant(data) };
         if (op === 'apply') { registered.push(data); return { confirmed: true, filesetId: ID, fileUuid: data.fileUuid }; }
         return { filesetId: ID, confirmed: true, confirmation: 'server_ack' };
     };
@@ -43,7 +44,7 @@ function fixture(t) {
     const native = { available: () => true, run: async (_capture, params) => {
         assert.notEqual(params.operation, 'delete', 'raw OIDB deletion is never dispatched');
         assert.equal(params.op, 'fixedFlashTransfer'); assert.equal(params.expectedEpoch, capture.epoch); assert.equal(params.expectedUin, capture.self.uin);
-        fixed.prepare(params.operation, params.request); calls.push(params); return respond(params);
+        fixed.prepare(params.operation, params.request); calls.push(params); events.push({ operation: params.operation }); return respond(params);
     } };
     const historyService = { batchRemoveUserFileSetHistory: async request => {
         assert.deepEqual(Object.keys(request), ['seq', 'fileSetIdList', 'cancelOnDeleteUserRecords', 'cancelFileSetIdList']);
@@ -55,10 +56,10 @@ function fixture(t) {
         return { rsp: { seq: request.seq, result: result.confirmed === true ? 0 : 1, errMs: '' } };
     } };
     const session = () => ({ getFlashTransferService: () => historyService }); capture.session = session();
-    const api = createFlashTransfer(capture, { native, fetch: (...args) => fetcher(...args) });
+    const api = createFlashTransfer(capture, { native, fetch: (...args) => { events.push({ operation: 'http', url: args[0] }); return fetcher(...args); } });
     const state = { self: capture.self, capabilities: api.capabilities() };
     const service = { sessionCall: async (_state, method, params) => { assert.equal(method, 'flashTransfer'); return api.execute({ ...params, expectedEpoch: capture.epoch }); } };
-    return { capture, api, state, service, root, native, calls, httpCalls, committed, registered, historyService, session,
+    return { capture, api, state, service, root, native, calls, httpCalls, committed, registered, historyService, session, events,
         reply(fn) { respond = fn; }, fetch(fn) { fetcher = fn; },
         execute: (params, context = {}) => api.execute({ ...params, expectedEpoch: capture.epoch }, context),
         action: (action, params = {}) => runFlashTransferActions(service, state, action, params) };
@@ -81,11 +82,12 @@ test('all 11 public actions use real bounded paths and never fabricate a normal 
     const g = fixture(t); assert.deepEqual(await g.action('create_flash_task', { files: ['A.txt'] }), { fileset_id: ID, task_id: ID });
 });
 
-test('create stages immutable account media, commits once, registers all main files before uploading and confirms readback', async t => {
+test('create stages immutable media and commits each exact server grant only after its slice ACK', async t => {
     const f = fixture(t); fs.writeFileSync(path.join(f.root, 'B.txt'), 'defgh');
     const output = await f.action('create_flash_task', { files: [{ file: 'A.txt', name: 'First.txt' }, 'B.txt'], name: 'Bundle' });
     assert.equal(output.fileset_id, ID); assert.equal(f.committed.length, 2); assert.equal(f.registered.length, 4);
     assert.deepEqual(f.calls.map(item => item.operation), ['create', 'commit', 'complete', 'prepare', 'apply', 'prepare', 'apply', 'prepare', 'apply', 'prepare', 'apply', 'ready', 'metadata']);
+    assert.deepEqual(f.events.map(item=>item.operation),['create','commit','complete',...Array.from({length:4},()=>['prepare','http','apply']).flat(),'ready','metadata']);
     assert.equal(f.calls[0].request.size, 8); assert.equal(f.calls[0].request.name, 'Bundle');
     assert.equal(f.calls.filter(item => item.operation === 'commit').length, 1);
     assert.deepEqual(f.committed.map(row => row.fileIndex), [1, 2]);
@@ -93,8 +95,11 @@ test('create stages immutable account media, commits once, registers all main fi
     const bodies = f.httpCalls.map(call => p.fields(value(p.fields(call.init.body), 107)));
     assert.deepEqual(value(bodies[0], 7), Buffer.from('abc')); assert.deepEqual(value(bodies[1], 7), Buffer.from('defgh'));
     assert.equal(f.registered[2].thumbType, 'png'); assert.equal(f.registered[3].thumbType, 'jpg'); assert.equal(f.registered[3].fileUuid, f.committed[0].fileUuid);
+    for(const data of f.registered){const expected=serverGrant(data);assert.equal(data.fileId,expected.token);assert.equal(data.time,expected.time);assert.equal(data.ttl,expected.ttl);}
+    assert.deepEqual(f.httpCalls.map(call => Number(value(p.fields(call.init.body), 2))), [14901, 14901, 14903, 14902]);
     for (const request of f.httpCalls) { assert.equal(request.init.redirect, 'manual'); assert.equal(request.url, 'https://multimedia.qfile.qq.com/sliceupload'); assert.ok(request.init.signal instanceof AbortSignal); }
-    assert.equal(JSON.stringify(output).includes('offline_key'), false); assert.equal(fs.readFileSync(path.join(f.root, 'A.txt'), 'utf8'), 'abc');
+    for(const secret of ['offline_key','server-grant:']){assert.equal(JSON.stringify(output).includes(secret),false);assert.equal(fs.readFileSync(path.join(f.root,'fwd-flash-recovery.json'),'utf8').includes(secret),false);}
+    assert.equal(fs.readFileSync(path.join(f.root, 'A.txt'), 'utf8'), 'abc');
 });
 
 test('single file size, count, media path scope, symlinks, malformed fields and unsupported capabilities fail before dispatch', async t => {
@@ -155,9 +160,10 @@ test('create rejects slice failures, instant-transfer mistakes, metadata mismatc
     const f = fixture(t); f.fetch(async () => new Response(p.bytesField(5, Buffer.from('failure'))));
     await assert.rejects(f.action('create_flash_task', { files: 'A.txt' }), { code: 'QUERY_FAILED' });
     assert.equal(f.calls.some(call => call.operation === 'ready'), false);
+    assert.equal(f.calls.some(call => call.operation === 'apply'),false,'a failed slice cannot be committed');
     const g = fixture(t); g.reply(async params => {
         if (params.operation === 'create') return { filesetId: ID };
-        if (params.operation === 'prepare') return { filesetId: ID, fileUuid: params.request.fileUuid, uploadKey: null };
+        if (params.operation === 'prepare') return { filesetId: ID, fileUuid: params.request.fileUuid, uploadKey: null, ...serverGrant(params.request) };
         if (params.operation === 'metadata') return { filesetId: ID, complete: false, items: [meta()] };
         return { confirmed: true, filesetId: ID, ...(params.operation === 'apply' ? { fileUuid: params.request.fileUuid } : {}) };
     });
@@ -174,6 +180,126 @@ test('create uploads immutable snapshots even if the source changes after regist
     await f.action('create_flash_task', { files: 'A.txt' });
     const body = p.fields(value(p.fields(f.httpCalls[0].init.body), 107)); assert.deepEqual(value(body, 7), Buffer.from('abc'));
     assert.equal(f.committed[0].size, 3);
+});
+
+test('missing or malformed server grants stop before upload/apply and retain only owned cleanup recovery', async t => {
+    for(const change of [value=>{delete value.token;},value=>{value.token='';},value=>{value.token='private-grant\n';},value=>{value.token='x'.repeat(4097);},
+        value=>{delete value.time;},value=>{delete value.ttl;},value=>{value.time='1700000000';},value=>{value.ttl=-1;},value=>{value.time=0x100000000;}]){
+        const f=fixture(t),original=f.native.run;
+        f.native.run=async(...args)=>{const result=await original(...args);if(args[1].operation==='prepare')change(result);return result;};
+        await assert.rejects(f.action('create_flash_task',{files:'A.txt'}),error=>{
+            assert.equal(error.code,'INVALID_RESPONSE');assert.match(error.message,/cleanup_pending/);assert.equal(error.message.includes('private-grant'),false);return true;
+        });
+        assert.deepEqual(f.calls.map(row=>row.operation),['create','commit','complete','prepare']);assert.equal(f.httpCalls.length,0);
+        const records=createFlashRecovery(f.root,'12345','u_self').list();assert.equal(records.length,1);assert.equal(records[0].stage,'cleanup_pending');assert.equal(records[0].lastStage,'complete');
+        const journal=fs.readFileSync(path.join(f.root,'fwd-flash-recovery.json'),'utf8');assert.equal(journal.includes('server-grant:'),false);assert.equal(journal.includes('private-grant'),false);
+    }
+});
+
+test('instant transfer still needs server grants and preserves explicitly zero time/ttl without HTTP uploads', async t => {
+    const f=fixture(t),original=f.native.run;
+    f.native.run=async(...args)=>{const result=await original(...args);if(args[1].operation==='prepare')Object.assign(result,{uploadKey:null,time:0,ttl:0});return result;};
+    assert.equal((await f.action('create_flash_task',{files:'A.txt'})).fileset_id,ID);assert.equal(f.httpCalls.length,0);assert.equal(f.registered.length,3);
+    assert(f.registered.every(row=>row.fileId===serverGrant(row).token&&row.time===0&&row.ttl===0));
+});
+
+test('session change, cancellation and uncertain commit after a slice never dispatch the next stage or replay writes', async t => {
+    for(const reason of ['session','cancel','commit-timeout']){
+        const f=fixture(t),control=new AbortController(),original=f.native.run;
+        if(reason==='commit-timeout')f.native.run=async(...args)=>{const result=await original(...args);if(args[1].operation==='apply')throw Object.assign(Error('Unconfirmed commit ACK'),{code:'TIMEOUT'});return result;};
+        else f.fetch(async()=>{if(reason==='session'){f.capture.epoch='changed';f.capture.session={};}else control.abort();return new Response(p.bytesField(5,Buffer.from('success')));});
+        await assert.rejects(f.execute({operation:'create',files:'A.txt'},{signal:control.signal}),{code:reason==='session'?'SESSION_CHANGED':reason==='cancel'?'EXPIRED':'TIMEOUT'});
+        await tick(); await tick(); // The caller deadline may settle before the physical task's catch journals cleanup.
+        assert.equal(f.calls.filter(row=>row.operation==='prepare').length,1);assert.equal(f.calls.filter(row=>row.operation==='apply').length,reason==='commit-timeout'?1:0);
+        assert.equal(f.calls.some(row=>['ready','delete','metadata'].includes(row.operation)),false);
+        const record=createFlashRecovery(f.root,'12345','u_self').list()[0];assert.equal(record.stage,'cleanup_pending');assert.equal(record.lastStage,'complete');
+    }
+});
+
+test('create reads delayed main metadata at most three times without replaying any writes', async t => {
+    const f = fixture(t), original = f.native.run; let reads = 0;
+    f.native.run = async (...args) => {
+        const result = await original(...args);
+        if (args[1].operation !== 'metadata') return result;
+        reads++;
+        if (reads === 1) return { ...result, items: [] };
+        if (reads === 2) return { ...result, items: result.items.map(({ fileId, ...item }) => item) };
+        return result;
+    };
+    assert.equal((await f.action('create_flash_task', { files: 'A.txt' })).fileset_id, ID);
+    assert.equal(reads, 3);
+    for (const op of ['create', 'commit', 'complete', 'ready']) assert.equal(f.calls.filter(call => call.operation === op).length, 1);
+    for (const op of ['prepare', 'apply']) assert.equal(f.calls.filter(call => call.operation === op).length, 3);
+    assert.equal(f.httpCalls.length, 3);
+});
+
+test('create fails on conflicting final metadata immediately despite successful stage ACKs', async t => {
+    for (const change of [row => ({ ...row, fileUuid: ID }), row => ({ ...row, fileIndex: 2 }), row => ({ ...row, name: 'Other.txt' }),
+        row => ({ ...row, size: '4' }), row => ({ ...row, fileId: 'other_main' }), row => ({ ...row, filesetId: FILE })]) {
+        const f = fixture(t), original = f.native.run;
+        f.native.run = async (...args) => {
+            const result = await original(...args), op = args[1].operation;
+            if (op === 'complete' || op === 'ready') {
+                const prepared = fixed.prepare(op, args[1].request);
+                return fixed.decode(Buffer.concat([p.varintField(1, prepared.command), p.varintField(2, prepared.sub), p.bytesField(4, Buffer.from([0xff]))]), prepared);
+            }
+            return op === 'metadata' ? { ...result, items: result.items.map(change) } : result;
+        };
+        await assert.rejects(f.action('create_flash_task', { files: 'A.txt' }), { code: 'INVALID_RESPONSE' });
+        assert.equal(f.calls.filter(call => call.operation === 'metadata').length, 1);
+        assert.equal(createFlashRecovery(f.root, '12345', 'u_self').list()[0].stage, 'cleanup_pending');
+    }
+});
+
+test('create never upgrades perpetually incomplete metadata to success', async t => {
+    const f = fixture(t), original = f.native.run;
+    f.native.run = async (...args) => {
+        const result = await original(...args);
+        return args[1].operation === 'metadata' ? { ...result, items: [] } : result;
+    };
+    await assert.rejects(f.action('create_flash_task', { files: 'A.txt' }), { code: 'INVALID_RESPONSE' });
+    assert.equal(f.calls.filter(call => call.operation === 'metadata').length, 3);
+    assert.equal(f.calls.filter(call => call.operation === 'create').length, 1);
+    assert.equal(f.calls.filter(call => call.operation === 'ready').length, 1);
+});
+
+test('cancellation stops pending metadata backoff without dispatching another read or write', async t => {
+    const f = fixture(t), original = f.native.run, control = new AbortController(); let observed;
+    const firstRead = new Promise(resolve => { observed = resolve; });
+    f.native.run = async (...args) => {
+        const result = await original(...args);
+        if (args[1].operation !== 'metadata') return result;
+        observed(); return { ...result, items: [] };
+    };
+    const running = f.execute({ operation: 'create', files: 'A.txt' }, { signal: control.signal });
+    await firstRead; await tick(); control.abort();
+    await assert.rejects(running, { code: 'EXPIRED' }); await tick();
+    assert.equal(f.calls.filter(call => call.operation === 'metadata').length, 1);
+    assert.equal(f.calls.filter(call => call.operation === 'ready').length, 1);
+    assert.equal(createFlashRecovery(f.root, '12345', 'u_self').list()[0].stage, 'cleanup_pending');
+});
+
+test('session rotation aborts pending metadata backoff and metadata errors are never retried', async t => {
+    const f = fixture(t), original = f.native.run; let observed;
+    const firstRead = new Promise(resolve => { observed = resolve; });
+    f.native.run = async (...args) => {
+        const result = await original(...args);
+        if (args[1].operation !== 'metadata') return result;
+        observed(); return { ...result, items: [] };
+    };
+    const running = f.execute({ operation: 'create', files: 'A.txt' });
+    await firstRead; await tick(); f.capture.epoch = 'e2';
+    Capture.prototype.rejectPending.call(f.capture, Object.assign(new Error('Offline session changed'), { code: 'SESSION_CHANGED' }));
+    await assert.rejects(running, { code: 'SESSION_CHANGED' }); await tick();
+    assert.equal(f.calls.filter(call => call.operation === 'metadata').length, 1);
+    const g = fixture(t), run = g.native.run;
+    g.native.run = async (...args) => {
+        const result = await run(...args);
+        if (args[1].operation === 'metadata') throw Object.assign(new Error('Offline server error'), { code: 'KERNEL_ERROR' });
+        return result;
+    };
+    await assert.rejects(g.action('create_flash_task', { files: 'A.txt' }), { code: 'KERNEL_ERROR' });
+    assert.equal(g.calls.filter(call => call.operation === 'metadata').length, 1);
 });
 
 test('physical pending slots remain occupied after caller cancellation and across session changes', async t => {
@@ -292,19 +418,19 @@ test('unusable recovery journal blocks allocation before the first network write
     assert.equal(f.calls.length, 0); assert.equal(f.httpCalls.length, 0);
 });
 
-test('QQ 3.2.35-54395 creation stays unavailable before any disk or network work', async t => {
+test('QQ 3.2.35-54395 creation uses the full confirmation chain while native delete stays independent', async t => {
     const f = fixture(t); f.capture.qqVersion = '3.2.35-54395';
     const capabilities = f.api.capabilities();
-    assert.equal(capabilities.flashCreate, false); assert.equal(capabilities.flashDelete, true); assert.equal(capabilities.flashRead, true);
+    assert.equal(capabilities.flashCreate, true); assert.equal(capabilities.flashDelete, true); assert.equal(capabilities.flashRead, true);
     assert.equal(capabilities.flashWrite, true, 'other fixed writes keep independent capability evidence');
-    await assert.rejects(f.execute({ operation: 'create', files: 'A.txt' }), { code: 'UNSUPPORTED' });
+    assert.equal((await f.action('create_flash_task', { files: 'A.txt' })).fileset_id, ID);
+    assert.equal(f.calls.at(-1).operation, 'metadata'); const calls = f.calls.length;
     f.capture.session = {};
     await assert.rejects(f.execute({ operation: 'delete', filesetId: ID }), { code: 'UNSUPPORTED' });
     capabilities.flashDelete = false;
     f.state.capabilities = capabilities;
     await assert.rejects(f.action('delete_flash_file', { fileset_id: ID }), { code: 'UNSUPPORTED' });
-    assert.deepEqual(f.calls, []); assert.deepEqual(f.httpCalls, []);
-    assert.equal(fs.existsSync(path.join(f.root, 'fwd-flash-recovery.json')), false);
+    assert.equal(f.calls.length, calls);
     assert.equal((await f.execute({ operation: 'list' })).result.items.length, 1);
 });
 

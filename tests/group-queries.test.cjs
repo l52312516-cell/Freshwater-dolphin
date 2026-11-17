@@ -8,7 +8,7 @@ const { ACTIONS, REQUIREMENTS, runGroupQueries } = require('../src/onebot/group-
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(t, options) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.ready = true; capture.qqVersion = '3.2.35-54395'; capture.epoch = 'group-query-session';
     capture.self = { uin: '12345', uid: 'u_self' };
     capture.registrations.push({ name: 'group', service: {}, remove: 'none' });

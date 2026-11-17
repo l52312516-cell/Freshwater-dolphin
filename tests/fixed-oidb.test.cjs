@@ -13,7 +13,12 @@ test('fixed poke and permanent-title encoders retain exact identities and explic
     assert.equal(p.one(body(poke), 1).value, 12345n);
     assert.equal(p.one(body(poke), 2).value, 0n);
     assert.equal(p.one(body(poke), 5).value, 12345n);
-    assert.throws(() => fixed.prepare('message.poke', { chatType: 1, peerUin: '12345', targetUin: '54321' }), { code: 'INVALID_PARAMS' });
+    const selfPoke = fixed.prepare('message.poke', { chatType: 1, peerUin: '12345', targetUin: '54321' });
+    assert.equal(p.one(body(selfPoke), 1).value, 54321n);
+    assert.equal(p.one(body(selfPoke), 2).value, 0n);
+    assert.equal(p.one(body(selfPoke), 5).value, 12345n);
+    assert.equal(p.one(body(selfPoke), 6).value, 0n);
+    assert.deepEqual(fixed.decode(ack(selfPoke), selfPoke), { chatType: 1, peerUin: '12345', targetUin: '54321', confirmed: true, confirmation: 'server_ack' });
     const title = fixed.prepare('group.title', { groupId: '2000000001', uid: 'u_member', title: '' });
     const item = p.fields(p.one(body(title), 3).value);
     assert.equal(p.one(item, 5).value.length, 0);

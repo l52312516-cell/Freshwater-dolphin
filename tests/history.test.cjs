@@ -91,6 +91,100 @@ function recalled(seq, extra = {}) {
             groupElement: null, jsonGrayTipElement: null } }], ...extra });
 }
 
+function storedPrivateRecall(seq, fromSelf = false) {
+    const record = recalled(seq, { chatType: 1, peerUid: 'u_22222', recallTime: '0',
+        msgTime: String(Math.floor(Date.now() / 1000) - 600),
+        senderUin: fromSelf ? '11111' : '22222', senderUid: fromSelf ? 'u_self' : 'u_sender' });
+    const revoke = record.elements[0].grayTipElement.revokeElement;
+    revoke.operatorUid = record.senderUid;
+    revoke.origMsgSenderUid = record.senderUid;
+    return record;
+}
+
+test('stored private self-recall stubs preserve incoming and outgoing messages and inclusive older pagination', async t => {
+    for (const fromSelf of [false, true]) {
+        const f = fixture(t), removed = storedPrivateRecall(89, fromSelf);
+        const ordinary = seq => message(seq, { chatType: 1, peerUid: 'u_22222' });
+        const existing = f.store.remember('11111', ordinary(90));
+        const query = params => f.service.action({ action: 'get_friend_msg_history', params: { user_id: 22222, count: 3, ...params } });
+        f.pages.push([ordinary(90), removed]);
+        const result = await query();
+        assert.equal(result.retcode, 0);
+        assert.deepEqual(result.data.messages.map(item => item.message_id), [existing.id]);
+        assert.equal(result.data.skipped_recalled_count, 1);
+        assert.equal(result.data.skipped_system_count, 0);
+        assert.equal(result.data.next_message_id, null);
+        assert.equal(f.store.state('11111').byId.size, 1);
+        assert.equal(f.store.find('11111', { peer: { chatType: 1, peerUid: 'u_22222' }, nativeId: removed.msgId }), null);
+        f.pages.push([removed, ordinary(88)]);
+        const next = await query({ history_cursor: result.data.next_history_cursor });
+        assert.equal(next.retcode, 0);
+        assert.equal(next.data.messages.length, 1);
+        assert.equal(next.data.skipped_recalled_count, 0);
+        assert.equal(f.store.get('11111', next.data.messages[0].message_id).locator.seq, '88');
+        assert.equal(f.calls.filter(call => call.method === 'history')[1].params.nativeId, removed.msgId);
+    }
+});
+
+test('an entirely stored-private-recall page advances without allocating IDs or persisting a store', async t => {
+    const f = fixture(t), before = imageOf(f.store), incoming = storedPrivateRecall(89), outgoing = storedPrivateRecall(90, true);
+    incoming.msgSeq = outgoing.msgSeq = '0';
+    f.pages.push([outgoing, incoming]);
+    const result = await f.service.action({ action: 'get_friend_msg_history', params: { user_id: 22222, count: 2 } });
+    assert.equal(result.retcode, 0);
+    assert.deepEqual(result.data.messages, []);
+    assert.equal(result.data.skipped_recalled_count, 2);
+    assert.equal(typeof result.data.next_history_cursor, 'string');
+    assert.equal(imageOf(f.store), before);
+    assert.equal(fs.existsSync(path.join(f.directory, '11111.json')), false);
+});
+
+test('a stored private zero-time recall gap never becomes a live recall notice', async t => {
+    const f = fixture(t), before = imageOf(f.store), record = storedPrivateRecall(89);
+    const notice = await f.service.event({ kind: 'notice', notice: 'recall', epoch: f.state.epoch,
+        selfUin: f.state.self.uin, record });
+    assert.equal(notice, null);
+    assert.equal(imageOf(f.store), before);
+    assert.equal(fs.existsSync(path.join(f.directory, '11111.json')), false);
+});
+
+test('only the verified stored private self-recall variant is excluded and malformed pages remain atomic', async t => {
+    const mutations = [
+        record => { record.recallTime = 0; },
+        record => { delete record.recallTime; },
+        record => { record.recallTime = null; },
+        record => { record.recallTime = ''; },
+        record => { record.recallTime = '1e9'; },
+        record => { record.recallTime = String(Date.now() + 60000); },
+        record => { record.msgTime = String(Date.now() + 60000); },
+        record => { record.msgTime = '1e9'; },
+        record => { record.sendStatus = '2'; },
+        record => { record.sendStatus = 0; },
+        record => { record.subMsgType = 12; },
+        record => { record.elements[0].grayTipElement.subElementType = '1'; },
+        record => { record.elements[0].grayTipElement.revokeElement.operatorUid = 'u_other'; },
+        record => { delete record.elements[0].grayTipElement.revokeElement.origMsgSenderUid; },
+        record => { record.elements[0].grayTipElement.revokeElement.origMsgSenderUid = ''; },
+        record => { record.elements[0].grayTipElement.revokeElement.origMsgSenderUid = 'u_other'; },
+        record => { record.elements[0].grayTipElement.unknownElement = {}; },
+        record => { record.elements[0].textElement = { atType: 0, content: 'must not be discarded' }; },
+        record => { record.elements.push({ elementType: 1, textElement: { atType: 0, content: 'must not be discarded' } }); }
+    ];
+    for (const mutate of mutations) {
+        const f = fixture(t), before = imageOf(f.store), record = storedPrivateRecall(89);
+        mutate(record);
+        f.pages.push([message(88, { chatType: 1, peerUid: 'u_22222' }), record]);
+        const result = await f.service.action({ action: 'get_friend_msg_history', params: { user_id: 22222 } });
+        assert.equal(result.status, 'failed');
+        assert.equal(imageOf(f.store), before);
+        assert.equal(fs.existsSync(path.join(f.directory, '11111.json')), false);
+    }
+    const f = fixture(t), before = imageOf(f.store);
+    f.pages.push([message(88), { ...storedPrivateRecall(89), chatType: 2, peerUid: '12345' }]);
+    assert.equal((await f.query()).status, 'failed', 'zero recallTime does not extend the group recall contract');
+    assert.equal(imageOf(f.store), before);
+});
+
 test('history reports recalled native stubs as gaps and resumes past their original locator', async t => {
     const f = fixture(t), removed = recalled(89), retained = message(90);
     f.pages.push([retained, removed]);
@@ -527,7 +621,7 @@ test('a failed later conversion also discards staged IDs created while resolving
     f.pages.push([message(88, { elements: [{ elementType: 7, replyElement: { replayMsgId: '777', replayMsgSeq: '70' } }] }),
         message(89, { elements: [{ elementType: 999 }] })]);
     const result = await f.query();
-    assert.equal(result.retcode, 1404);
+    assert.equal(result.retcode, 1500);
     assert.ok(f.calls.some(call => call.method === 'getMessage'));
     assert.equal(imageOf(f.store), before);
     assert.equal(fs.existsSync(path.join(f.directory, '11111.json')), false);

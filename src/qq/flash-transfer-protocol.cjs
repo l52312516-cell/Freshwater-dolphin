@@ -1,9 +1,10 @@
 'use strict';
 
-// Source: SnowLuma 2.4.2 flash-transfer definitions. This module exposes only
+// Sources: SnowLuma 2.4.2 fixed operations; LLBot 0308b628 server upload grants.
+// This module exposes only
 // named fixed operations; upload credentials never cross the public RPC.
 const p = require('./proto.cjs');
-const { randomBytes, createHash } = require('node:crypto');
+const { createHash } = require('node:crypto');
 const N = p.varintField, B = p.bytesField, S = (tag, value) => B(tag, Buffer.from(value));
 const C = parts => Buffer.concat(parts), E = tag => B(tag, Buffer.alloc(0));
 const U32 = 0xffffffffn, U64 = 0xffffffffffffffffn, MAX_FRAME = 1024 * 1024;
@@ -11,7 +12,7 @@ const KEYS = Object.freeze({ list: [], detail: ['filesetId'], metadata: ['filese
     rename: ['filesetId', 'name'], send: ['filesetId', 'targetUid', 'groupId'],
     create: ['name', 'size', 'typeCode', 'selfUin', 'selfUid', 'nickname'], commit: ['filesetId', 'entries'],
     complete: ['filesetId'], ready: ['filesetId'], prepare: ['filesetId', 'fileUuid', 'name', 'size', 'sha1', 'fileIndex', 'formatCode', 'thumbType'],
-    apply: ['filesetId', 'fileUuid', 'name', 'size', 'sha1', 'md5', 'fileId', 'fileIndex', 'formatCode', 'thumbType'],
+    apply: ['filesetId', 'fileUuid', 'name', 'size', 'sha1', 'md5', 'fileId', 'time', 'ttl', 'fileIndex', 'formatCode', 'thumbType'],
     download: ['filesetId', 'fileUuid', 'fileId', 'name'] });
 let sequence = 300;
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
@@ -29,7 +30,18 @@ function integer(value, max = U32, positive = false) {
     if (result > max || positive && result === 0n) fail('INVALID_PARAMS', 'Flash integer exceeds its range');
     return result;
 }
-function fileId(value) { if (!/^[A-Za-z0-9_-]{1,4096}$/.test(text(value, 4096))) fail('INVALID_PARAMS', 'Invalid main file ID'); return value; }
+function fileId(value) {
+    text(value, 4096);
+    // A server credential is opaque. Keep punctuation, padding and Unicode
+    // unchanged; only bounded printable text may reach a fixed request/URL.
+    if (/[\p{C}\p{Zl}\p{Zp}]/u.test(value)) fail('INVALID_PARAMS', 'Invalid main file ID'); return value;
+}
+function uploadGrant(value) {
+    try {
+        if (!object(value) || typeof value.time !== 'number' || typeof value.ttl !== 'number') throw new Error();
+        return { token: fileId(value.token), time: Number(integer(value.time)), ttl: Number(integer(value.ttl)) };
+    } catch { fail('INVALID_RESPONSE', 'QQ omitted a bounded server-issued flash upload token, time or TTL'); }
+}
 function digest(value, size) { if (typeof value !== 'string' || !new RegExp('^[a-f0-9]{' + size + '}$').test(value)) fail('INVALID_PARAMS', 'Invalid flash digest'); return value; }
 function only(value, keys) { if (!object(value) || Object.keys(value).some(key => !keys.includes(key))) fail('INVALID_PARAMS', 'Unexpected fixed flash fields'); }
 function shareUrl(input) {
@@ -51,7 +63,7 @@ function uploadData(data, apply) {
         size: Number(integer(data.size, U32, true)), sha1: digest(data.sha1, 40), fileIndex: Number(integer(data.fileIndex, 1000n, true)),
         formatCode: Number(integer(data.formatCode, 27n, true)) };
     if (data.thumbType !== undefined) { if (!['png', 'jpg'].includes(data.thumbType)) fail('INVALID_PARAMS', 'Invalid flash thumbnail type'); result.thumbType = data.thumbType; }
-    if (apply) { result.md5 = digest(data.md5, 32); result.fileId = fileId(data.fileId); }
+    if (apply) { result.md5 = digest(data.md5, 32); result.fileId = fileId(data.fileId); result.time = Number(integer(data.time)); result.ttl = Number(integer(data.ttl)); }
     return result;
 }
 function prepare(operation, input = {}) {
@@ -75,7 +87,7 @@ function prepare(operation, input = {}) {
             N(7, thumb ? (jpg ? 2 : 26) : data.formatCode), E(8), N(9, 1), ...[10, 11, 12, 13, 14].map(tag => N(tag, 0))]));
         const payload = sub === 100 ? C([B(1, C([info, N(2, 0)])), N(2, 1), N(3, 0), N(4, 0), N(5, 0),
             B(6, C([B(1, C([N(1, 0), E(2)])), B(2, E(3)), B(3, C([E(11), E(12)])), N(10, 0)])), N(7, 0), N(8, 0), wrap]) :
-            C([B(1, C([info, S(2, data.fileId), N(3, 1), N(4, Math.floor(Date.now() / 1000)), N(5, 1209600), N(6, 0)])),
+            C([B(1, C([info, S(2, data.fileId), N(3, 1), N(4, data.time), N(5, data.ttl), N(6, 0)])),
                 B(2, N(1, 2)), B(3, C([N(1, 0), N(2, 0), N(3, 0), E(4)])), wrap]);
         body = C([mediaHead(sub, data.seq, thumb ? (jpg ? 24 : 23) : 22), B(sub === 100 ? 2 : 12, payload)]);
     } else {
@@ -201,7 +213,8 @@ function deleteResultDiagnostic(map) {
 }
 function officialDownload(value, expectedFileId) {
     let url; try { url = new URL(value); } catch { fail('INVALID_RESPONSE', 'Invalid flash main download URL'); }
-    if (typeof expectedFileId !== 'string' || !/^[A-Za-z0-9_-]{1,4096}$/.test(expectedFileId) || value.length > 16384 || /[\x00-\x20\x7f]/.test(value) || url.protocol !== 'https:' || url.host !== 'multimedia.qfile.qq.com' || url.username || url.password || url.hash || url.pathname !== '/download' ||
+    try { fileId(expectedFileId); } catch { fail('INVALID_RESPONSE', 'Invalid expected flash main file ID'); }
+    if (value.length > 16384 || /[\x00-\x20\x7f]/.test(value) || url.protocol !== 'https:' || url.host !== 'multimedia.qfile.qq.com' || url.username || url.password || url.hash || url.pathname !== '/download' ||
         url.searchParams.getAll('appid').length !== 1 || url.searchParams.get('appid') !== '14901' || url.searchParams.getAll('fileid').length !== 1 || url.searchParams.get('fileid') !== expectedFileId || url.searchParams.getAll('rkey').length !== 1 || !/^[A-Za-z0-9_-]{1,8192}$/.test(url.searchParams.get('rkey'))) fail('INVALID_RESPONSE', 'QQ did not return a scoped main file download URL');
     return value;
 }
@@ -220,14 +233,14 @@ function downloadBody(raw, expected, budget) {
     }
     const hosts = strings.filter(value => value === 'multimedia.qfile.qq.com');
     const paths = strings.filter(value => value.startsWith('/download?appid=14901'));
-    const keys = strings.filter(value => /^rkey=[A-Za-z0-9_-]{1,8192}$/.test(value));
+    const keys = strings.filter(value => /^&?rkey=[A-Za-z0-9_-]{1,8192}$/.test(value));
     const full = strings.filter(value => value.startsWith('https://multimedia.qfile.qq.com/download?appid=14901'));
     if (full.length === 1 && !paths.length && !hosts.length && !keys.length) return officialDownload(full[0], expected);
     if (hosts.length !== 1 || paths.length !== 1 || full.length || keys.length > 1) fail('INVALID_RESPONSE', 'QQ omitted an unambiguous main download URL');
     const base = 'https://' + hosts[0] + paths[0];
     const url = new URL(base);
     if (keys.length && url.searchParams.has('rkey')) fail('INVALID_RESPONSE', 'QQ repeated the flash download credential');
-    return officialDownload(base + (keys.length ? '&' + keys[0] : ''), expected);
+    return officialDownload(base + (keys.length ? '&' + keys[0].replace(/^&/, '') : ''), expected);
 }
 function decode(bytes, prepared) {
     if (!prepared || !Object.hasOwn(KEYS, prepared.operation) || !Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_FRAME) fail('INVALID_RESPONSE', 'No bounded flash response');
@@ -235,7 +248,11 @@ function decode(bytes, prepared) {
     if (uint(top, 1, U32, true) !== BigInt(prepared.command) || (uint(top, 2) ?? 0n) !== BigInt(prepared.sub) || top.has(12) && uint(top, 12) !== BigInt(prepared.mode)) fail('INVALID_RESPONSE', 'QQ returned another flash command');
     if ((uint(top, 3) ?? 0n) !== 0n) fail('KERNEL_ERROR', 'QQ rejected the flash operation; it was not retried');
     const raw = one(top, 4, 2), op = prepared.operation, request = prepared.data;
-    if (['delete', 'rename', 'complete', 'ready'].includes(op)) {
+    // SnowLuma's fixed complete/status contracts acknowledge only the matched
+    // OIDB envelope. An opaque stage ACK is not proof that files are uploaded:
+    // create still requires every slice ACK and exact main metadata readback.
+    if (op === 'complete' || op === 'ready') return { confirmed: true, confirmation: 'server_ack', filesetId: request.filesetId };
+    if (op === 'delete' || op === 'rename') {
         if (raw?.length) {
             const ack = fields(raw, top.budget);
             const nested = acknowledgementDiagnostic(ack, request.filesetId);
@@ -290,16 +307,16 @@ function decode(bytes, prepared) {
     const head = nested(body, 1, true), correlation = nested(head, 1, true);
     if (uint(correlation, 1, U32, true) !== BigInt(request.seq) || uint(correlation, 2, U32, true) !== BigInt(prepared.sub) || str(head, 3, 128, true) !== 'success') fail('INVALID_RESPONSE', 'QQ did not confirm the exact flash transfer step');
     if (op === 'prepare') {
-        const wrap = nested(body, 2), key = wrap ? str(wrap, 1, 8192) : undefined;
+        const wrap = nested(body, 2, true), key = str(wrap, 1, 8192);
         if (key !== undefined && !/^[A-Za-z0-9_-]{1,8192}$/.test(key)) fail('INVALID_RESPONSE', 'Invalid scoped flash upload credential');
-        return { uploadKey: key ?? null, filesetId: request.filesetId, fileUuid: request.fileUuid };
+        // LLBot 0308b628: FlashFileUploadResp.body.fastUploadInfo.summary.fileSummary.
+        // No synthetic fallback: an ACK/uKey alone cannot supply a commit token.
+        const summary = nested(nested(nested(wrap, 6, true), 1, true), 1, true);
+        const grant = uploadGrant({ token: str(summary, 2, 4096, true), time: Number(uint(summary, 4, U32, true)), ttl: Number(uint(summary, 5, U32, true)) });
+        return { uploadKey: key ?? null, ...grant, filesetId: request.filesetId, fileUuid: request.fileUuid };
     }
     if (op === 'apply') return { confirmed: true, filesetId: request.filesetId, fileUuid: request.fileUuid };
     return { url: downloadBody(one(body, 3, 2, true), request.fileId, body.budget), filesetId: request.filesetId, fileUuid: request.fileUuid };
-}
-function buildFileId(sha1, size, appid = 14902) {
-    if (!Buffer.isBuffer(sha1) || sha1.length !== 20) fail('INVALID_PARAMS', 'Invalid flash SHA1');
-    return C([B(2, sha1), N(3, integer(size, U32, true)), N(4, appid), N(5, BigInt(Date.now()) * 1000n), S(6, 'prod'), N(10, 1209600), B(11, randomBytes(16)), B(15, randomBytes(3)), S(16, 'gz')]).toString('base64url');
 }
 function sliceBody(bytes, uploadKey, appid = 14901) {
     if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 1024 * 1024 || ![14901, 14902, 14903].includes(appid) || !/^[A-Za-z0-9_-]{1,8192}$/.test(uploadKey)) fail('INVALID_PARAMS', 'Invalid bounded flash slice');
@@ -310,4 +327,4 @@ function decodeSlice(bytes) {
     if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 65536 || str(fields(bytes), 5, 128, true) !== 'success') fail('QUERY_FAILED', 'QQ did not confirm flash slice storage');
     return true;
 }
-module.exports = { prepare, decode, name, uuid, uid, integer, object, shareUrl, officialDownload, buildFileId, sliceBody, decodeSlice, MAX_FRAME };
+module.exports = { prepare, decode, name, uuid, uid, integer, object, shareUrl, officialDownload, uploadGrant, sliceBody, decodeSlice, MAX_FRAME };

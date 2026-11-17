@@ -222,7 +222,8 @@ function videoInfo(bytes) {
 }
 function recordInfo(bytes) {
     if (!Buffer.isBuffer(bytes) || bytes.length > MAX_RECORD_BYTES) throw problem('UNSUPPORTED', 'Voice requires bounded actual SILK bytes');
-    let cursor = bytes[0] === 2 ? 1 : 0;
+    // QQ voice resources use either 0x02 or 0x03 before the SILK header.
+    let cursor = bytes[0] === 2 || bytes[0] === 3 ? 1 : 0;
     if (bytes.toString('ascii', cursor, cursor + 9) !== '#!SILK_V3') throw problem('UNSUPPORTED', 'Only SILK V3 voice resources are supported');
     cursor += 9;
     const complete = start => {

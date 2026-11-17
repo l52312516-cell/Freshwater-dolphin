@@ -19,7 +19,7 @@ function fixture(t) {
         async getUserDetailInfoByUin(uin) { assert.equal(uin, '456'); return { result: 0, detail: profileDetail() }; }
     };
     const session = { getProfileService() { return profile; } };
-    const capture = new Capture({ install: false, log: entry => diagnostics.push(entry) });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, log: entry => diagnostics.push(entry) });
     const initialize = (uin = '123') => {
         capture.resetSession(session, { selfUin: uin, selfUid: `u_real_${uin}`, clientVer: TARGET_VERSION });
         capture.ready = true;

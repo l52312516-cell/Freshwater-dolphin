@@ -5,10 +5,11 @@ const assert = require('node:assert/strict');
 const { Capture } = require('../src/qq/capture.cjs');
 const { createInteractions } = require('../src/qq/interactions.cjs');
 const { ACTIONS, REQUIREMENTS, runInteraction } = require('../src/onebot/interactions.cjs');
+const { OneBotService } = require('../src/onebot/service.cjs');
 
 function fixture(t) {
     const calls = [], values = { nickname: 'Original name', personalNote: 'Original signature', remark: 'Original group remark' };
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     capture.ready = true; capture.epoch = 'profile-generation-one'; capture.qqVersion = '3.2.35-54395';
     capture.self = { uin: '12345', uid: 'u_self' }; capture.session = {};
     const services = {
@@ -69,11 +70,37 @@ test('unchanged real profile values and empty signatures are confirmed without u
     assert.equal(cleared.personalNote, ''); assert.equal(f.values.personalNote, '');
 });
 
+test('an empty profile update is a no-op without profile queries or setters', async t => {
+    const f = fixture(t);
+    delete f.services.profile.getCoreAndBaseInfo;
+    delete f.services.profile.setNickName;
+    delete f.services.profile.setLongNick;
+    const output = await f.dispatch('profile.update', {});
+    assert.deepEqual(output, { confirmed: true, changed: false, uin: '12345', uid: 'u_self', previous: {} });
+    const cancelled = new AbortController(); cancelled.abort();
+    await assert.rejects(f.dispatch('profile.update', {}, { signal: cancelled.signal }), { code: 'EXPIRED' });
+    await assert.rejects(f.dispatch('profile.update', {}, { expiresAt: Date.now() - 1 }), { code: 'EXPIRED' });
+    assert.deepEqual(f.calls, []);
+});
+
+test('empty and whitespace nicknames are passed exactly once and require exact self readback', async t => {
+    const f = fixture(t);
+    for (const nickname of ['', '  ']) {
+        f.calls.length = 0;
+        const output = await f.dispatch('profile.update', { nickname });
+        assert.equal(output.nickname, nickname); assert.equal(output.confirmed, true);
+        assert.deepEqual(f.calls.map(row => row[0]), ['readSelf', 'nickname', 'readSelf']);
+        assert.deepEqual(f.calls.find(row => row[0] === 'nickname'), ['nickname', nickname]);
+    }
+    f.services.profile.setNickName = () => {};
+    await assert.rejects(f.dispatch('profile.update', { nickname: '' }, { expiresAt: Date.now() + 40 }), { code: 'TIMEOUT' });
+});
+
 test('every requested field and operation is validated before any native query or mutation', async t => {
     const f = fixture(t);
-    for (const params of [{}, { nickname: '' }, { nickname: '  ' }, { nickname: null }, { nickname: 'x'.repeat(257) },
+    for (const params of [{ nickname: null }, { nickname: 'x'.repeat(257) },
         { nickname: 'Valid', personalNote: 'x'.repeat(4097) }, { nickname: 'Valid', personalNote: undefined },
-        { personalNote: 'bad\0note' }, { nickname: 'Valid', nativeMethod: 'execute' }, { sex: 1 }]) {
+        { personalNote: 'bad\0note' }, { nickname: 'Valid', nativeMethod: 'execute' }, { sex: 3 }]) {
         await assert.rejects(f.dispatch('profile.update', params), { code: 'INVALID_PARAMS' });
     }
     for (const params of [{ groupId: '56789' }, { groupId: 0, remark: '' }, { groupId: '4294967296', remark: '' },
@@ -435,9 +462,58 @@ test('OneBot interaction module has fixed actions and translates profile fields 
         ['interaction', { operation: 'group.remark', groupId: '56789', remark: '' }]]);
 });
 
+test('OneBot profile no-input is a no-op and empty nickname is forwarded without coercion', async () => {
+    const f = onebotFixture();
+    f.state.capabilities = {};
+    assert.equal(await f.run('set_qq_profile', {}), null);
+    assert.equal(await f.run('set_qq_profile', { self_id: 12345 }), null);
+    assert.deepEqual(f.calls, []);
+    await assert.rejects(f.run('set_qq_profile', { self_id: 54321 }), { code: 'INVALID_PARAMS' });
+    await assert.rejects(f.run('set_qq_profile', { nickname: undefined }), { code: 'INVALID_PARAMS' });
+    f.state.capabilities = { selfProfile: true, selfNickname: true };
+    assert.equal(await f.run('set_qq_profile', { nickname: '' }), null);
+    assert.deepEqual(f.calls, [['interaction', { operation: 'profile.update', nickname: '' }]]);
+});
+
+test('public profile no-input returns null with echo after identity checks and never dispatches a modification', async () => {
+    const calls = [], state = { ready: true, epoch: 'no-input-profile', self: { uin: '12345', uid: 'u_self' }, capabilities: {} };
+    const service = new OneBotService({ store: {}, backend: { async call(method) {
+        calls.push(method); assert.equal(method, 'status'); return structuredClone(state);
+    } } });
+    assert.deepEqual(await service.action({ action: 'set_qq_profile', params: {}, echo: 'no-input' }),
+        { status: 'ok', retcode: 0, data: null, echo: 'no-input' });
+    assert.deepEqual(calls, ['status']);
+    assert.equal((await service.action({ action: 'set_qq_profile', params: { self_id: 12345 } })).retcode, 0);
+    assert.equal((await service.action({ action: 'set_qq_profile', params: { nickname: undefined } })).retcode, 1400);
+    assert.equal((await service.action({ action: 'set_qq_profile', params: { self_id: 54321 } })).retcode, 1400);
+    assert.equal((await service.action({ action: 'set_qq_profile', params: {} }, { epoch: 'old', selfUin: '12345' })).retcode, 1503);
+    state.ready = false;
+    assert.equal((await service.action({ action: 'set_qq_profile', params: {} })).retcode, 1503);
+    assert.equal(calls.every(method => method === 'status'), true);
+});
+
+test('public empty nickname reaches the real profile updater and succeeds only after matching self readback', async t => {
+    const f = fixture(t), methods = [];
+    const service = new OneBotService({ store: {}, backend: { async call(method, params, options) {
+        methods.push(method);
+        if (method === 'status') return { ready: true, epoch: f.capture.epoch,
+            self: structuredClone(f.capture.self), capabilities: f.interactions.capabilities() };
+        assert.equal(method, 'interaction');
+        return f.capture.interaction(params, { expiresAt: Date.now() + options.timeoutMs });
+    } } });
+    for (const nickname of ['', '  ']) {
+        f.calls.length = 0; methods.length = 0;
+        const response = await service.action({ action: 'set_qq_profile', params: { nickname } });
+        assert.deepEqual(response, { status: 'ok', retcode: 0, data: null });
+        assert.equal(methods.filter(method => method === 'interaction').length, 1);
+        assert.deepEqual(f.calls.map(row => row[0]), ['readSelf', 'nickname', 'readSelf']);
+        assert.equal(f.values.nickname, nickname);
+    }
+});
+
 test('OneBot rejects invalid or unsupported compound changes before the backend can perform a partial action', async () => {
     const f = onebotFixture();
-    for (const params of [{}, { nickname: '' }, { nickname: 'New', personal_note: null }, { nickname: 'New', sex: 1 },
+    for (const params of [{ nickname: 'New', personal_note: null }, { nickname: 'New', sex: 3 },
         { personal_note: 'x'.repeat(4097) }, { nickname: 'New', self_id: '54321' }]) {
         await assert.rejects(f.run('set_qq_profile', params), { code: 'INVALID_PARAMS' });
     }

@@ -84,6 +84,24 @@ test('private file response accepts verified original aliases and MD5 while refu
     }
 });
 
+test('private file direct UUID and original checksum validate opaque canonical hash metadata without guessing identity', () => {
+    const fileHash = '0123456789abcdef0123456789abcdef', input = { fileId: 'direct-original-uuid', fileHash };
+    const checksum = b(100, Buffer.from(fileHash, 'hex')), canonicalHash = s(140, 'opaque-canonical-addon');
+    const direct = Buffer.concat([s(6, input.fileId), canonicalHash, checksum]);
+    assert.equal(pfu.decodeResponse(reply({ metadata: direct }), input).fileId, input.fileId);
+    assert.equal(pfu.decodeResponse(reply({ metadata: direct }), { ...input, fileHash: fileHash.toUpperCase() }).fileId, input.fileId);
+    assert.equal(pfu.decodeResponse(reply({ metadata: Buffer.concat([direct, s(144, 'foreign-alias')]) }), input).fileId, input.fileId);
+    for (const metadata of [Buffer.concat([canonicalHash, checksum]), Buffer.concat([s(6, 'foreign'), canonicalHash, checksum]),
+        Buffer.concat([s(6, 'foreign'), s(144, 'foreign-alias'), canonicalHash, checksum]),
+        Buffer.concat([s(6, input.fileId), canonicalHash, b(100, Buffer.alloc(16))]),
+        Buffer.concat([s(6, input.fileId), canonicalHash, b(100, Buffer.alloc(15))]),
+        Buffer.concat([s(6, input.fileId), canonicalHash, checksum, checksum])]) {
+        assert.throws(() => pfu.decodeResponse(reply({ metadata }), input), { code: 'INVALID_RESPONSE' });
+    }
+    assert.throws(() => pfu.decodeResponse(reply({ metadata: direct }), { ...input, fileHash: 'opaque-input-addon' }), { code: 'INVALID_RESPONSE' });
+    assert.throws(() => pfu.decodeResponse(reply({ metadata: Buffer.concat([s(144, input.fileId), s(140, fileHash)]) }), input), { code: 'INVALID_RESPONSE' });
+});
+
 test('private file URLs validate routing, ports and signed path semantics', () => {
     for (const change of [{ host: 'user@download.qq.com' }, { host: '127.1' }, { host: 'download.qq.com:80' },
         { port: 0 }, { port: 65536 }, { path: '//other.test/file' }, { path: '/x/../file' },

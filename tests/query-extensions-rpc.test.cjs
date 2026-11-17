@@ -17,7 +17,7 @@ const { cancellable } = require('../src/ipc/common.cjs');
 async function fixture(t) {
     const parent = path.resolve(__dirname, '../work/temp'); fs.mkdirSync(parent, { recursive: true });
     const root = fs.mkdtempSync(path.join(parent, 'query-rpc-'));
-    const capture = new Capture({ install: false }), calls = [];
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } }), calls = [];
     capture.session = {};
     capture.epoch = 'query-rpc-session'; capture.qqVersion = TARGET_VERSION; capture.ready = true; capture.online = true;
     capture.self = { uin: '12345', uid: 'u_self', nickname: 'Self' };

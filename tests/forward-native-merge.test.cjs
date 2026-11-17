@@ -31,7 +31,7 @@ function fixture(t) {
         async getMultiMsg(...args) { calls.push({ method: 'getMultiMsg', args }); return handlers.read ? handlers.read(...args) : { result: 0, msgList: structuredClone(originals) }; },
         buildMultiForwardMsg() { calls.push({ method: 'buildMultiForwardMsg' }); return { result: 0, rspInfo: { elements: [merged('built-only-resource')] } }; }
     };
-    capture = new Capture({ install: false, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
+    capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: '3.2.35-54395', audioProcessor: {}, videoProcessor: {} });
     capture.epoch = EPOCH; capture.self = { ...SELF }; capture.ready = true;
     capture.session = { getMsgService: () => native, getMSFService: () => ({ getServerTime() { calls.push({ method: 'getServerTime' }); return 1794614400; } }) };
     t.after(() => capture.close());

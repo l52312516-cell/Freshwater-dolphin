@@ -190,7 +190,7 @@ test('received resources use account-local opaque IDs and signatures bind accoun
     assert.throws(() => media.signedImageUrl({}, resource.file), { code: 'UNSUPPORTED' });
 });
 
-test('received image conversion preserves mixed segment order and rejects the whole message without a resource', async t => {
+test('received image conversion preserves mixed segment order and uses a marked placeholder without a resource', async t => {
     const { root, directory } = fixture(t);
     const keyFile = path.join(directory, 'signing-key');
     fs.writeFileSync(keyFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
@@ -224,7 +224,11 @@ test('received image conversion preserves mixed segment order and rejects the wh
     assert.equal(queried.retcode, 0); assert.equal(queried.data.size, tinyPng.length);
     assert.equal((await service.action({ action: 'get_image', params: { file: '../pixel.png' } })).retcode, 1400);
     found = false;
-    assert.equal(await service.event({ kind: 'message', epoch: 'epoch', selfUin: '123', record: { ...record, msgId: '901' } }), null);
+    const partial = await service.event({ kind: 'message', epoch: 'epoch', selfUin: '123', record: { ...record, msgId: '901' } });
+    assert.deepEqual(partial.message, [{ type: 'text', data: { text: 'before\n' } },
+        { type: 'text', data: { text: '[QQ媒体暂不可读取：类型2]' } }, { type: 'text', data: { text: ' after' } }]);
+    assert.equal(partial._freshwater.content_status, 'partial');
+    assert.deepEqual(partial._freshwater.issues, [{ element_index: 1, element_type: 2, media_type: 'image', reason: 'media_unavailable' }]);
 });
 
 test('QQ image receipt re-queries exact native identity and imports only this account downloaded bytes', async t => {

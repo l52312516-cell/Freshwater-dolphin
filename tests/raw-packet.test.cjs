@@ -68,7 +68,7 @@ test('OneBot packet actions bind UIN and epoch and return their documented respo
     assert.equal(JSON.stringify(logs).includes('babe'),false);
 });
 test('raw kernel methods cannot accept an unbound or retired account epoch', async t => {
-    const capture=new Capture({install:false,qqVersion:TARGET_VERSION});t.after(()=>capture.close());
+    const capture=new Capture({install:false, runtimeIdentity: { platform: 'linux', architecture: 'x64' },qqVersion:TARGET_VERSION});t.after(()=>capture.close());
     capture.ready=true;capture.session={};capture.self={uin:'3000000002',uid:'u_self'};
     for (const method of ['rawPacket','packetStatus']) for(const params of [{},{expectedEpoch:'old',expectedUin:capture.self.uin},{expectedEpoch:capture.epoch,expectedUin:'3000000003'}]) {
         await assert.rejects(capture.call(method,params),{code:'SESSION_CHANGED'});

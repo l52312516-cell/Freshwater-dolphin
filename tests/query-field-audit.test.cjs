@@ -97,7 +97,7 @@ test('OneBot file pages reject duplicate identities, impossible totals and uint3
 });
 
 function socialFixture(t) {
-    const capture = new Capture({ install: false });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' } });
     t.after(() => capture.close());
     capture.epoch = 'one'; capture.ready = true; capture.readyAt = Date.now() - 1000;
     capture.qqVersion = '3.2.35-54395'; capture.self = { uin: '12345', uid: 'u_self' };

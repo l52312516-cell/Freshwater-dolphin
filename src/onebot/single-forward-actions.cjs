@@ -1,5 +1,6 @@
 'use strict';
 const { locator } = require('./store.cjs');
+const { annotate } = require('../diagnostics.cjs');
 const EXTENSION_REQUIREMENTS = Object.freeze({ forward_friend_single_msg: Object.freeze(['reply', 'text']),
     forward_group_single_msg: Object.freeze(['reply', 'text']) });
 const ACTIONS = new Set(Object.keys(EXTENSION_REQUIREMENTS));
@@ -17,7 +18,8 @@ async function runSingleForward(service, state, action, params) {
     // Validate the complete source before downloading any media or sending.
     // Replies, forwards, files and cards need their own destination contexts.
     if (!Array.isArray(record.elements) || !record.elements.length || record.elements.length > 1000 || record.elements.some(element => ![1, 2, 4, 5, 6].includes(element?.elementType))) fail('UNSUPPORTED', 'Single forwarding currently supports text, mentions, faces, images, voice and video');
-    const converted = await service.convert(state, record, Number(id));
+    const converted = await service.convert(state, record, Number(id), { mode: 'strict' });
+    if (converted?._freshwater?.content_status === 'partial') throw annotate(Object.assign(new Error('A partial message cannot be forwarded as complete original content'), { code: 'UNSUPPORTED' }), { reason: 'partial_source_not_sendable', phase: 'prepare' });
     if (!Array.isArray(converted?.message) || !converted.message.length) fail('INVALID_RESPONSE', 'The refreshed source has no complete supported content');
     const content = converted.message.map(segment => {
         if (!segment?.data || !['text', 'at', 'face', 'image', 'record', 'video'].includes(segment.type)) fail('UNSUPPORTED', 'The source contains an unsupported forward segment');

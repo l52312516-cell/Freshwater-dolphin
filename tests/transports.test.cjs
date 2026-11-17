@@ -383,6 +383,29 @@ test('quick operation has standard defaults, validates all flags before sending,
     await assert.rejects(executeQuickOperation(group, { reply: 'fails' }, async () => ({ status: 'failed', retcode: 1504 })), { code: 'ACTION_FAILED' });
 });
 
+test('quick-operation API trusts refreshed partial metadata and rejects mixed moderation before an explicit reply', async t => {
+    const effects = [];
+    const { base } = await fixture(t, [{ id: 'api', type: 'httpApi', quickOperations: true }], {
+        action: async request => {
+            if (request.action === 'get_msg') return { status: 'ok', retcode: 0, data: {
+                message_type: 'group', group_id: 33333, sender: { user_id: 22222 },
+                message: [{ type: 'text', data: { text: '[暂不支持的QQ消息片段：类型99]' } }],
+                _freshwater: { schema: 1, content_status: 'partial', issue_count: 1, issues: [] }
+            } };
+            effects.push(request); return { status: 'ok', retcode: 0, data: null };
+        }
+    });
+    const context = { post_type: 'message', self_id: 11111, message_type: 'group', group_id: 33333,
+        user_id: 22222, message_id: 7, _freshwater: { schema: 1, content_status: 'complete' } };
+    const invoke = async operation => (await fetch(base + 'api/.handle_quick_operation', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context, operation }) })).json();
+    assert.equal((await invoke({ reply: 'must not send', delete: true })).status, 'failed');
+    assert.equal(effects.length, 0);
+    assert.equal((await invoke({ reply: 'explicit reply', at_sender: false })).status, 'ok');
+    assert.equal(effects.length, 1); assert.equal(effects[0].action, 'send_group_msg');
+    assert.equal(effects[0].params.message[0].data.text, 'explicit reply');
+});
+
 test('hidden quick API rejects invented message targets before executing effects', async t => {
     const effects = [];
     const { base } = await fixture(t, [{ id: 'api', type: 'httpApi', quickOperations: true }], { action: async request => {

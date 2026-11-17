@@ -126,7 +126,7 @@ test('production native sessions reject all share sends even when a backend fals
     };
     const catalogue = await f.service.action({ action: 'get_capabilities' });
     const share = catalogue.data.segments.find(row => row.name === 'share');
-    assert.equal(share.send, false); assert.equal(share.verification, 'target-rendering-failed');
+    assert.equal(share.send, false); assert.equal(share.verification, 'unverified');
     for (const [action, target] of [['send_group_msg', { group_id: 200 }], ['send_private_msg', { user_id: 456 }],
         ['send_msg', { message_type: 'group', group_id: 200 }]]) {
         for (const message of [[{ type: 'share', data: shareData }],

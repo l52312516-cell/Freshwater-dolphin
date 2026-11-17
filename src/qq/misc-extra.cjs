@@ -5,7 +5,9 @@ function createMiscExtra(capture, { native = require('./msf-native.cjs') } = {})
     const pending = new Set(), writes = new Set();
     // Both authorized target accounts rejected this Android card protocol with
     // business code 901501. Keep it unavailable on that verified Linux build.
-    const tuwenAvailable = () => native.available() && capture.qqVersion !== '3.2.35-54395';
+    // New builds do not inherit support merely by differing from a rejected
+    // build. Only an explicitly validated future profile may enable this.
+    const tuwenAvailable = () => native.available() && capture.runtimeProfile?.().features?.tuwenArk === true;
     const capabilities = () => ({ ...Object.fromEntries(['miniappArk', 'groupSign', 'selfDiyStatus', 'inlineButton'].map(key => [key, native.available()])), tuwenArk: tuwenAvailable() });
     async function execute(input, context = {}) {
         if (!protocol.object(input) || !protocol.OPERATIONS.has(input.operation)) fail('INVALID_PARAMS', 'Unknown fixed misc operation');
