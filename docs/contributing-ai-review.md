@@ -2,7 +2,7 @@
 
 AI 评审用于发现需要维护者复核的问题，不代表接口、QQ 版本或真实账号已验证，不自动批准或合并 PR。核心测试、WebUI 检查和真实环境验证仍分别记录。
 
-## 当前启用状态
+## GitHub Copilot 原生审核
 
 2026-11-17 已通过 GitHub API 保存以下 **Copilot 原生代码审核**设置：
 
@@ -33,6 +33,26 @@ AI 评审用于发现需要维护者复核的问题，不代表接口、QQ 版�
 维护者可在 PR 右侧 **Reviewers → Copilot → Request / Re-request** 手动重试。权限允许时，也可调用 `POST /repos/{owner}/{repo}/pulls/{pull_number}/copilot-code-review`，请求体为 `{"review_effort":"lite"}`。请求已受理仍不代表审核完成；权限、额度和不可用 effort 等错误应记为“未完成审核”，不回退为伪造的成功评论。
 
 Copilot 的默认 review 是 Comment。管理员应保持 **Allow Copilot to approve pull requests** 与 **Allow Copilot approvals to count toward merge requirements** 关闭；这两项不能仅靠上述规则 JSON 或指令文件强制保证。本次配置没有开启这两项或自动合并；最终状态需在 GitHub 网页设置中复核。
+
+## 自有模型 API 审核
+
+仓库提供独立的 `.github/workflows/ai-review.yml`，使用管理员配置的 OpenAI 兼容 Chat Completions API。该工作流不依赖 Copilot 许可；服务商与模型由仓库维护者配置，模型费用及数据处理遵循服务商条款。启用前应确认服务商允许发送本项目的代码和 PR 内容。
+
+在仓库 **Settings → Secrets and variables → Actions** 配置：
+
+- Repository variable `AI_REVIEW_API_BASE_URL`：HTTPS API 基础 URL；可填写服务商的 API 根路径，工作流在末尾添加 `/chat/completions`。
+- Repository variable `AI_REVIEW_MODEL`：服务商支持的模型标识。
+- Repository secret `AI_REVIEW_API_KEY`：API Key。只作为 Bearer 请求头传给所配置的 HTTPS 服务，不写入仓库、日志或 PR 评论。
+
+当前已保存的非敏感变量为 `AI_REVIEW_API_BASE_URL=https://darkprometheus.top/v1`、`AI_REVIEW_MODEL=hy4flash-free`。Key 尚未配置；现有 Key 曾被贴入聊天，应先在服务商处撤销并轮换，再将新值直接粘贴到 GitHub Secret，勿在 Issue、PR、命令行参数或仓库文件中提供。
+
+自动审核只对本仓库分支创建且作者关联身份为 owner、member 或 collaborator 的 PR 运行。外部 fork 不自动获得模型密钥；GitHub 仅允许有写权限的协作者手动运行 **AI review (external model)** 并输入 PR 编号。脚本还会验证 PR 状态、默认目标分支和当前 head/base SHA。未配置服务时会公开标记“未配置”，不会伪造成功结果。
+
+审核器只用 GitHub API 读取 PR 元数据和有界文件 patch，不检出、安装或运行 PR 代码。PR 标题、说明与 diff 都作为不可信内容发送到配置的模型服务。敏感值会在发送前尝试脱敏；这不能替代贡献者避免提交密钥或管理员选择可信服务商。单次模型请求设超时，不自动重试。超出文件/字节上限或缺少完整 patch 时会标成部分审核。
+
+结果只发布一条普通 PR 评论，不创建 GitHub Approval，不触碰 CI 状态、分支保护或合并。发布前会重新读取 head SHA；PR 已变化时丢弃过期结果。模型响应按允许的 JSON 结构、变更文件和 diff 行重新校验，输出经转义后再发布。API 不可用、格式无效、未配置或审核不完整均不算“AI 通过”。
+
+Copilot 原生审核与自有模型 API 是两条独立路径。前者仍受 Copilot 计划和组织策略限制；后者由维护者自行配置 API 服务与费用。GitHub Copilot 的 partner agent 开关不会授予 Copilot code review 资格。
 
 ## SnowLuma 参考核验
 
