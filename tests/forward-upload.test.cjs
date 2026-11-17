@@ -336,7 +336,11 @@ test('abort, expiry and session changes during author lookup cannot enter a late
     }
 });
 
-test('hung read-only preflight expires safely, frees its reservation and cannot upload from a late result', async () => {
+test('hung read-only preflight expires safely, frees its reservation and cannot upload from a late result', async t => {
+    // Both deadlines share an absolute expiry but register in different turns.
+    // Advance them together after the hung preflight has actually registered;
+    // one real setImmediate after the outer timer is not an inner-timer barrier.
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1700000000000 });
     for (const phase of ['resolve', 'server-time']) for (const reason of ['timeout', 'abort', 'session']) {
         const f = runtimeFixture(), controller = new AbortController(); let release;
         f.capture.deadline = Capture.prototype.deadline; f.capture.pending = new Set();
@@ -347,6 +351,8 @@ test('hung read-only preflight expires safely, frees its reservation and cannot 
         const task = f.upload({ nodes }, context);
         const rejected = rejects(task, reason === 'timeout' ? 'TIMEOUT' : reason === 'abort' ? 'EXPIRED' : 'SESSION_CHANGED');
         await turn();
+        assert.equal(f.capture.pending.size, 2, phase + ':' + reason + ' must enter the read-only preflight');
+        if (reason === 'timeout') t.mock.timers.tick(30);
         if (reason === 'abort') controller.abort();
         if (reason === 'session') {
             f.capture.epoch = 'new-read-session';
