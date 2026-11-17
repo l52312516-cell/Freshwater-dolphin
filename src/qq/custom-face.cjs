@@ -66,13 +66,16 @@ function createCustomFace(capture, options = {}) {
     }
     async function bodyRequest(target, request, scope, maximum) {
         scope.active();
+        // Fetch canonicalizes default ports in Response.url. Bind both sides to
+        // the same URL form before submitting the fixed destination.
+        const href = new URL(target).href;
         const timeout = AbortSignal.timeout(Math.max(1, scope.context.expiresAt - Date.now()));
         const signal = scope.context.signal ? AbortSignal.any([scope.context.signal, timeout]) : timeout;
         let response;
         try {
-            response = await fetchImpl(target, { ...request, redirect: 'manual', credentials: 'omit', signal });
+            response = await fetchImpl(href, { ...request, redirect: 'manual', credentials: 'omit', signal });
             scope.active();
-            if (!response || response.status !== 200 || response.redirected || response.url && response.url !== target || !response.body) fail('QUERY_FAILED', 'QQ custom face server did not return a complete fixed-destination response');
+            if (!response || response.status !== 200 || response.redirected || response.url && response.url !== href || !response.body) fail('QUERY_FAILED', 'QQ custom face server did not return a complete fixed-destination response');
             const parts = []; let size = 0;
             for await (const chunk of response.body) {
                 scope.active(); size += chunk.length;

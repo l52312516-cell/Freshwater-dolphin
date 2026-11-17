@@ -1,0 +1,110 @@
+name: 问题反馈
+description: 报告可复现的运行、消息或接口问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有 [Issues](https://github.com/l52312516-cell/Freshwater-dolphin/issues)，并查看 [能力边界](https://github.com/l52312516-cell/Freshwater-dolphin/blob/main/docs/capability-limits.md)。
+        能力已实现、当前可调用和真实业务验证是不同状态。请描述你实际观察到的结果。
+        **不要上传 QQ 登录目录、备份、二维码、账号密码、token、Cookie、完整聊天记录或带鉴权参数的 URL。安全漏洞请按 [安全说明](https://github.com/l52312516-cell/Freshwater-dolphin/security/policy) 私下报告。**
+  - type: input
+    id: freshwater-version
+    attributes:
+      label: Freshwater 版本
+      description: 填写发行版本；源码运行请补充 commit。若使用自编译版本，请说明是否包含本地修改。
+      placeholder: "0.2.0-alpha.3 / commit abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 运行方式
+      options:
+        - Windows 便携包（Alpine WSL2 + Linux QQ 容器）
+        - Linux Docker
+        - Linux 源码运行
+        - 其他方式 / 尚不确定
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与 QQ 精确版本
+      description: 区分宿主系统与实际运行 QQ 的环境。无法取得的项目请填“未知”，不要猜测。
+      value: |
+        宿主系统及版本：
+        实际 QQ 平台 / 架构：
+        QQ 完整版本及 build：
+        Node.js / Docker / WSL 版本（按运行方式填写）：
+        runtime profile / 稳定或实验模式（如可取得）：
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: 涉及模块
+      multiple: true
+      options:
+        - Windows 启动器 / 安装 / 停止
+        - QQ 登录 / 版本切换 / 账号隔离
+        - WebUI / 管理接口 / 备份恢复
+        - OneBot 正向 WebSocket / HTTP API
+        - OneBot 反向 WebSocket / HTTP 事件上报
+        - 消息接收 / 媒体 / 引用 / 合并转发
+        - QQAPI 查询或写入
+        - 其他 / 尚不确定
+    validations:
+      required: true
+  - type: textarea
+    id: downstream
+    attributes:
+      label: 下游客户端与连接配置
+      description: 如涉及 AstrBot，请填写版本、插件版本与连接方式。多账号只需用 A / B 别名说明路由，不需要真实 QQ 号、地址或 token。
+      placeholder: |
+        AstrBot 版本 / 相关插件版本：
+        账号 A → 反向 WS 入口 A，账号 B → 独立入口 B
+        同一入口是否连接多个账号：
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 提供最小步骤；接口问题请写 action 和脱敏参数，保留参数类型及必要的对应关系。
+      placeholder: |
+        1. 启动账号 A，并确认已就绪。
+        2. 对测试会话调用 ...
+        3. 观察 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 包括 retcode、reason、发生时间，以及消息是否真实收到。若出现文字占位，请保留 _freshwater 完整性字段。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志与截图
+      description: 提供复现时间附近的相关片段；可从管理台导出诊断。保留 traceId、action、stage、phase、reason、code，删除私密内容。无需上传原始报文或整份日志；无法提供时请说明原因。
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: 已尝试的方法与补充信息
+      description: 例如最近升级、仅某版本出现、是否可稳定复现、相关 Issue。请勿为复现反复发送结果不明的写入请求。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 发布前检查
+      options:
+        - label: 我已检查正文、附件和截图，没有公开登录数据、密钥或私人聊天内容。
+          required: true

@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { locator } = require('./store.cjs');
 const { parseGrayTip } = require('../qq/gray-tip.cjs');
+const { isPartial } = require('./message-compat.cjs');
 
 const keys = new WeakMap();
 const CURSOR_TTL_MS = 15 * 60 * 1000;
@@ -105,15 +106,22 @@ function systemRecord(record) {
 function recalledRecord(record) {
     if (![1, 2].includes(record.chatType) || record.msgType !== 5 || record.subMsgType !== 4 ||
         !integer(record.senderUin) || typeof record.senderUid !== 'string' || !/^u_[A-Za-z0-9_-]+$/.test(record.senderUid) ||
-        !Array.isArray(record.elements) || record.elements.length !== 1 || !integer(record.recallTime) ||
-        !Number.isSafeInteger(Number(record.recallTime))) return false;
+        !Array.isArray(record.elements) || record.elements.length !== 1) return false;
     const element = record.elements[0], gray = element?.grayTipElement, revoke = gray?.revokeElement;
     if (!plain(element) || element.elementType !== 8 || !plain(gray) || gray.subElementType !== 1 || !plain(revoke) ||
         Object.entries(element).some(([key, value]) => key.endsWith('Element') && key !== 'grayTipElement' && value != null) ||
         Object.entries(gray).some(([key, value]) => key !== 'subElementType' && key !== 'revokeElement' && value != null) ||
         typeof revoke.operatorUid !== 'string' || !/^u_[A-Za-z0-9_-]+$/.test(revoke.operatorUid) ||
         revoke.origMsgSenderUid != null && revoke.origMsgSenderUid !== record.senderUid) return false;
-    const time = Number(record.recallTime);
+    // Persisted private self-recall stubs on the target QQ build can have
+    // recallTime === '0'. Their completed, sender-owned revoke payload is
+    // still a history gap. msgTime validates that stored stub, never a live
+    // recall event timestamp; incoming notices retain their separate checks.
+    const privateStoredRecall = record.chatType === 1 && record.recallTime === '0' && record.sendStatus === 2 &&
+        revoke.operatorUid === record.senderUid && revoke.origMsgSenderUid === record.senderUid;
+    const timestamp = privateStoredRecall ? record.msgTime : record.recallTime;
+    if (!integer(timestamp) || !Number.isSafeInteger(Number(timestamp))) return false;
+    const time = Number(timestamp);
     return (time > 10000000000 ? time : time * 1000) <= Date.now() + 30000;
 }
 
@@ -201,7 +209,9 @@ async function runHistory(service, state, params, action, { numberId, shortId })
     }
     await service.assertSession(state);
     if (messages.length) transaction.commit();
-    return { messages, next_message_id: next,
+    const partialMessages = messages.filter(isPartial);
+    return { messages, ...(partialMessages.length ? { _freshwater: { schema: 1, content_status: 'partial',
+        partial_message_count: partialMessages.length, issue_count: partialMessages.reduce((sum, item) => sum + item._freshwater.issue_count, 0) } } : {}), next_message_id: next,
         next_history_cursor: nextCursor,
         skipped_system_count: skippedSystem, skipped_failed_count: skippedFailed, skipped_recalled_count: skippedRecalled,
         has_more: null, direction: 'older' };

@@ -1,8 +1,16 @@
-# 文档导航
+# Freshwater 文档
+
+[项目首页](../README.md) · [下载发行版](https://github.com/l52312516-cell/Freshwater-dolphin/releases) · [获取帮助](../SUPPORT.md)
+
+首次使用可按顺序阅读：选择运行平台 → 初始化与 QQ 登录 → 连接 AstrBot → 查询当前账号能力。
 
 ## 使用与部署
 
-- [项目介绍、准备 QQ 与 Docker 部署](../README.md)
+- [项目介绍与快速开始](../README.md)
+- [Windows 命令行预览包](windows-runtime.md)
+- [Linux / Docker 部署](linux-deployment.md)
+- [管理台、QQ 登录与 AstrBot](usage.md)
+- [QQ 版本选择、切换与备份 v3](qq-runtime-management.md)
 - [原生模块构建](native-build.md)
 - [消息存储、恢复与专用 Docker 服务](storage-and-recovery.md)
 - [邮件与 Webhook 通知](notifications.md)
@@ -15,6 +23,7 @@
 - [资料互动及群文件查询](query-extensions.md)
 - [新增 QQAPI 只读扩展及分页边界](qqapi-extensions.md)
 - [历史消息分页](history-pagination.md)
+- [消息兼容、部分内容与结构化日志](message-compatibility.md)
 
 能力矩阵是源码清单，`implemented` 表示存在实现；实际账号的 `available` 必须通过 `get_capabilities` 查询。目录不将未验证的 QQ 方法或参数变体标为真实业务通过。
 
@@ -41,6 +50,13 @@
 - [原生 rkey、文件及合并读取验收](native-validation-20261116.md)
 - [验证流程](verification.md)
 - [GitHub Releases](https://github.com/l52312516-cell/Freshwater-dolphin/releases)
+
+## 参与与维护
+
+- [贡献指南](../CONTRIBUTING.md)与 [PR 模板](../.github/PULL_REQUEST_TEMPLATE.md)
+- [问题反馈入口](https://github.com/l52312516-cell/Freshwater-dolphin/issues/new/choose)
+- [AI 辅助审核](contributing-ai-review.md)
+- [安全政策](../SECURITY.md)与 [支持说明](../SUPPORT.md)
 
 完整测试记录、本地报告、登录状态、运行日志及消息映射留在工作区，不进入 Git。公开发布只包含源码、脱敏验证摘要、能力目录及无登录数据的构建镜像。
 

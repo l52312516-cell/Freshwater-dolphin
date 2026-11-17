@@ -80,14 +80,22 @@ async function runSocial(service, state, action, params) {
         return { invited_requests: results.filter(row => row.sub_type === 'invite'), join_requests: results.filter(row => row.sub_type === 'add') };
     }
     if (['set_friend_add_request', 'set_group_add_request'].includes(action)) {
-        const approve = params.approve ?? true;
+        const approve = params.approve === undefined ? true : params.approve;
         if (typeof approve !== 'boolean' || typeof params.flag !== 'string' || !/^fwd_req_[a-f0-9]{48}$/.test(params.flag)) {
             throw problem('INVALID_PARAMS', 'Expected boolean approve and an opaque request flag');
         }
         const friend = action === 'set_friend_add_request';
-        if (!friend && !['add', 'invite'].includes(params.sub_type)) throw problem('INVALID_PARAMS', 'Expected add or invite sub_type');
+        let subType;
+        if (!friend) {
+            if (['sub_type', 'type'].some(key => params[key] !== undefined && !['add', 'invite'].includes(params[key])) ||
+                params.sub_type !== undefined && params.type !== undefined && params.sub_type !== params.type) {
+                throw problem('INVALID_PARAMS', 'Expected matching add or invite request types');
+            }
+            subType = params.sub_type !== undefined ? params.sub_type : params.type !== undefined ? params.type : 'add';
+            if (params.reason !== undefined && typeof params.reason !== 'string') throw problem('INVALID_PARAMS', 'reason must be a string');
+        }
         const result = await service.sessionCall(state, 'socialAction', { operation: friend ? 'friendRequest' : 'groupRequest',
-            flag: params.flag, approve, ...(friend ? (params.remark !== undefined ? { remark: params.remark } : {}) : { subType: params.sub_type, reason: params.reason ?? '' }) });
+            flag: params.flag, approve, ...(friend ? (params.remark !== undefined ? { remark: params.remark } : {}) : { subType, reason: params.reason ?? '' }) });
         if (result?.handled !== true) throw problem('INVALID_RESPONSE', 'QQ did not confirm request handling');
         return null;
     }

@@ -89,9 +89,16 @@ test('only recoverable native image errors use fallback and official multimedia 
     }
     const failed = fixture(t, { native: async () => { throw Object.assign(new Error('native diagnostic with secret URL'), { code: 'KERNEL_ERROR' }); } });
     assert.equal(await failed.service.event(event(record())), null); assert.deepEqual(failed.calls, ['native']);
-    assert.deepEqual(failed.logs, [{ event: 'message_skipped', code: 'KERNEL_ERROR' }]);
+    assert.equal(failed.logs.length, 1);
+    const { traceId, ...diagnostic } = failed.logs[0];
+    assert.match(traceId, /^[a-f0-9]{32}$/);
+    assert.deepEqual(diagnostic, { event: 'message_skipped', code: 'KERNEL_ERROR', reason: 'business_rejected',
+        phase: 'element_convert', mediaType: 'image', elementType: 2, elementIndex: 1 });
     const wrongHost = fixture(t);
-    assert.equal(await wrongHost.service.event(event(record(2, '901', 'multimedia.nt.qq.com.cn.evil.example'))), null);
+    const unavailable = await wrongHost.service.event(event(record(2, '901', 'multimedia.nt.qq.com.cn.evil.example')));
+    assert.equal(unavailable._freshwater.content_status, 'partial');
+    assert.equal(unavailable._freshwater.issues[0].reason, 'media_unavailable');
+    assert.equal(JSON.stringify(unavailable).includes('evil.example'), false);
     assert.deepEqual(wrongHost.calls, ['native']);
 });
 

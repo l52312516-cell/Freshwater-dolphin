@@ -56,7 +56,7 @@ function optionalAcknowledgement(value) {
 // Fixed operations share the capture's real session and deadlines.
 // A like request is dispatched once; even a timeout cannot release its target
 // lock while the native promise is still pending in the same QQ session.
-function createInteractions(capture) {
+function createInteractions(capture, { native = require('./msf-native.cjs') } = {}) {
     let epoch, session, selfUin, selfUid;
     const pendingLikes = new Map();
     const pendingMutations = new Map();
@@ -72,10 +72,11 @@ function createInteractions(capture) {
         synchronize();
         const selfNickname = capture.hasMethods('profile', ['getCoreAndBaseInfo', 'setNickName']);
         const selfSignature = capture.hasMethods('profile', ['getCoreAndBaseInfo', 'setLongNick']);
+        const selfSex = capture.hasMethods('profile', ['getCoreAndBaseInfo']) && native.available();
         const groupRemark = capture.hasMethods('group', ['modifyGroupRemark', 'getGroupList']);
         return { profileLike: capture.hasMethods('profileLike', ['setBuddyProfileLike']),
             groupAtAllRemain: capture.hasMethods('group', ['getGroupRemainAtTimes']),
-            ...(selfNickname || selfSignature ? { selfProfile: true, selfNickname, selfSignature } : {}),
+            ...(selfNickname || selfSignature || selfSex ? { selfProfile: true, selfNickname, selfSignature, selfSex } : {}),
             ...(groupRemark ? { groupRemark: true } : {}) };
     }
     function active(state, context) {
@@ -155,6 +156,14 @@ function createInteractions(capture) {
             }
             snapshot.personalNote = value.baseInfo.longNick;
         }
+        if (Object.hasOwn(requested, 'sex')) {
+            if (!record(value.baseInfo) || !Number.isInteger(value.baseInfo.sex) || value.baseInfo.sex < 0 || value.baseInfo.sex > 2 ||
+                value.baseInfo.uid !== undefined && value.baseInfo.uid !== state.uid ||
+                value.baseInfo.uin !== undefined && String(value.baseInfo.uin) !== state.uin) {
+                throw problem('INVALID_RESPONSE', 'QQ omitted a matching real self sex value');
+            }
+            snapshot.sex = value.baseInfo.sex;
+        }
         return snapshot;
     }
     function confirmationDelay(state, context) {
@@ -189,10 +198,21 @@ function createInteractions(capture) {
         const previous = await selfProfile(state, context, requested);
         let observed = previous, applied = 0;
         try {
-            for (const [key, method] of [['nickname', 'setNickName'], ['personalNote', 'setLongNick']]) {
+            for (const [key, method] of [['nickname', 'setNickName'], ['personalNote', 'setLongNick'], ['sex', null]]) {
                 if (!Object.hasOwn(requested, key) || requested[key] === observed[key]) continue;
                 active(state, context);
-                optionalAcknowledgement(await capture.invoke('profile', method, [requested[key]]));
+                if (key === 'sex') {
+                    const request = { uin: state.uin, sex: requested.sex };
+                    require('./profile-update-protocol.cjs').prepare('profile.sex', request);
+                    const ack = await native.run(capture, { op: 'fixedProfile', operation: 'profile.sex', request,
+                        expectedEpoch: state.epoch, expectedUin: state.uin, signal: context.signal,
+                        timeoutMs: Math.max(1, Math.min(10000, (context.expiresAt ?? Date.now() + 10000) - Date.now())) });
+                    active(state, context);
+                    if (!record(ack) || ack.operation !== 'profile.sex' || ack.uin !== state.uin || ack.sex !== requested.sex ||
+                        ack.confirmed !== false || ack.confirmation !== 'requires_profile_readback') {
+                        throw problem('INVALID_RESPONSE', 'QQ supplied no matching profile acknowledgement');
+                    }
+                } else optionalAcknowledgement(await capture.invoke('profile', method, [requested[key]]));
                 active(state, context);
                 observed = await confirmProfileField(state, context, requested, key);
                 applied++;
@@ -251,11 +271,16 @@ function createInteractions(capture) {
         let operation, key;
         if (method === 'profile.update') {
             const requested = {};
-            if (Object.hasOwn(params, 'nickname')) requested.nickname = text(params.nickname, 256, false, 'nickname');
+            if (Object.hasOwn(params, 'nickname')) requested.nickname = text(params.nickname, 256, true, 'nickname');
             if (Object.hasOwn(params, 'personalNote')) requested.personalNote = text(params.personalNote, 4096, true, 'personal note');
-            if (!Object.keys(requested).length) throw problem('INVALID_PARAMS', 'At least one profile field is required');
+            if (Object.hasOwn(params, 'sex')) requested.sex = require('./profile-update-protocol.cjs').sex(params.sex);
+            if (!Object.keys(requested).length) {
+                active(state, context);
+                return { confirmed: true, changed: false, uin: state.uin, uid: state.uid, previous: {} };
+            }
             if (Object.hasOwn(requested, 'nickname') && enabled.selfNickname !== true ||
-                Object.hasOwn(requested, 'personalNote') && enabled.selfSignature !== true) {
+                Object.hasOwn(requested, 'personalNote') && enabled.selfSignature !== true ||
+                Object.hasOwn(requested, 'sex') && enabled.selfSex !== true) {
                 throw problem('UNSUPPORTED', 'QQ cannot update and verify every requested profile field');
             }
             key = 'self:profile'; operation = scoped => updateProfile(requested, state, scoped);
@@ -273,7 +298,7 @@ function createInteractions(capture) {
     }
     async function dispatch(method, params = {}, context = {}) {
         if (!['profile.like', 'group.atAllRemain', 'profile.update', 'group.remark'].includes(method)) throw problem('UNSUPPORTED', 'Unknown interaction method');
-        fields(params, method === 'profile.like' ? ['uid', 'count'] : method === 'profile.update' ? ['nickname', 'personalNote'] :
+        fields(params, method === 'profile.like' ? ['uid', 'count'] : method === 'profile.update' ? ['nickname', 'personalNote', 'sex'] :
             method === 'group.remark' ? ['groupId', 'remark'] : ['groupId']);
         capture.ensureReady(); synchronize();
         if (params.expectedEpoch !== undefined && params.expectedEpoch !== capture.epoch) {
@@ -290,7 +315,7 @@ function createInteractions(capture) {
         let target, count;
         if (method === 'profile.like') {
             target = uid(params.uid); count = params.count === undefined ? 1 : params.count;
-            if (!Number.isInteger(count) || count < 1 || count > 10) throw problem('INVALID_PARAMS', 'Like count must be an integer from 1 to 10');
+            if (!Number.isInteger(count) || count < 0 || count > 10) throw problem('INVALID_PARAMS', 'Like count must be an integer from 0 to 10');
         } else target = groupId(params.groupId);
         const flag = method === 'profile.like' ? 'profileLike' : 'groupAtAllRemain';
         if (!capabilities()[flag]) throw problem('UNSUPPORTED', 'QQ interaction method is unavailable');

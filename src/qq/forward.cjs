@@ -173,7 +173,10 @@ function createForward(capture, { now = Date.now } = {}) {
             throw problem('EXPIRED', 'Forward request expired; dispatched operations are not retried');
         }
     }
-    function supported(methods) { return capture.hasMethods('msg', methods); }
+    function supported(methods) {
+        try { capture.ensureReady(); return capture.hasMethods('msg', methods); }
+        catch { return false; }
+    }
     function capabilities() {
         return { forwardExisting: supported(['getMsgsByMsgId', 'forwardMsg']), forwardRead: supported(['getMsgsByMsgId', 'getMultiMsg']),
             // QQ 3.2.35-54395 accepts and delivers this operation, but its real
@@ -486,8 +489,30 @@ function createForward(capture, { now = Date.now } = {}) {
         const old = trees.get(key);
         if (parentMsgId !== rootMsgId && !old?.nodes.has(parentMsgId)) throw problem('NOT_FOUND', 'Nested parent was not observed below this exact merged root');
         active(state, context);
-        const result = acceptance(await capture.invoke('msg', 'getMultiMsg', [{ ...target, guildId: '' }, rootMsgId, parentMsgId]));
+        // Native getMultiMsg rewrites custom display metadata even on success.
+        // Only a positively identified, wholly validated 9/4 resource replaces
+        // that read. Other schemas retain the original native limits/path.
+        if (parentMsgId === rootMsgId && typeof capture.forwardResourceReadApi?.readCustom === 'function') {
+            const custom = await (capture.forwardResourceReadApi.readCustomCompatible || capture.forwardResourceReadApi.readCustom)({ peer: target, rootMsgId,
+                parentMsgId, resId, expectedEpoch: state.epoch }, context);
+            active(state, context);
+            if (custom !== null) return custom;
+        }
+        let result;
+        try {
+            result = acceptance(await capture.invoke('msg', 'getMultiMsg', [{ ...target, guildId: '' }, rootMsgId, parentMsgId]));
+        } catch (error) {
+            active(state, context);
+            // Some server-backed custom resources cannot be expanded by this
+            // QQ build. Read only the already observed root's fixed resource;
+            // nested native parents still require their own native identity.
+            if (error?.code !== 'KERNEL_ERROR' || parentMsgId !== rootMsgId || !capture.forwardResourceReadApi) throw error;
+            return (capture.forwardResourceReadApi.readCompatible || capture.forwardResourceReadApi.read)({ peer: target, rootMsgId, parentMsgId, resId, expectedEpoch: state.epoch }, context);
+        }
         active(state, context);
+        if (Array.isArray(result.msgList) && result.msgList.length === 0 && parentMsgId === rootMsgId && capture.forwardResourceReadApi) {
+            return (capture.forwardResourceReadApi.readCompatible || capture.forwardResourceReadApi.read)({ peer: target, rootMsgId, parentMsgId, resId, expectedEpoch: state.epoch }, context);
+        }
         const records = copyRecords(result.msgList), nodes = new Map(old?.nodes || []);
         const seen = new Set();
         for (const record of records) {

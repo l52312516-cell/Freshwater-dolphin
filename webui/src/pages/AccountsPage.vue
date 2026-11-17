@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue';
 import AccountAvatar from '../components/AccountAvatar.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import RemoteLogin from '../components/RemoteLogin.vue';
+import QQRuntimeManager from '../components/QQRuntimeManager.vue';
 import { canRecoverMaintenance, healthValue } from '../labels';
 import type { Account } from '../types';
 
@@ -68,6 +69,7 @@ defineExpose({ closeRemote: () => remoteLogin.value?.close() });
     </section>
   </div>
   <RemoteLogin v-if="account" :key="account.id" ref="remoteLogin" :profile-id="account.id" :expected-uin="account.expectedUin" :label="account.label" :enabled="account.desired === 'running' && !account.maintenance" :ready="account.health?.ready === true && account.health?.authorized === true" />
+  <QQRuntimeManager v-if="account" :key="'runtime-' + account.id" :account="account" :disabled="busy" @changed="emit('select', account.id)" />
 </template>
 
 <style scoped>

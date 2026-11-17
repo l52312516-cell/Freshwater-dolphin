@@ -85,37 +85,49 @@ const TARGET_VALIDATION = Object.freeze({
     get_private_file_url: ['received-private-file', 'original-uuid-and-checksum', '56041-byte-download'],
     qqapi_get_forward_messages: ['observed-group-forward', 'text-and-image', 'download-md5-checked']
 });
+const { evaluateRuntimeIdentity } = require('../qq/runtime-profile.cjs');
 
 function capabilities(status = {}) {
     const flags = status.capabilities || {};
     const ready = Boolean(status.ready && status.self?.uin && status.self?.uid);
+    const runtime = status.runtime_profile;
+    const matched = runtime && evaluateRuntimeIdentity({ platform: runtime.platform, architecture: runtime.architecture,
+        qqVersion: status.qqVersion, packageSha256: runtime.package_sha256, wrapperSha256: runtime.wrapper_sha256,
+        profileId: runtime.profile_id, packageId: runtime.package_id, experimental: runtime.experimental });
+    const exactEvidence = matched?.evidence === 'exact-build-history';
     const available = flag => Array.isArray(flag) ? flag.every(available) :
         flag === null || (flag === 'identity' ? ready : ready && flags[flag] === true);
     const entry = (name, implemented, flag, verified = false) => ({ name, implemented,
         available: implemented && (name === 'send_group_forward_msg' ? available(flag) || available('mergeExistingNative') :
             name === 'send_forward_msg' ? available(flag) || available('forwardUpload') : available(flag)),
         verification: verified ? 'verified' : implemented ? 'offline-tested' : 'unsupported',
+        runtime_verification: exactEvidence && Object.hasOwn(TARGET_VALIDATION, name) ? 'historical-scope' : 'unverified',
+        availability_basis: runtime?.admission === 'experimental-basic' ? 'experimental-methods' : 'session-methods',
+        ...(implemented && runtime?.admission === 'denied' ? { reason: 'runtime_profile_denied' } : {}),
         ...(!implemented && UNSUPPORTED_REASONS[name] ? { reason: UNSUPPORTED_REASONS[name] } : {}),
         ...(name === 'send_group_forward_msg' ? { variants: { custom_text_image_nodes: available('mergeCustom'),
             existing_message_id_nodes: available('mergeExistingNative'), existing_scope: 'same-source-group-plain-text-1..20' } } : {}),
         ...(name === 'send_forward_msg' ? { variants: { targeted_text_image_nodes: available('mergeCustom'),
             upload_only_text_nodes: available('forwardUpload') } } : {}),
-        ...(status.qqVersion === '3.2.35-54395' && Object.hasOwn(TARGET_VALIDATION, name) ? {
+        ...(exactEvidence && Object.hasOwn(TARGET_VALIDATION, name) ? {
             target_validation: { qq_version: '3.2.35-54395', platform: 'linux-x64', date: '2026-11-16',
                 scopes: [...TARGET_VALIDATION[name]], reference: 'docs/native-validation-20261116.md' }
         } : {}) });
     return {
         schema_version: 1, qq_version: status.qqVersion || null, ready,
+        ...(runtime ? { runtime_profile: { ...runtime } } : {}),
         actions: STANDARD_ACTIONS.map(name => entry(name, Object.hasOwn(ACTION_REQUIREMENTS, name), ACTION_REQUIREMENTS[name])),
         extensions: [...EXTENSION_ACTIONS.map(name => entry(name, true, EXTENSION_REQUIREMENTS[name])),
             ...Object.keys(UNSUPPORTED_REASONS).filter(name => !STANDARD_ACTIONS.includes(name) && !IMPLEMENTED_ACTIONS.has(name)).map(name => entry(name, false, null))],
         segments: MESSAGE_SEGMENTS.map(name => ({ name,
-            send: ['text', 'at', 'reply', 'face', 'image', 'music', 'record', 'video'].includes(name) && available(name),
+            send: (runtime?.admission !== 'experimental-basic' || name === 'text') && ['text', 'at', 'reply', 'face', 'image', 'music', 'record', 'video'].includes(name) && available(name),
             receive: (['text', 'at', 'reply', 'face'].includes(name) && available(name)) || (['image', 'record', 'video', 'json'].includes(name) && available(name + 'Receive')) || (name === 'forward' && available('forwardRead')),
             implemented: ['text', 'at', 'reply', 'face', 'image', 'music', 'record', 'video', 'share', 'json', 'forward'].includes(name),
             ...(name === 'record' ? { receive_scope: !available('recordReceive') ? 'unavailable' :
                 flags.recordReceiveDownload === true ? 'account-local-or-qq-downloader' : 'account-local-only' } : {}),
-            verification: name === 'share' ? 'target-rendering-failed' : ['text', 'at', 'reply'].includes(name) ? 'previous-target-validation' : ['face', 'image', 'music', 'record', 'video', 'json', 'forward'].includes(name) ? 'offline-tested' : 'unsupported' })),
+            runtime_verification: exactEvidence && ['text', 'at', 'reply'].includes(name) ? 'historical-scope' : 'unverified',
+            verification: name === 'share' ? (exactEvidence ? 'target-rendering-failed' : 'unverified') : ['text', 'at', 'reply'].includes(name) ?
+                (exactEvidence ? 'previous-target-validation' : 'unverified') : ['face', 'image', 'music', 'record', 'video', 'json', 'forward'].includes(name) ? 'offline-tested' : 'unsupported' })),
         segment_extensions: [{ name: 'file', send: available('file'), receive: available('groupFileUrl') || available('privateFileUrl'),
             send_contexts: ['private', 'group'], receive_contexts: [
                 ...(available('privateFileUrl') ? ['private'] : []), ...(available('groupFileUrl') ? ['group'] : [])],
@@ -126,8 +138,8 @@ function capabilities(status = {}) {
                 (name === 'request' && ready && (flags.friendRequests === true || flags.groupRequests === true)),
             subtypes: name === 'message' ? ['private', 'group'] : name === 'notice' ? ['friend_recall', 'group_recall', 'notify.poke'] :
                 name === 'meta_event' ? ['lifecycle', 'heartbeat'] : ['friend', 'group'] })),
-        notes: ['Availability checks the current session and method presence; new kernel operations still require target QQ validation.',
-            'Files and H.264 MP4 videos use single-segment sends. Canonical base64 voice/video/file inputs have a combined 10 MiB message limit, are validated and temporarily staged inside the account, then use the same native preparers. Share sending is disabled because target QQ clients could not render the fixed news template; its remaining generator is an offline experiment. Inbound Ark JSON retains validated data. Observed native merged forwards can be read; existing-message forwarding returns a kernel acknowledgment without a destination message ID. Custom merged sending accepts 1 to 100 self-authored text/base64-image nodes, stages fresh self-chat messages and requires complete destination-resource readback. The native existing-ID merge variant is disabled on QQ 3.2.35-54395: real delivery was observed but callbacks omit a provable request-to-message correlation. Formal existing-ID requests fail before dispatch; custom text/image merging remains available. Voice export accepts account-observed resources; compressed formats require project FFmpeg. Generic JSON/XML sending and remote input URLs remain unavailable.',
+        notes: ['Availability checks the current session and method presence. Runtime business evidence is scoped to an exact guest OS, architecture, QQ build, package SHA256 and loaded wrapper SHA256; version numbers and a Windows host do not inherit Linux or other-build validation.',
+            'Files and H.264 MP4 videos use single-segment sends. Canonical base64 voice/video/file inputs have a combined 10 MiB message limit, are validated and temporarily staged inside the account, then use the same native preparers. Share sending is disabled because target QQ clients could not render the fixed news template; its remaining generator is an offline experiment. Inbound Ark JSON retains validated data. Observed native merged forwards can be read; existing-message forwarding returns a kernel acknowledgment without a destination message ID. Custom merged sending accepts 1 to 100 text/base64-image nodes. Verified author identities and explicit uint32 second timestamps require mergeCustomMetadata; name/uin and nickname/user_id aliases are accepted, and time=0 uses the real QQ server time. Every successful send requires complete destination-resource readback. Image bodies are obtained through verified native self-chat staging. The native existing-ID merge variant is disabled on QQ 3.2.35-54395: real delivery was observed but callbacks omit a provable request-to-message correlation. Formal existing-ID requests fail before dispatch; custom text/image merging remains available. Voice export accepts account-observed resources; compressed formats require project FFmpeg. Generic JSON/XML sending and remote input URLs remain unavailable.',
             'Credential APIs return only current-account authenticated QQ tickets and fixed-domain cookies to authorized callers. Raw packets use the bounded correlated native queue. Packet statistics cover adapter-native SSO only. Reaction summaries use matching fresh message-record directories and complete user pages; unavailable last-reaction timestamps are null. Account exit/restart is asynchronously committed after the transport response; cache cleanup touches inactive registered stream files. Legacy model and anonymous protocols still require current QQ service validation.']
     };
 }

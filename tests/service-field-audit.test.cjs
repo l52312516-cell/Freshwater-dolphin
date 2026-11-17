@@ -23,13 +23,15 @@ function fixture(t) {
     } };
     return { store, record, calls, service: new OneBotService({ backend, store }), state };
 }
-test('get_msg exposes confirmed file metadata without enabling unavailable automatic file events', async t => {
+test('get_msg and automatic file events retain exact metadata without claiming a download URL', async t => {
     const f = fixture(t), entry = f.store.remember('123', f.record);
     const query = await f.service.action({ action: 'get_msg', params: { message_id: entry.id } });
     assert.equal(query.retcode, 0);
     assert.deepEqual(query.data.message, [{ type: 'file', data: { file: 'opaque-file-id', file_id: 'opaque-file-id', name: '文档.txt', file_size: '9007199254740993' } }]);
     assert.equal(Object.hasOwn(query.data.message[0].data, 'url'), false);
-    assert.equal(await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record }), null);
+    const event = await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record });
+    assert.deepEqual(event.message, query.data.message);
+    assert.equal(event._freshwater, undefined);
 });
 test('group file events convert with a native download URL when the capability is present', async t => {
     const f = fixture(t); f.state.capabilities.groupFileUrl = true;
@@ -65,7 +67,7 @@ test('capability catalogue distinguishes JSON reception, failed share rendering,
     assert.equal(value.segments.find(row => row.name === 'share').send, false);
     assert.equal(value.segments.find(row => row.name === 'share').receive, false);
     assert.equal(value.segments.find(row => row.name === 'share').implemented, true);
-    assert.equal(value.segments.find(row => row.name === 'share').verification, 'target-rendering-failed');
+    assert.equal(value.segments.find(row => row.name === 'share').verification, 'unverified');
     assert.equal(value.segments.find(row => row.name === 'video').send, true);
     assert.equal(value.segment_extensions[0].name, 'file');
     assert.equal(value.segment_extensions[0].receive, false);
@@ -96,12 +98,14 @@ test('group-only file reception follows the native URL capability and actual ses
     assert.equal(notReady.segment_extensions[0].receive, false);
     assert.equal(notReady.extensions.find(row => row.name === 'get_group_file_system_info').available, false);
 });
-test('native group file availability never enables unsupported private file reception', async t => {
+test('native group file availability never queries private file URLs through group methods', async t => {
     const f = fixture(t);
     f.state.capabilities.groupFileUrl = true;
     Object.assign(f.record, { chatType: 1, peerUid: 'u_sender', peerUin: '789' });
     const event = await f.service.event({ kind: 'message', epoch: 'one', selfUin: '123', record: f.record });
-    assert.equal(event, null);
+    assert.equal(event.message_type, 'private');
+    assert.equal(event.message[0].type, 'file');
+    assert.equal(event.message[0].data.url, undefined);
     assert.equal(f.calls.some(call => call.method === 'nativeGroupFileUrl'), false);
 });
 test('private file URL capabilities remain independent of group-file support and report only enabled contexts', async t => {
@@ -124,11 +128,14 @@ test('private file URL capabilities remain independent of group-file support and
 });
 
 test('limited native validation evidence never enables another version or a stopped account', () => {
-    const target = capabilities({ qqVersion: '3.2.35-54395', ready: false });
+    const { BASELINE, evaluateRuntimeIdentity } = require('../src/qq/runtime-profile.cjs');
+    const target = capabilities({ qqVersion: '3.2.35-54395', ready: false, runtime_profile: evaluateRuntimeIdentity(BASELINE) });
     const privateFile = target.extensions.find(row => row.name === 'get_private_file_url');
     assert.equal(privateFile.available, false);
     assert.ok(privateFile.target_validation.scopes.includes('56041-byte-download'));
     assert.equal(privateFile.verification, 'offline-tested'); // Whole parameter surface remains unverified.
     const otherVersion = capabilities({ qqVersion: 'unverified', ready: false });
     assert.equal(Object.hasOwn(otherVersion.extensions.find(row => row.name === 'get_private_file_url'), 'target_validation'), false);
+    const versionOnly = capabilities({ qqVersion: '3.2.35-54395', ready: false });
+    assert.equal(Object.hasOwn(versionOnly.extensions.find(row => row.name === 'get_private_file_url'), 'target_validation'), false);
 });

@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { buildNative, verifyNative } = require('../tools/build-native.cjs');
 
 const parent = path.resolve(__dirname, '../work/temp');
@@ -101,4 +102,40 @@ test('Docker native runtime is built from source and cannot be hidden by the per
     assert.match(dockerfile, /COPY --from=native-build \/workspace\/work\/native-build\/ \/workspace\/runtime\/native\//);
     assert.match(dockerfile, /FWD_MSF_ADDON_PATH=\/workspace\/runtime\/native\/msf-capture.node/);
     assert.match(entry, /node tools\/build-native.cjs --verify\nexec node src\/manager\/cli.cjs/);
+});
+
+test('Docker release removes writable host source modes without changing persistent state or runtime binaries', t => {
+    const project = path.resolve(__dirname, '..'), dockerfile = fs.readFileSync(path.join(project, 'deploy/Dockerfile'), 'utf8');
+    const release = dockerfile.split('FROM runtime-base AS release\n')[1]; assert.ok(release);
+    const normalization = /^RUN chmod -R (u=rwX,go=rX) (.+)$/m.exec(release); assert.ok(normalization);
+    const targets = normalization[2].trim().split(/\s+/);
+    assert.deepEqual(targets, ['/workspace/src', '/workspace/deploy', '/workspace/tools', '/workspace/package.json', '/workspace/package-lock.json']);
+    // New runtime-source COPY inputs must remain under one of the deliberately
+    // normalized targets. Build products, dependencies and mounted work stay out.
+    const copies = [...release.matchAll(/^COPY (.+)$/gm)];
+    assert.ok(copies.every(copy => copy.index < normalization.index), 'Normalize after all release COPY instructions');
+    const runtimeSources = copies.filter(copy => !copy[1].startsWith('--from=')).flatMap(copy => copy[1].trim().split(/\s+/).slice(0, -1))
+        .filter(source => /^(?:src|deploy|tools)(?:\/|$)/.test(source) || ['package.json', 'package-lock.json'].includes(source));
+    assert.deepEqual([...new Set(runtimeSources)].sort(), ['deploy', 'package-lock.json', 'package.json', 'src', 'tools/build-native.cjs', 'tools/prepare-qq.cjs', 'tools/qq-runtime-entry.cjs']);
+    assert.ok(runtimeSources.every(source => targets.some(target => source === target.slice('/workspace/'.length) || source.startsWith(target.slice('/workspace/'.length) + '/'))));
+    assert.ok(normalization.index < release.indexOf('USER 1000:1000'));
+    if (process.platform === 'win32') return; // POSIX behavior is exercised by the Linux image suite.
+    const root = fs.mkdtempSync(path.join(parent, 'source-modes-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    for (const directory of ['src/qq', 'deploy', 'tools', 'work/accounts/private', 'runtime/native', 'node_modules/example']) fs.mkdirSync(path.join(root, directory), { recursive: true, mode: 0o777 });
+    const files = ['src/qq/source.cjs', 'deploy/entrypoint.sh', 'tools/build-native.cjs', 'package.json', 'package-lock.json'];
+    for (const file of files) { fs.writeFileSync(path.join(root, file), 'content must stay exact\n'); fs.chmodSync(path.join(root, file), 0o666); }
+    const executable = path.join(root, 'tools/executable'); fs.writeFileSync(executable, 'executable contents\n'); fs.chmodSync(executable, 0o777);
+    for (const directory of ['src', 'src/qq', 'deploy', 'tools']) fs.chmodSync(path.join(root, directory), 0o777);
+    const untouched = ['work/accounts/private/state.json', 'runtime/native/addon.node', 'node_modules/example/index.cjs'].map(relative => path.join(root, relative));
+    for (const file of untouched) { fs.writeFileSync(file, 'outside source scope\n'); fs.chmodSync(file, 0o600); }
+    const before = [...files.map(file => path.join(root, file)), executable, ...untouched].map(file => ({ file, bytes: fs.readFileSync(file), uid: fs.statSync(file).uid }));
+    const result = spawnSync('chmod', ['-R', normalization[1], ...targets.map(target => path.join(root, target.slice('/workspace/'.length)))], {
+        cwd: root, encoding: 'utf8', env: { ...process.env, TEMP: parent, TMP: parent, TMPDIR: parent }
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    for (const file of files) assert.equal(fs.statSync(path.join(root, file)).mode & 0o777, 0o644);
+    for (const directory of ['src', 'src/qq', 'deploy', 'tools']) assert.equal(fs.statSync(path.join(root, directory)).mode & 0o777, 0o755);
+    assert.equal(fs.statSync(executable).mode & 0o777, 0o755);
+    for (const file of untouched) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    for (const value of before) { assert.deepEqual(fs.readFileSync(value.file), value.bytes); assert.equal(fs.statSync(value.file).uid, value.uid); }
 });

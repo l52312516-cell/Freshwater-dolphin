@@ -6,14 +6,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { setTimeout: pause } = require('node:timers/promises');
+const runtimeProfile = require('./runtime-profile.cjs');
+const { annotate } = require('../diagnostics.cjs');
 const FIXED_PROTOCOLS = Object.freeze({ fixedExtended: './fixed-oidb.cjs', fixedQuery2: './query2-oidb.cjs',
     fixedShare: './share-oidb.cjs', fixedAdmin: './admin-oidb.cjs', fixedCustomFace: './custom-face-protocol.cjs',
     fixedContactExtra: './contact-extra-protocol.cjs', fixedGroupAlbum: './group-album-protocol.cjs', fixedMiscExtra: './misc-extra-protocol.cjs',
     fixedFlashTransfer: './flash-transfer-protocol.cjs', fixedForwardUpload: './forward-upload-protocol.cjs', fixedVoiceExtra: './voice-extra-protocol.cjs',
-    fixedDbKey: './db-key-protocol.cjs', fixedUrlSafety: './url-safety-protocol.cjs', fixedAnonymous: './anonymous-protocol.cjs' });
+    fixedDbKey: './db-key-protocol.cjs', fixedUrlSafety: './url-safety-protocol.cjs', fixedAnonymous: './anonymous-protocol.cjs',
+    fixedProfile: './profile-update-protocol.cjs' });
 const OPS = new Set(['rawPacket', 'fetchRkey', 'fetchGroupFileUrl', 'fetchGroupFileSpace', 'fetchVideoUrl', 'fetchPrivateFileUrl', ...Object.keys(FIXED_PROTOCOLS)]);
 const MAX_QUEUED = 32;
 let addon = null;
+let profileProvider = null;
+function bindProfile(provider) { profileProvider = provider; }
+function currentProfile(capture) {
+    return typeof capture?.runtimeProfile === 'function' ? capture.runtimeProfile() :
+        profileProvider ? profileProvider() : runtimeProfile.fromEnvironment();
+}
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 function addonPath() {
     const configured = process.env.FWD_MSF_ADDON_PATH, accountRoot = process.env.FWD_ACCOUNT_ROOT;
@@ -32,7 +41,10 @@ function load() {
     }
     return addon;
 }
-function available() { try { const native = load(); return typeof native.verifyTarget === 'function' && success(native.verifyTarget().ok); } catch { return false; } }
+function available(capture) { try {
+    if (currentProfile(capture).native_eligible !== true) return false;
+    const native = load(); return typeof native.verifyTarget === 'function' && success(native.verifyTarget().ok);
+} catch { return false; } }
 function success(value) { return value === true || value === 'true'; }
 
 // Test dependencies cannot be selected through RPC parameters.
@@ -50,6 +62,10 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
     }
     function run(capture, params = {}) {
         if (!OPS.has(params.op)) return Promise.reject(problem('INVALID_PARAMS', 'Unsupported fixed native operation'));
+        if (params.diagnostic !== undefined && (params.op !== 'fetchPrivateFileUrl' || params.diagnostic !== 'resource-metadata' ||
+            params.transport !== undefined && params.transport !== 'oidb')) {
+            return Promise.reject(problem('INVALID_PARAMS', 'Private file diagnostics require the fixed OIDB query'));
+        }
         let raw;
         if (params.op === 'rawPacket') {
             try { raw = require('./raw-packet.cjs').prepare(params); }
@@ -60,6 +76,14 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
         if (waiting.length + (current ? 1 : 0) >= MAX_QUEUED) return Promise.reject(problem('BUSY', 'Native operation queue is full'));
         const deadline = now() + timeoutMs, epoch = params.expectedEpoch ?? capture.epoch;
         const uin = String(params.expectedUin ?? capture.self?.uin ?? '');
+        if (params.op === 'fixedProfile') {
+            try {
+                const prepared = require('./profile-update-protocol.cjs').prepare(params.operation, params.request);
+                if (prepared.data.uin !== uin || uin !== String(capture.self?.uin ?? '')) {
+                    throw problem('SESSION_CHANGED', 'Profile update must target the authenticated account');
+                }
+            } catch (error) { return Promise.reject(error); }
+        }
         const controller = new AbortController();
         const signal = params.signal ? AbortSignal.any([params.signal, controller.signal]) : controller.signal;
         function check() {
@@ -70,6 +94,11 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
         async function wait() { check(); await sleep(Math.max(1, Math.min(pollMs, deadline - now()))); check(); }
         const execute = async () => {
             check();
+            // Injected test channels exercise the transport without loading
+            // QQ. Production always checks exact identity before installation.
+            if (loadNative === load && currentProfile(capture).native_eligible !== true) throw annotate(
+                problem('UNSUPPORTED', 'Native MSF requires the exact verified QQ runtime profile'),
+                { reason: 'native_profile_mismatch', phase: 'session' });
             const native = loadNative(), session = JSON.stringify([epoch, uin]);
             if (lastSession !== session) { native.resetSession(); lastSession = session; }
             const installed = native.install('ssosend');
@@ -109,7 +138,7 @@ function createChannel({ loadNative = load, now = () => performance.now(), sleep
                     decode = body => proto.decodeOfflineResponse(body, { fileId: params.fileId });
                 } else {
                     command = proto.NATIVE_CMD; request = proto.encodeNativeRequest(capture.self?.uid, params.fileId, params.fileHash);
-                    decode = body => proto.decodeResponse(body, { fileId: params.fileId, fileHash: params.fileHash });
+                    decode = body => proto.decodeResponse(body, { fileId: params.fileId, fileHash: params.fileHash }, params.diagnostic);
                 }
             } else {
                 const proto = require('./video-url.cjs'), group = params.isGroup !== false;
@@ -180,4 +209,4 @@ function packetStatus() {
     try { native = status(); } catch {}
     return { ...channel.statistics(), native };
 }
-module.exports = { run: channel.run, OPS, available, createChannel, status, packetStatus };
+module.exports = { run: channel.run, OPS, available, createChannel, status, packetStatus, bindProfile };

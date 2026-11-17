@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { sanitizeMessageRecord } = require('../message-log.cjs');
+const { REASONS, safeDiagnostic } = require('../diagnostics.cjs');
 const { workspacePath } = require('../paths.cjs');
 
 const LEVELS = new Set(['TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARN', 'ERROR']);
@@ -36,10 +37,12 @@ function diagnosticAccount(value) {
 function failureExplanation(item) {
     if (Object.hasOwn(SKIPPED_LABELS, item.event)) {
         if (Object.hasOwn(INBOUND_REASONS, item.reason)) return INBOUND_REASONS[item.reason];
+        if (Object.hasOwn(REASONS, item.reason)) return REASONS[item.reason];
         if (['INVALID_REQUEST', 'INVALID_PARAMS'].includes(item.code)) return '入站事件的身份或结构未通过校验';
         if (item.code === 'UNSUPPORTED') return '入站事件包含当前尚未支持的内容，已跳过处理';
         if (item.code === 'SESSION_CHANGED') return '入站事件所属的 QQ 会话已经变更';
     }
+    if (Object.hasOwn(REASONS, item.reason)) return REASONS[item.reason];
     return Object.hasOwn(FAILURE_REASONS, item.code) ? FAILURE_REASONS[item.code] : '请结合接口、处理阶段和错误码检查本次操作';
 }
 function messageText(item, includeContent) {
@@ -50,6 +53,7 @@ function messageText(item, includeContent) {
         (includeContent && item.groupName ? item.groupName + '(' + item.groupId + ')' : item.groupId) + ']'
         : '私聊 [' + (item.peerId || item.userId) + ']';
     return direction + ' ' + target + ' · ' + person + ' · ID: ' + item.messageId + ' ' +
+        (item.partial ? '[部分内容已用占位表示] ' : '') +
         (includeContent ? item.content + (item.truncated ? ' [内容超长，已截断]' : '') : '[原文已隐藏]');
 }
 function normalize(item, profileId, includeContent) {
@@ -63,6 +67,8 @@ function normalize(item, profileId, includeContent) {
     if (typeof item.time !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(item.time) ||
         !Number.isFinite(Date.parse(item.time)) || typeof item.event !== 'string' || !/^[a-zA-Z0-9_.:-]{1,100}$/.test(item.event)) return null;
     const result = { profileId, time: item.time, event: item.event };
+    Object.assign(result, safeDiagnostic(item));
+    if (Number.isInteger(item.messageId) && item.messageId >= -0x80000000 && item.messageId <= 0x7fffffff) result.messageId = item.messageId;
     for (const key of ['code', 'count', 'online', 'ready', 'connected', 'bridge', 'gap', 'nodeId']) {
         const value = item[key];
         if (typeof value === 'boolean' || value === null || typeof value === 'number' && Number.isFinite(value) ||
@@ -79,7 +85,7 @@ function normalize(item, profileId, includeContent) {
     }
     if (Number.isSafeInteger(item.durationMs) && item.durationMs >= 0) result.durationMs = item.durationMs;
     result.level = /(?:failed|error|rejected|unconfirmed)/i.test(item.event) ? 'ERROR' :
-        /(?:gap|expired|timeout|skipped|overflow|unknown)/i.test(item.event) ? 'WARN' :
+        /(?:gap|expired|timeout|skipped|overflow|unknown|partial)/i.test(item.event) ? 'WARN' :
         /(?:connected|started|ready)/i.test(item.event) ? 'SUCCESS' : 'INFO';
     result.component = /(?:ws|http|node|network|reconnect)/i.test(item.event) ? 'network' :
         /(?:backend|bridge|rpc)/i.test(item.event) ? 'bridge' : 'worker';
@@ -87,7 +93,7 @@ function normalize(item, profileId, includeContent) {
         .map(([key, value]) => ' ' + key + '=' + value).join('');
     if (item.event === 'action_failed' || Object.hasOwn(SKIPPED_LABELS, item.event)) {
         const label = item.event === 'action_failed' ? '接口调用失败' : SKIPPED_LABELS[item.event];
-        const fields = ['action', 'stage', 'code', 'reason', 'durationMs'].filter(key => Object.hasOwn(result, key))
+        const fields = ['action', 'stage', 'phase', 'code', 'reason', 'mediaType', 'elementType', 'atType', 'faceType', 'businessCode', 'durationMs'].filter(key => Object.hasOwn(result, key))
             .map(key => key + '=' + result[key]).join(' · ');
         result.message = label + '（' + item.event + '）' + (fields ? ' · ' + fields : '') + ' · 原因：' + failureExplanation(result);
         if (item.event === 'action_failed') result.component = 'onebot';
@@ -98,6 +104,11 @@ function normalize(item, profileId, includeContent) {
             .map(key => key + '=' + result[key]).join(' · ');
         result.message = label + '（notice_received）' + (fields ? ' · ' + fields : '');
         result.level = 'SUCCESS'; result.component = 'onebot';
+    }
+    if (item.event === 'message_partial') {
+        result.level = 'WARN'; result.component = 'onebot';
+        result.message = '消息已接收，部分内容已用占位表示 · ' + failureExplanation(result) +
+            (Number.isInteger(result.count) ? ' · 片段数=' + result.count : '');
     }
     return result;
 }
@@ -155,7 +166,10 @@ class LogReader {
         for (const key of this.cache.keys()) if (!validFiles.has(key)) this.forget(key);
         let result = []; const seen = new Set();
         const maximum = Math.max(1, Math.min(1000, Number(limit) || 1000));
-        const sources = ['', '.1', '.2', '.3'].flatMap(suffix => ids.flatMap(id => ['adapter', 'messages'].map(name =>
+        // Message-only searches must not spend their wall-clock budget on
+        // unrelated adapter files before reaching the first chat log.
+        const names = component === 'message' ? ['messages'] : component ? ['adapter'] : ['adapter', 'messages'];
+        const sources = ['', '.1', '.2', '.3'].flatMap(suffix => ids.flatMap(id => names.map(name =>
             ({ id, file: path.join(this.accounts.location(id), 'logs', name + '.jsonl' + suffix) }))));
         const budget = { partial: false, files: 0, bytes: 0, rows: 0 }, started = this.now();
         const scope = profileId || '*';
@@ -183,7 +197,7 @@ class LogReader {
                 if (seen.has(key)) continue;
                 seen.add(key);
                 if (LEVELS.has(wantedLevel) && safe.level !== wantedLevel || component && safe.component !== component ||
-                    needle && ![safe.message, safe.content, safe.event, safe.component, id].some(value => String(value).toLocaleLowerCase().includes(needle))) continue;
+                    needle && ![safe.message, safe.content, safe.event, safe.component, safe.traceId, id].some(value => String(value).toLocaleLowerCase().includes(needle))) continue;
                 result.push(safe);
             }
             // Bound live candidates as well as cached file bytes. The response

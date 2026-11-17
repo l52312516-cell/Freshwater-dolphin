@@ -23,6 +23,8 @@ const { Storage } = require('./storage.cjs');
 const { ManagerLifecycle } = require('./lifecycle.cjs');
 const { publicSettings, validateGlobalSettingsPatch } = require('../global-services.cjs');
 const { MAX_ACTION_BYTES } = require('../onebot/limits.cjs');
+const { runtimeInstance } = require('./runtime-instance.cjs');
+const { QQRuntimes } = require('./qq-runtimes.cjs');
 const media = require('../qq/media.cjs');
 
 function secureHeaders(reply) {
@@ -39,6 +41,10 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
     let lifecycle;
     try {
     const auth = new Auth(directory);
+    const instanceHandshake = runtimeInstance();
+    const deferAccounts = process.env.FWD_RUNTIME_DEFER_ACCOUNTS === '1';
+    if (deferAccounts && !instanceHandshake) throw fail('INVALID_CONFIG', 'Deferred activation requires a local runtime identity');
+    let runtimeActivated = !deferAccounts, activationPromise;
     const settingsFile = path.join(directory, 'settings.json');
     const settings = read(settingsFile, { version: 1, maxAccounts: 2, port: 4090, host: '0.0.0.0' });
     if (settings.version !== 1 || !Number.isInteger(settings.maxAccounts) || settings.maxAccounts < 1 || settings.maxAccounts > 16 ||
@@ -46,7 +52,9 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
     const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024, requestTimeout: 15000, ...(https ? { https } : {}) });
     const accounts = providedAccounts || new Accounts(root, { maxAccounts: settings.maxAccounts });
     const remote = providedRemote || new RemoteDesktop(root, accounts);
-    const backups = new Backups(root, accounts);
+    const qqRuntimes = new QQRuntimes(root, accounts);
+    qqRuntimes.recover();
+    const backups = new Backups(root, accounts, { runtimes: qqRuntimes });
     const logReader = new LogReader(root, accounts);
     const avatars = new AvatarCache(root, accounts);
     const storage = new Storage(root, accounts, { settings, settingsFile, backups });
@@ -76,10 +84,27 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
     app.addHook('onRequest', async request => {
         if (closed) throw fail('CLOSING', 'Management service is stopping', 503);
         if (!request.url.startsWith('/api/')) return;
-        if (['/api/auth/state', '/api/auth/bootstrap', '/api/auth/login'].includes(request.url.split('?')[0])) return;
+        const route = request.url.split('?')[0];
+        if (instanceHandshake && ['/api/runtime/instance', '/api/runtime/activate'].includes(route)) return;
+        if (!runtimeActivated) throw fail('STARTING', 'Local runtime verification is pending', 503);
+        if (['/api/auth/state', '/api/auth/bootstrap', '/api/auth/login'].includes(route)) return;
         request.adminSession = auth.require(request, !['GET', 'HEAD'].includes(request.method));
     });
     const ok = data => ({ data });
+    if (instanceHandshake) app.get('/api/runtime/instance', async request => instanceHandshake(request));
+    if (instanceHandshake) app.post('/api/runtime/activate', async request => {
+        const identity = instanceHandshake(request);
+        if (!runtimeActivated) {
+            // One activation per process. A failed initialization stays blocked;
+            // the launcher stops the instance instead of retrying writes.
+            activationPromise ||= Promise.resolve().then(async () => {
+                if (startAccounts) await accounts.initialize();
+                runtimeActivated = true;
+            });
+            await activationPromise;
+        }
+        return { ...identity, activated: true };
+    });
     app.get('/api/auth/state', async request => {
         const session = auth.session(request.headers.cookie);
         return ok({ initialized: Boolean(auth.record), authenticated: Boolean(session), ...(session ? { csrf: session.csrf } : {}) });
@@ -105,6 +130,13 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
     app.post('/api/auth/password', async request => { await auth.change(request.body?.currentPassword, request.body?.newPassword); return ok(true); });
     app.get('/api/overview', async () => ok(overview()));
     app.get('/api/accounts', async () => ok(accounts.list()));
+    app.get('/api/qq-runtimes', async () => ok(qqRuntimes.list()));
+    app.post('/api/qq-runtimes/import', async request => ok(qqRuntimes.register(request.body)));
+    app.post('/api/accounts/:id/runtime', async request => {
+        const revision = request.headers['if-match'];
+        if (revision !== undefined && (typeof revision !== 'string' || !/^[1-9]\d{0,14}$/.test(revision))) throw fail('INVALID_PARAMS', 'Invalid account configuration revision');
+        return ok(await qqRuntimes.switch(request.params.id, request.body, { expectedRevision: revision === undefined ? undefined : Number(revision) }));
+    });
     app.get('/api/accounts/:id/avatar', async (request, reply) => {
         const value = await avatars.get(request.params.id);
         return reply.type(value.type).send(value.bytes);
@@ -394,7 +426,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         return reply.type(type).send(fs.createReadStream(file));
     });
     lifecycle = await new ManagerLifecycle(root, accounts).open();
-    if (startAccounts) await accounts.initialize();
+    if (startAccounts && !deferAccounts) await accounts.initialize();
     storage.start();
     const previousAccountChange = accounts.onChange;
     const observeNotifications = () => { if (!closed) notifications.observe(notificationAccounts()); };
@@ -425,7 +457,7 @@ async function createManager({ root = path.resolve(__dirname, '../..'), accounts
         finally { releaseOwner(); } })();
         return closingPromise;
     }
-    return { app, auth, accounts, remote, backups, storage, settings, notifications, lifecycle, overview, close };
+    return { app, auth, accounts, remote, backups, qqRuntimes, storage, settings, notifications, lifecycle, overview, close };
     } catch (error) { try { await lifecycle?.close(); } finally { releaseOwner(); } throw error; }
 }
 module.exports = { createManager };

@@ -6,6 +6,9 @@ const p = require('./proto.cjs');
 const crypto = require('node:crypto');
 const { uint, text, plain } = require('./admin-oidb.cjs');
 const MAX_BYTES = 1024 * 1024, MAX_ITEMS = 1000;
+// An exhausted QQ media continuation can return this exact reset locator.
+// Sending it as another page restarts at the first page; other cursors stay opaque.
+const MEDIA_RESET_CURSOR = '{"IndexType":"next","DirectType":"next","Lloc":"","StartIndex":0,"Loc":{"batch_id":0,"batch_time":0,"order":0,"lloc":"","album_total":0,"return_num":0}}';
 const COMMANDS = Object.freeze({ 'album.list': 'QunAlbum.trpc.qzone.webapp_qun_media.QunMedia.GetAlbumList',
     'album.media': 'QunAlbum.trpc.qzone.webapp_qun_media.QunMedia.GetMediaList',
     'album.feed': 'QunAlbum.trpc.qzone.webapp_qun_feeds.FeedsReader.GetQunFeedDetail',
@@ -110,7 +113,8 @@ function structured(bytes, schema, depth = 0) {
             if (typeof type === 'object') return structured(entry.value, type, depth + 1);
             if (type === 'text') return string(entry.value);
             const number = entry.value;
-            if (type === 'bool') { if (number > 1n) fail('INVALID_RESPONSE', 'Group album boolean is not canonical'); return number === 1n; }
+            // Protobuf booleans decode any nonzero varint as true.
+            if (type === 'bool') return number !== 0n;
             if (type === 'u64') return number.toString();
             if (type === 'int') {
                 if (number > 0xffffffffn && number < 0xffffffff80000000n) fail('INVALID_RESPONSE', 'Group album signed integer is out of range');
@@ -187,6 +191,7 @@ function decode(bytes, prepared) {
         if (result.nextAttachInfo && result.nextAttachInfo === prepared.data.attachInfo) fail('INVALID_RESPONSE', 'Album media pagination did not advance');
         const identities = result.mediaList.map(item => item.video?.id || item.image?.lloc);
         if (identities.some(id => typeof id !== 'string' || !id.length) || new Set(identities).size !== identities.length) fail('INVALID_RESPONSE', 'QQ returned duplicate or unidentified album media');
+        if (!result.mediaList.length && prepared.data.attachInfo && result.nextAttachInfo === MEDIA_RESET_CURSOR) result.nextAttachInfo = '';
     }
     return budget(result);
 }

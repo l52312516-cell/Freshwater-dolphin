@@ -34,7 +34,8 @@ function createContactExtra(capture, options = {}) {
     function clear() { scopeKey = undefined; handles.clear(); identities.clear(); }
     function capabilities() {
         const available = native.available();
-        return { translateEn2zh: available, unidirectionalFriends: available, inputStatus: available,
+        return { translateEn2zh: available, unidirectionalFriends: available,
+            inputStatus: capture.hasMethods('msg', ['sendShowInputStatusReq']) || available,
             markAllRead: capture.hasMethods('msg', ['setAllC2CAndGroupMsgRead']), doubtFriendRequests: available,
             doubtFriendApproval: available, filteredGroupRequests: available };
     }
@@ -50,7 +51,12 @@ function createContactExtra(capture, options = {}) {
             if (context.signal?.aborted || Date.now() >= context.expiresAt) fail('EXPIRED', 'Contact operation expired; a dispatched result may be unknown');
         };
         active();
-        if (input.operation === 'read.all' ? !capabilities().markAllRead : !native.available()) fail('UNSUPPORTED', 'This session lacks the fixed contact operation');
+        // Choose before dispatch. A rejected or unknown native write must never
+        // fall through to a second write via the fixed OIDB transport.
+        const nativeInput = input.operation === 'input.status' && input.eventType <= 0x7fffffff &&
+            capture.hasMethods('msg', ['sendShowInputStatusReq']);
+        active();
+        if (input.operation === 'read.all' ? !capabilities().markAllRead : !nativeInput && !native.available()) fail('UNSUPPORTED', 'This session lacks the fixed contact operation');
         if (pending.size >= 8) fail('BUSY', 'Too many contact operations still await completion');
         const token = {}; pending.add(token);
         const call = async (operation, data) => {
@@ -85,7 +91,14 @@ function createContactExtra(capture, options = {}) {
             else if (input.operation === 'input.status') {
                 const who = await capture.resolve({ uin: input.uin }); active();
                 if (who.uin !== input.uin) fail('INVALID_RESPONSE', 'QQ resolved another input-status target');
-                result = await call('input.status', { targetUid: who.uid, eventType: input.eventType });
+                const targetUid = who.uid;
+                fixed.prepare('input.status', { targetUid, eventType: input.eventType }); active();
+                if (nativeInput) {
+                    const value = await capture.invoke('msg', 'sendShowInputStatusReq', [1, input.eventType, targetUid]); active();
+                    if (!fixed.object(value) || !Object.hasOwn(value, 'result') || value.result !== 0 ||
+                        ['errCode', 'errorCode'].some(key => Object.hasOwn(value, key) && value[key] !== 0)) fail('KERNEL_ERROR', 'QQ did not explicitly confirm the input-status notification');
+                    result = { confirmed: true, confirmation: 'kernel_ack', targetUid, eventType: input.eventType };
+                } else result = await call('input.status', { targetUid, eventType: input.eventType });
                 result = { ...result, uin: input.uin };
             } else if (input.operation === 'read.all') {
                 const value = await capture.invoke('msg', 'setAllC2CAndGroupMsgRead', []); active();

@@ -61,6 +61,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY src ./src
 COPY tools/prepare-qq.cjs ./tools/prepare-qq.cjs
+COPY tools/qq-runtime-entry.cjs ./tools/qq-runtime-entry.cjs
 COPY tools/build-native.cjs ./tools/build-native.cjs
 COPY deploy ./deploy
 COPY --from=native-build /workspace/work/native-build/ /workspace/runtime/native/
@@ -68,6 +69,8 @@ COPY --from=webui-build /workspace/webui/dist ./webui/dist
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 COPY docs/third-party-licenses.txt ./docs/third-party-licenses.txt
 COPY docs/audio-codec-licenses.txt ./docs/audio-codec-licenses.txt
+# Windows source archives can carry 0666 modes; normalize only image source.
+RUN chmod -R u=rwX,go=rX /workspace/src /workspace/deploy /workspace/tools /workspace/package.json /workspace/package-lock.json
 RUN mkdir -p /workspace/work/accounts /workspace/work/control /workspace/work/logs /workspace/work/data /workspace/work/state \
     && chown -R 1000:1000 /workspace/work \
     && dpkg-query -W -f='${Package}\t${Version}\n' > /workspace/runtime/apt-packages.txt \

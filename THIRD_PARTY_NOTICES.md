@@ -14,10 +14,13 @@ Freshwater-dolphin 的原创源码适用根目录 `LICENSE`。本文件不会改
 | Vue 3、Vite、TypeScript、vue-tsc 及构建依赖 | webui/package-lock.json 锁定 | Vue/Vite 为 MIT，TypeScript 为 Apache-2.0；完整许可证见 `docs/third-party-licenses.txt`；构建依赖不装入运行镜像 |
 | [Node.js](https://nodejs.org/) | Docker 默认 22.23.5 | Node.js 及其附带组件许可证见发行包 `LICENSE` |
 | Ubuntu 与系统依赖 | Ubuntu 22.04，具体版本由镜像构建记录确定 | 各软件包独立许可；容器 `/usr/share/doc/*/copyright` |
-| 腾讯 QQ | 首批兼容 3.2.35-54395 Linux x64 | 第三方专有软件，由用户从官方渠道取得并遵守其条款；不放入本项目源码包 |
+| 腾讯 QQ | 稳定参考 3.2.35-54395 Linux x64 | 第三方专有软件。源码包不含 QQ；Windows 离线二进制包的 Linux 镜像内置经摘要核验的官方 Linux QQ 安装内容。QQ 的条款独立适用，本项目不对 QQ 重新授权，也不代表腾讯官方发行 |
+| Alpine Linux / Docker Engine / Compose | Windows 离线包内的确切版本及软件包清单见 release manifest 与 `docs/alpine-packages.txt` | 各软件包独立许可；Alpine rootfs 内保留软件包元数据，Docker/Moby 及 Compose 按各自许可分发 |
 | aiocqhttp / Hypercorn / Quart / Flask | 仅可选互操作测试，版本见 requirements-test.txt | 前三者 MIT，Flask 为 BSD-3-Clause；其他间接依赖按各自许可。通过独立 Python 环境安装，不打入运行镜像 |
 
 OneBot v11 是本项目实现的通信协议。AstrBot 是对接目标；本项目不包含 AstrBot 源码。
+
+Windows 离线包同时附带 Node.js 的 `runtime/node/LICENSE`、系统软件包清单及本声明。QQ 安装包仅供相应兼容运行环境使用；Electron/Chromium 的第三方许可不等于腾讯 QQ 整体许可。本项目不授予任何 QQ 服务、账号或第三方商标权利。
 
 ## 协议契约参考
 

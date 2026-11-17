@@ -161,7 +161,12 @@ test('encrypted backups authenticate before parsing, reject damage and exclude a
     const { root, accounts } = fakeAccounts(t); accounts.create({ id: 'a', nodes: [{ id: 'bot', type: 'wsClient', url: 'ws://127.0.0.1:17700/ws', token: 'node-token' }] });
     const base = accounts.location('a'); fs.mkdirSync(path.join(base, 'home'), { recursive: true });
     fs.writeFileSync(path.join(base, 'home/login.dat'), 'private-login-state');
-    const backups = new Backups(root, accounts);
+    const { QQRuntimes } = require('../src/manager/qq-runtimes.cjs');
+    const runtimes = new QQRuntimes(root, accounts);
+    let checkedRuntime = false;
+    runtimes.assertRestorable = runtime => { assert.equal(runtime.qqVersion, '3.2.35-54395'); checkedRuntime = true; };
+    runtimes.prepareRestore = (_runtime, target) => { fs.writeFileSync(path.join(target, 'fixture-only'), 'fake-runtime'); };
+    const backups = new Backups(root, accounts, { runtimes });
     const backup = await backups.create({ profileIds: ['a'], kind: 'full', password: 'backup-test-password' });
     const bytes = fs.readFileSync(backups.file(backup.id));
     assert.equal(bytes.includes(Buffer.from('private-login-state')), false);
@@ -171,6 +176,7 @@ test('encrypted backups authenticate before parsing, reject damage and exclude a
     const preview = await backups.preview({ backupId: backup.id, password: 'backup-test-password' });
     fs.writeFileSync(path.join(base, 'home/login.dat'), 'changed');
     const result = await backups.apply(preview.previewId);
+    assert.equal(checkedRuntime, true);
     assert.deepEqual(result, { restored: ['a'], started: false });
     assert.equal(fs.readFileSync(path.join(base, 'home/login.dat'), 'utf8'), 'private-login-state');
     assert.equal(accounts.get('a').nodes[0].token, 'node-token');

@@ -9,12 +9,15 @@ const { atomic, read, fail, privateDirectory, identifier, expectedUin, durableRe
 const { workspacePath } = require('../paths.cjs');
 const { profile } = require('./accounts.cjs');
 const { memoryAvailable } = require('./resources.cjs');
+const { QQRuntimes, validateBackupRuntime } = require('./qq-runtimes.cjs');
+const { BASELINE, normalizeRuntimeSelection } = require('../qq/runtime-profile.cjs');
 const derive = promisify(crypto.scrypt);
 const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const MAX = 128 * 1024 * 1024;
 const MAX_ARCHIVE = 192 * 1024 * 1024;
 const MAGIC = Buffer.from('FWDBACK2\n');
 const ROOTS = new Set(['home', 'config', 'data']);
+const RESTORE_ROOTS = new Set([...ROOTS, 'qq-root']);
 const OMIT = /(?:^|\/)(?:[^/]*cache[^/]*|logs?|Crashpad|Singleton\w*|\.lock|Emoji|PokeFace|Skin|dynamic_module)(?:\/|$)/i;
 
 function hash(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
@@ -121,7 +124,7 @@ function normalizeProfile(config) {
     return normalized;
 }
 function validateArchive(document) {
-    if (!document || document.version !== 2 || document.qqVersion !== '3.2.35-54395' || document.architecture !== 'x64' ||
+    if (!document || ![2, 3].includes(document.version) || document.version === 2 && document.qqVersion !== '3.2.35-54395' || document.architecture !== 'x64' ||
         !['ordinary', 'full'].includes(document.kind) || !Array.isArray(document.profiles) || !document.profiles.length || document.profiles.length > 32) {
         throw fail('INVALID_BACKUP', 'Unsupported backup format or QQ version');
     }
@@ -130,6 +133,16 @@ function validateArchive(document) {
         identifier(item.config?.id);
         if (ids.has(item.config.id) || !Array.isArray(item.entries)) throw fail('INVALID_BACKUP', 'Duplicate or invalid account');
         ids.add(item.config.id); item.config = normalizeProfile(item.config);
+        if (document.version === 3) {
+            validateBackupRuntime(item.runtime);
+            const selection = normalizeRuntimeSelection(undefined, item.config.qqRuntime);
+            if (['packageId', 'profileId', 'experimental'].some(key => selection[key] !== item.runtime[key])) throw fail('INVALID_BACKUP', 'QQ runtime metadata conflicts with the account configuration');
+        } else {
+            const selection = normalizeRuntimeSelection();
+            item.config.qqRuntime = selection;
+            item.runtime = { ...selection, platform: 'linux', architecture: 'x64', qqVersion: BASELINE.qqVersion,
+                packageSha256: BASELINE.packageSha256, wrapperSha256: BASELINE.wrapperSha256, dataFormat: 1 };
+        }
         if (document.kind === 'ordinary') for (const node of item.config.nodes) { delete node.token; delete node.secret; }
         const names = new Set();
         for (const entry of item.entries) {
@@ -202,8 +215,9 @@ async function decode(bytes, password, { maxOutputLength = MAX_ARCHIVE } = {}) {
 }
 
 class Backups {
-    constructor(root, accounts, { checkpoint = () => {}, previewMs = 300000, now = Date.now, memory = memoryAvailable } = {}) {
+    constructor(root, accounts, { checkpoint = () => {}, previewMs = 300000, now = Date.now, memory = memoryAvailable, runtimes } = {}) {
         this.root = root; this.accounts = accounts;
+        this.runtimes = runtimes || new QQRuntimes(root, accounts);
         this.directory = privateDirectory(root, 'work/backups');
         this.journalFile = path.join(privateDirectory(root, 'work/control'), 'restore-journal.json');
         this.checkpoint = checkpoint;
@@ -256,7 +270,7 @@ class Backups {
         for (const id of journal.ids) identifier(id);
         const names = new Set();
         for (const swap of journal.swaps) {
-            if (!journal.ids.includes(swap.id) || !ROOTS.has(swap.name) || typeof swap.hadOriginal !== 'boolean' || names.has(swap.id + '/' + swap.name)) {
+            if (!journal.ids.includes(swap.id) || !RESTORE_ROOTS.has(swap.name) || typeof swap.hadOriginal !== 'boolean' || names.has(swap.id + '/' + swap.name)) {
                 throw fail('RESTORE_RECOVERY_FAILED', 'Invalid restore journal operation', 503);
             }
             names.add(swap.id + '/' + swap.name); this.journalPaths(journal, swap);
@@ -429,13 +443,13 @@ class Backups {
             for (const id of profileIds) for (const entry of gather(this.accounts.location(id), kind, { sizeOnly: true })) estimated += entry.size;
             if (estimated > MAX) throw fail('BACKUP_LIMIT', 'Selected accounts exceed the total backup size limit');
             this.admit(estimated);
-            const document = { version: 2, architecture: 'x64', qqVersion: '3.2.35-54395', kind, at: Date.now(), profiles: profileIds.map(id => {
+            const document = { version: 3, architecture: 'x64', kind, at: Date.now(), profiles: profileIds.map(id => {
                 const config = structuredClone(this.accounts.get(id));
                 if (kind === 'ordinary') {
                     config.nodes = config.nodes.map(({ token, secret, ...node }) => ({ ...node, enabled: false }));
                     if (config.notifications) config.notifications.enabled = false;
                 }
-                return { config, entries: gather(this.accounts.location(id), kind) };
+                return { config, runtime: this.runtimes.backupIdentity(config), entries: gather(this.accounts.location(id), kind) };
             }) };
             validateArchive(document);
             const result = this.save(await encode(document, password), { kind, profileIds });
@@ -466,9 +480,9 @@ class Backups {
             // document on expiry even if no later API request arrives.
             this.previewTimer = setTimeout(() => this.clearPreviews(), this.previewMs);
             this.previewTimer.unref?.();
-            return { previewId: id, backupId, kind: document.kind, qqVersion: document.qqVersion,
+            return { previewId: id, backupId, kind: document.kind, qqVersion: document.qqVersion || null,
                 profiles: document.profiles.map(item => ({ id: item.config.id, label: item.config.label, uin: item.config.boundUin || item.config.expectedUin,
-                    files: item.entries.length, existing: this.accounts.document.profiles.some(old => old.id === item.config.id) })) };
+                    runtime: item.runtime, files: item.entries.length, existing: this.accounts.document.profiles.some(old => old.id === item.config.id) })) };
         } finally { this.locked = false; }
     }
     apply(previewId, backupId) { return this.track(() => this.applyBackup(previewId, backupId)); }
@@ -480,6 +494,8 @@ class Backups {
         this.admit(preview.document.profiles.reduce((total, item) => total + item.entries.reduce((size, entry) => size + entry.size, 0), 0));
         this.ensureRecovered();
         const document = preview.document, ids = document.profiles.map(item => item.config.id);
+        if (document.kind === 'full') for (const item of document.profiles) this.runtimes.assertRestorable(item.runtime);
+        const restoreRoots = document.kind === 'full' ? RESTORE_ROOTS : ROOTS;
         const relative = 'work/temp/restore-' + crypto.randomBytes(16).toString('hex');
         const stage = privateDirectory(this.root, relative);
         this.locked = true;
@@ -491,7 +507,8 @@ class Backups {
                 const id = item.config.id;
                 if (!this.accounts.document.profiles.some(old => old.id === id)) this.accounts.create({ id, label: item.config.label, expectedUin: item.config.expectedUin });
                 const target = path.join(stage, id); fs.mkdirSync(target, { mode: 0o700 });
-                for (const name of ROOTS) fs.mkdirSync(path.join(target, name), { mode: 0o700 });
+                for (const name of restoreRoots) fs.mkdirSync(path.join(target, name), { mode: 0o700 });
+                if (document.kind === 'full') this.runtimes.prepareRestore(item.runtime, path.join(target, 'qq-root'));
                 syncDirectory(target); syncDirectory(stage);
                 for (const entry of item.entries) {
                     const file = path.join(target, ...safeName(entry.name).split('/'));
@@ -509,7 +526,7 @@ class Backups {
             for (const item of document.profiles) {
                 const base = this.accounts.location(item.config.id);
                 // Rollback directories remain private until the transaction is committed.
-                for (const name of ROOTS) {
+                for (const name of restoreRoots) {
                     const current = path.join(base, name), replacement = path.join(stage, item.config.id, name), old = path.join(stage, item.config.id, 'old-' + name);
                     if (fs.existsSync(current) && (fs.lstatSync(current).isSymbolicLink() || !fs.lstatSync(current).isDirectory())) throw fail('UNSAFE_FILE', 'Restore target must be an ordinary directory');
                     const swap = { id: item.config.id, name, hadOriginal: fs.existsSync(current) };
@@ -521,6 +538,9 @@ class Backups {
                 }
                 const restored = { ...item.config, desired: 'stopped', revision: (this.accounts.get(item.config.id).revision || 0) + 1 };
                 if (document.kind === 'ordinary') {
+                    // Mapping-only imports retain the local QQ runtime, since
+                    // they do not restore QQ login files or native databases.
+                    restored.qqRuntime = normalizeRuntimeSelection(undefined, this.accounts.get(item.config.id).qqRuntime);
                     restored.nodes = restored.nodes.map(node => ({ ...node, token: '', secret: '', enabled: false }));
                     if (restored.notifications) restored.notifications = { ...restored.notifications, enabled: false };
                 }

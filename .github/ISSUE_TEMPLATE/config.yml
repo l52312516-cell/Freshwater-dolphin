@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用说明与已知边界
+    url: https://github.com/l52312516-cell/Freshwater-dolphin/blob/main/docs/README.md
+    about: 安装、部署、QQAPI、消息兼容及验证说明。
+  - name: 获取帮助
+    url: https://github.com/l52312516-cell/Freshwater-dolphin/blob/main/SUPPORT.md
+    about: 先按现象收集最小信息，再选择问题或兼容性报告。
+  - name: 安全漏洞与私密数据
+    url: https://github.com/l52312516-cell/Freshwater-dolphin/security/policy
+    about: 不要在公开 Issue 中提交漏洞细节、登录数据或凭据。

@@ -92,12 +92,15 @@ test('private message log has a strict whitelist, stable IDs and no body in stdo
     } finally { process.stdout.write = original; }
 });
 
-test('unsupported incoming elements produce no partial original-message log', async t => {
+test('unsupported incoming elements are visibly partial and never expose native payloads', async t => {
     const { service, state, entries } = fixture(t);
     const converted = await service.event({ kind: 'message', epoch: state.epoch, selfUin: state.self.uin,
         record: message({ elements: [{ elementType: 1, textElement: { content: 'partial text', atType: 0 } },
             { elementType: 100, unknownElement: { secret: 'not for display' } }] }) });
-    assert.equal(converted, null); assert.equal(entries.length, 0);
+    assert.equal(converted._freshwater.content_status, 'partial'); assert.equal(entries.length, 1);
+    assert.equal(entries[0].partial, true);
+    assert.equal(entries[0].content, 'partial text[暂不支持的QQ消息片段：类型100]');
+    assert.equal(JSON.stringify(entries).includes('not for display'), false);
 });
 
 test('concurrent actions keep successful and timed-out message logs isolated', async t => {

@@ -3,6 +3,7 @@
 const MAX_CONTENT_BYTES = 65536;
 const ID = /^[1-9]\d{0,15}$/;
 const PROFILE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const { safeDiagnostic } = require('./diagnostics.cjs');
 
 function bounded(value, bytes) {
     if (typeof value !== 'string') return '';
@@ -60,6 +61,12 @@ function sanitizeMessageRecord(value, { includeContent = true } = {}) {
     const output = { kind: 'message', event: value.event, level: 'SUCCESS', component: 'message',
         profileId: value.profileId, selfId: account(value.selfId), messageId: value.messageId,
         messageType: value.messageType };
+    if (value.partial === true) {
+        output.partial = true; output.level = 'WARN';
+        if (Number.isInteger(value.partialCount) && value.partialCount > 0 && value.partialCount <= 1000) output.partialCount = value.partialCount;
+    }
+    const { traceId } = safeDiagnostic(value);
+    if (traceId) output.traceId = traceId;
     if (typeof value.id === 'string' && /^[A-Za-z0-9_-]{12,64}$/.test(value.id)) output.id = value.id;
     if (typeof value.time === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.time) && Number.isFinite(Date.parse(value.time))) output.time = value.time;
     for (const key of ['userId', 'peerId', 'groupId']) if (account(value[key])) output[key] = account(value[key]);
@@ -72,9 +79,10 @@ function sanitizeMessageRecord(value, { includeContent = true } = {}) {
     return output;
 }
 
-function messageDetails({ direction, profileId, selfId, messageId, messageType, userId, peerId, groupId, senderName, card, groupName, segments }) {
+function messageDetails({ direction, profileId, selfId, messageId, messageType, userId, peerId, groupId, senderName, card, groupName, segments, partial, partialCount, traceId }) {
     return { kind: 'message', event: direction === 'sent' ? 'message_sent' : 'message_received', profileId, selfId, messageId,
-        messageType, userId, peerId, groupId, senderName, card, groupName, ...messageContent(segments) };
+        messageType, userId, peerId, groupId, senderName, card, groupName, ...(partial === true ? { partial, partialCount } : {}),
+        ...(traceId ? { traceId } : {}), ...messageContent(segments) };
 }
 
 module.exports = { MAX_CONTENT_BYTES, messageContent, messageDetails, sanitizeMessageRecord };

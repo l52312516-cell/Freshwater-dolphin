@@ -24,6 +24,7 @@ function availability(item: ActionCapability) {
 }
 function verification(value: string) {
   return ({ verified: '已验证', 'offline-tested': '已离线测试 · 待目标 QQ 验证', unsupported: '未支持',
+    unverified: '当前构建尚未验证', 'historical-scope': '此精确构建有指定场景历史验证',
     'previous-target-validation': '有历史目标验证', 'target-rendering-failed': '目标客户端渲染失败' } as Record<string, string>)[value] || value;
 }
 </script>
@@ -38,6 +39,7 @@ function verification(value: string) {
     <p v-else-if="state.error" class="inline-error" role="alert">{{ state.error }}。可刷新重试，也可在下方手动填写接口。</p>
     <template v-else-if="state.catalogue">
       <p class="note">QQ {{ state.catalogue.qq_version || '版本未知' }} · {{ state.catalogue.ready ? '会话已就绪' : '会话未就绪' }} · {{ availableCount }} 个接口当前可用。可用表示会话提供了所需方法；离线测试不代表已在此 QQ 客户端完成真实验证。</p>
+      <p v-if="state.catalogue.runtime_profile" class="note">运行环境：{{ state.catalogue.runtime_profile.platform }} / {{ state.catalogue.runtime_profile.architecture }} · 配置 {{ state.catalogue.runtime_profile.profile_id }} · {{ state.catalogue.runtime_profile.admission }}。{{ state.catalogue.runtime_profile.native_eligible ? '精确程序摘要匹配，高阶本机通道仍需运行时检查。' : '未认证高阶本机通道。' }} 宿主系统与 QQ 所在运行环境分别记录。</p>
       <div class="capability-filters">
         <label>搜索接口<input v-model="query" type="search" placeholder="例如 get_group" /></label>
         <label>可用性<select v-model="filter"><option value="all">全部接口</option><option value="available">当前可用</option><option value="unavailable">当前不可用</option></select></label>
@@ -47,6 +49,7 @@ function verification(value: string) {
         <article v-for="item in rows" :key="item.kind + ':' + item.name" class="capability-row">
           <div class="capability-title"><code>{{ item.name }}</code><span class="capability-kind">{{ item.kind }}</span><button type="button" class="ghost" :disabled="busy" :aria-label="'填入接口 ' + item.name" @click="emit('select', item.name)">填入接口</button></div>
           <p class="capability-status"><span :class="{ available: item.available }">{{ availability(item) }}</span><span>{{ item.implemented ? '已实现' : '未实现' }} · {{ verification(item.verification) }}</span></p>
+          <p v-if="item.runtime_verification" class="capability-detail">构建业务证据：{{ verification(item.runtime_verification) }}<template v-if="item.reason"> · 原因：{{ item.reason }}</template></p>
           <p v-if="item.variants" class="capability-detail">自定义文本/图片节点：{{ item.variants.custom_text_image_nodes ? '可用' : '不可用' }}；已有消息 ID 节点：{{ item.variants.existing_message_id_nodes ? '可用' : '不可用' }}。已有节点范围：{{ item.variants.existing_scope }}</p>
           <p v-if="item.target_validation" class="capability-detail">目标验证：QQ {{ item.target_validation.qq_version }} / {{ item.target_validation.platform }} / {{ item.target_validation.date }}。仅覆盖：{{ item.target_validation.scopes.join('、') }}；其他场景仍需验证。</p>
         </article>

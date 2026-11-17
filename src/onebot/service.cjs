@@ -1,6 +1,9 @@
 'use strict';
 
 const codec = require('./codec.cjs');
+const { randomBytes } = require('node:crypto');
+const { annotate, errorDiagnostics } = require('../diagnostics.cjs');
+const compatibility = require('./message-compat.cjs');
 const { locator } = require('./store.cjs');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const fs = require('node:fs');
@@ -61,6 +64,29 @@ function shortId(value) {
         throw problem('INVALID_REQUEST', 'Invalid message_id');
     }
     return Number(value);
+}
+function privateFileText(value, label, limit, allowEmpty = false) {
+    if (typeof value !== 'string' || !allowEmpty && !value || Buffer.byteLength(value) > limit ||
+        /[\x00-\x1f\x7f]/.test(value) || Buffer.from(value, 'utf8').toString('utf8') !== value) {
+        throw problem('INVALID_REQUEST', 'Invalid private ' + label);
+    }
+    return value;
+}
+function privateFileCandidate(record, { fileId, fileHash = '' } = {}) {
+    const matches = [];
+    for (const element of record.elements || []) {
+        if (element?.elementType !== 3 ||
+            fileId !== undefined && element.fileElement?.fileUuid !== fileId) continue;
+        let file;
+        try { file = require('../qq/private-file-url.cjs').fromFileElement(element.fileElement); }
+        catch { throw problem('INVALID_RESPONSE', 'Private file metadata is incomplete'); }
+        if (typeof element.elementId !== 'string' || !element.elementId) throw problem('INVALID_RESPONSE', 'Private file has no exact element identity');
+        if (fileHash && file.fileHash !== fileHash) continue;
+        matches.push({ elementId: element.elementId, ...file });
+    }
+    if (!matches.length) throw problem('NOT_FOUND', 'Private message has no matching file');
+    if (matches.length !== 1) throw problem('INVALID_REQUEST', 'Private file selector is ambiguous; specify file_id or file_hash');
+    return matches[0];
 }
 function quoteInteger(value, label) {
     if (value === undefined || value === null || value === '' || value === 0 || value === '0') return undefined;
@@ -174,22 +200,24 @@ class OneBotService {
         const operation = this.operation.getStore();
         if (operation) operation.stage = method;
         await this.assertSession(state);
-        const result = await this.call(method, { ...params, expectedEpoch: state.epoch });
+        let result;
+        try { result = await this.call(method, { ...params, expectedEpoch: state.epoch }); }
+        catch (error) { throw annotate(error, { traceId: operation?.traceId }); }
         await this.assertSession(state);
         return result;
     }
 
     async action(request, expectedSession, options = {}) {
         let response;
-        const started = Date.now(), operation = { stage: 'validate' };
+        const started = Date.now(), operation = { stage: 'validate', traceId: randomBytes(16).toString('hex'), diagnostics: [] };
         try {
             if (!request || typeof request !== 'object' || Array.isArray(request) || typeof request.action !== 'string') {
                 throw problem('INVALID_REQUEST', 'Expected an action request');
             }
-            if (!actions.has(request.action)) throw problem('UNSUPPORTED', 'Unsupported action');
+            if (!actions.has(request.action)) throw annotate(problem('UNSUPPORTED', 'Unsupported action'), { reason: 'action_unsupported', phase: 'validate' });
             const params = request.params === undefined ? {} : request.params;
             if (!params || typeof params !== 'object' || Array.isArray(params)) throw problem('INVALID_REQUEST', 'params must be an object');
-            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_record', 'get_group_file_url', 'get_group_file_system_info', 'add_custom_face', 'send_custom_face', 'create_flash_task', 'upload_image_to_qun_album', 'upload_video_to_qun_album', 'send_qzone_msg', ...MERGED_ACTIONS, ...SINGLE_FORWARD_ACTIONS, ...STREAM_ACTIONS, ...FORWARD_EXTRA_ACTIONS, ...VOICE_EXTRA_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
+            let timeoutMs = ['upload_group_file', 'upload_private_file', 'get_image', 'get_record', 'get_group_file_url', 'get_group_file_system_info', 'set_qq_avatar', 'set_group_portrait', 'add_custom_face', 'send_custom_face', 'create_flash_task', 'upload_image_to_qun_album', 'upload_video_to_qun_album', 'send_qzone_msg', ...MERGED_ACTIONS, ...SINGLE_FORWARD_ACTIONS, ...STREAM_ACTIONS, ...FORWARD_EXTRA_ACTIONS, ...VOICE_EXTRA_ACTIONS].includes(request.action) ? this.mediaActionTimeoutMs : this.actionTimeoutMs;
             if (['send_private_msg', 'send_group_msg', 'send_msg'].includes(request.action)) {
                 if (params.auto_escape !== undefined && typeof params.auto_escape !== 'boolean') throw problem('INVALID_REQUEST', 'auto_escape must be boolean');
                 const validated = codec.parse(params.message, params.auto_escape === true);
@@ -202,11 +230,13 @@ class OneBotService {
             if (Date.now() >= expiresAt) throw problem('EXPIRED', 'Action completed after its deadline; delivery may be unknown');
             response = { status: 'ok', retcode: 0, data: data === undefined ? null : data };
             for (const message of messages) this.logMessage(message);
+            for (const diagnostic of operation.diagnostics) this.log(diagnostic.event, diagnostic.data);
         } catch (error) {
             response = { status: 'failed', retcode: returnCodes[error.code] || 1500,
                 data: null, message: error.message || 'Action failed', wording: error.message || 'Action failed' };
             this.log('action_failed', { action: KNOWN_ACTIONS.has(request?.action) ? request.action : 'unsupported',
-                stage: operation.stage, durationMs: Date.now() - started, code: error.code || 'INTERNAL_ERROR' });
+                stage: operation.stage, durationMs: Date.now() - started, code: error.code || 'INTERNAL_ERROR',
+                ...errorDiagnostics(error), traceId: operation.traceId });
         }
         if (request && Object.hasOwn(request, 'echo')) response.echo = request.echo;
         return response;
@@ -222,6 +252,12 @@ class OneBotService {
     logMessage(details) {
         try { if (typeof this.logger?.message === 'function') this.logger.message(messageDetails({ profileId: this.profileId, ...details })); }
         catch { /* Diagnostics must not turn a confirmed delivery into a failed action. */ }
+    }
+
+    queueDiagnostic(event, data) {
+        const operation = this.operation.getStore();
+        if (operation?.diagnostics) operation.diagnostics.push({ event, data });
+        else this.log(event, data);
     }
 
     queueSentMessage(details) {
@@ -311,17 +347,7 @@ class OneBotService {
             refresh: Boolean(params.no_cache) });
         case 'get_private_file_url': {
             if (state.capabilities?.privateFileUrl !== true) throw problem('UNSUPPORTED', 'Private file URL queries are unavailable on this QQ instance');
-            const record = await this.record(state, shortId(params.message_id));
-            const where = locator(record);
-            if (where.peer.chatType !== 1) throw problem('INVALID_REQUEST', 'Private file lookup requires a private message');
-            if (params.file_id !== undefined && (typeof params.file_id !== 'string' || !params.file_id || params.file_id.length > 1024)) throw problem('INVALID_REQUEST', 'Invalid private file_id');
-            const files = (record.elements || []).filter(item => item?.elementType === 3 && item.fileElement &&
-                (params.file_id === undefined || item.fileElement.fileUuid === params.file_id));
-            if (files.length !== 1 || typeof files[0].elementId !== 'string' || !files[0].elementId) throw problem('NOT_FOUND', 'Private message has no unique matching file');
-            const result = await this.sessionCall(state, 'nativePrivateFileUrl', { peer: where.peer, nativeId: where.nativeId,
-                elementId: files[0].elementId, expectedUin: account, timeoutMs: Math.min(10000, this.remaining()) });
-            if (result?.fileId !== files[0].fileElement.fileUuid || typeof result.url !== 'string') throw problem('INVALID_RESPONSE', 'QQ returned another private file');
-            return { url: require('../qq/private-file-url.cjs').validateDownloadUrl(result.url) };
+            return this.privateFileUrl(state, params);
         }
         case 'get_group_msg_history': case 'get_friend_msg_history': return this.history(state, params, action);
         case 'upload_group_file': case 'upload_private_file': return this.uploadFile(state, params, action);
@@ -368,6 +394,63 @@ class OneBotService {
         }
     }
 
+    async privateFileUrl(state, params) {
+        if (Object.keys(params).some(key => !['self_id', 'message_id', 'file_id', 'user_id', 'file_hash'].includes(key))) {
+            throw problem('INVALID_REQUEST', 'Unexpected private file parameters');
+        }
+        const hasMessage = Object.hasOwn(params, 'message_id');
+        const messageId = hasMessage ? shortId(params.message_id) : undefined;
+        const fileId = Object.hasOwn(params, 'file_id') ? privateFileText(params.file_id, 'file_id', 1024) : undefined;
+        const fileHash = Object.hasOwn(params, 'file_hash') ? privateFileText(params.file_hash, 'file_hash', 4096, true) : '';
+        const userId = Object.hasOwn(params, 'user_id') ? String(numberId(params.user_id, 'user_id')) : undefined;
+        if (!hasMessage && fileId === undefined) throw problem('INVALID_REQUEST', 'Private file lookup requires file_id or message_id');
+        const account = String(state.self.uin);
+        let expectedPeer;
+        if (userId !== undefined) {
+            const resolved = await this.sessionCall(state, 'resolve', { uin: userId });
+            if (!resolved || String(resolved.uin) !== userId || typeof resolved.uid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(resolved.uid)) {
+                throw problem('INVALID_RESPONSE', 'Private file peer has no verified kernel identity');
+            }
+            expectedPeer = { chatType: 1, peerUid: resolved.uid };
+        }
+        let selected, originalLocator, id = messageId;
+        if (hasMessage) {
+            const entry = this.store.get(account, id);
+            if (!entry || entry.recalled) throw problem('NOT_FOUND', 'Private message is outside the known account history');
+            if (entry.locator.peer.chatType !== 1 || expectedPeer && entry.locator.peer.peerUid !== expectedPeer.peerUid) {
+                throw problem('INVALID_REQUEST', 'Private file belongs to another conversation');
+            }
+            originalLocator = { ...entry.locator, peer: { ...entry.locator.peer } };
+            if (entry.record) selected = privateFileCandidate(entry.record, { fileId, fileHash });
+        } else {
+            selected = this.store.findPrivateFile(account, { fileId, fileHash, peerUid: expectedPeer?.peerUid });
+            id = selected.messageId;
+            originalLocator = selected.locator;
+        }
+        // Freeze the observed resource before the refresh can replace its
+        // cached record. Caller hashes filter this identity; they never supply it.
+        const original = selected && { elementId: selected.elementId, fileId: selected.fileId, fileHash: selected.fileHash };
+        const record = await this.record(state, id, expectedPeer, { refresh: true });
+        if (this.store.get(account, id)?.recalled) throw problem('NOT_FOUND', 'Private message is already known to be recalled');
+        const where = locator(record);
+        if (where.peer.chatType !== 1) throw problem('INVALID_REQUEST', 'Private file lookup requires a private message');
+        if (where.peer.peerUid !== originalLocator.peer.peerUid || where.nativeId !== originalLocator.nativeId ||
+            where.senderUin !== originalLocator.senderUin ||
+            ['seq', 'clientSeq'].some(key => originalLocator[key] && originalLocator[key] !== '0' && where[key] !== originalLocator[key]) ||
+            ['senderUid', 'time'].some(key => originalLocator[key] && where[key] !== originalLocator[key])) {
+            throw problem('INVALID_RESPONSE', 'QQ private file message no longer matches its observed identity');
+        }
+        const file = privateFileCandidate(record, { fileId, fileHash });
+        if (original && ['elementId', 'fileId', 'fileHash'].some(key => file[key] !== original[key])) {
+            throw problem('INVALID_RESPONSE', 'QQ private file no longer matches the observed resource');
+        }
+        const result = await this.sessionCall(state, 'nativePrivateFileUrl', { peer: where.peer, nativeId: where.nativeId,
+            elementId: file.elementId, expectedFileId: file.fileId, expectedFileHash: file.fileHash,
+            expectedUin: account, timeoutMs: Math.min(10000, this.remaining()) });
+        if (result?.fileId !== file.fileId || typeof result.url !== 'string') throw problem('INVALID_RESPONSE', 'QQ returned another private file');
+        return { url: require('../qq/private-file-url.cjs').validateDownloadUrl(result.url) };
+    }
+
     async record(state, id, expectedPeer, { refresh = false } = {}) {
         await this.assertSession(state);
         const account = String(state.self.uin);
@@ -398,6 +481,7 @@ class OneBotService {
         const result = { time: converted.time, message_type: converted.message_type,
             message_id: converted.message_id, real_id: converted.message_id,
             sender: converted.sender, message: converted.message, raw_message: converted.raw_message };
+        if (compatibility.isPartial(converted)) result._freshwater = converted._freshwater;
         if (converted.group_id) result.group_id = converted.group_id;
         if (record.msgSeq && /^\d+$/.test(String(record.msgSeq)) && Number.isSafeInteger(Number(record.msgSeq))) result.message_seq = Number(record.msgSeq);
         return result;
@@ -429,12 +513,21 @@ class OneBotService {
             throw problem('INVALID_RESPONSE', 'QQ quoted author is outside this private conversation');
         }
         const privateTuple = peer.chatType === 1 && clientSeq && senderUid && time;
-        if (!nativeId && !seq && !privateTuple) throw problem('NOT_FOUND', 'Quoted message has no reliable original identity');
+        if (!nativeId && !seq && !privateTuple) throw annotate(problem('NOT_FOUND', 'Quoted message has no reliable original identity'),
+            { reason: 'invalid_identity', phase: 'quote_lookup' });
         const match = { peer, nativeId, seq, clientSeq, senderUin, senderUid, time };
         const account = String(state.self.uin);
         let entry = this.store.find(account, match);
         if (!entry) {
-            const quoted = await this.sessionCall(state, 'getMessage', match);
+            let quoted;
+            try { quoted = await this.sessionCall(state, 'getMessage', match); }
+            catch (error) {
+                // No verified cached identity and no exact backend result is
+                // an identity failure, not an unavailable quote body. Keeping
+                // it fatal also prevents ambiguous private tuples being guessed.
+                if (error.code === 'NOT_FOUND') throw annotate(error, { reason: 'invalid_identity', phase: 'quote_lookup' });
+                throw error;
+            }
             const actual = locator(quoted);
             if (actual.peer.chatType !== peer.chatType || actual.peer.peerUid !== peer.peerUid ||
                 (nativeId && actual.nativeId !== nativeId) || (seq && actual.seq !== seq) ||
@@ -593,7 +686,7 @@ class OneBotService {
             if (typeof reason !== 'string' || Buffer.byteLength(reason) > 1024 || reason.includes('\0')) throw problem('INVALID_REQUEST', 'Invalid removal reason');
             operation = 'kick'; extra = { uin, rejectAddRequest: params.reject_add_request ?? false, reason };
         } else if (action === 'set_group_ban') {
-            const duration = params.duration ?? 1800;
+            const duration = params.duration === undefined ? 1800 : params.duration;
             if (!Number.isInteger(duration) || duration < 0 || duration > 2592000) throw problem('INVALID_REQUEST', 'duration must be seconds in 0..2592000');
             const uin = String(numberId(params.user_id));
             const [target, self] = await Promise.all([
@@ -605,10 +698,10 @@ class OneBotService {
             operation = 'memberBan'; extra = { uin, duration };
         } else if (action === 'set_group_card' || action === 'set_group_admin') {
             const uin = String(numberId(params.user_id));
+            const card = action === 'set_group_card' ? params.card === undefined ? '' : params.card : undefined;
+            if (action === 'set_group_card' && (typeof card !== 'string' || Buffer.byteLength(card) > 255)) throw problem('INVALID_REQUEST', 'Invalid member card');
             const target = await this.sessionCall(state, 'groupMember', { groupId, uin, refresh: true });
             if (action === 'set_group_card') {
-                const card = params.card ?? '';
-                if (typeof card !== 'string' || Buffer.byteLength(card) > 255) throw problem('INVALID_REQUEST', 'Invalid member card');
                 operation = 'card'; extra = { uin, card };
             } else {
                 if (params.enable !== undefined && typeof params.enable !== 'boolean') throw problem('INVALID_REQUEST', 'enable must be boolean');
@@ -636,7 +729,19 @@ class OneBotService {
         // The signed endpoint serves this account's actual resource bytes.
         // Re-read video metadata there instead of trusting mutable native
         // element fields or retaining a previous upload's prepared metadata.
-        const resource = type === 'video' ? media.resourceInfo(this.mediaDirectory, info.file) : info;
+        let resource = info;
+        if (type === 'video') {
+            try { resource = media.resourceInfo(this.mediaDirectory, info.file); }
+            catch (error) {
+                // A successful native receipt must name a real account-local
+                // resource. A foreign or nonexistent returned ID is a broken
+                // response; native NOT_FOUND before receipt can still be partial.
+                if (error.code === 'ENOENT') throw annotate(problem('INVALID_RESPONSE', 'QQ returned a video resource absent from this account'),
+                    { reason: 'protocol_response_invalid', phase: 'media_receive', mediaType: type });
+                if (error.code === 'UNSUPPORTED') throw annotate(error, { reason: 'media_format_invalid', phase: 'media_parse', mediaType: type });
+                throw error;
+            }
+        }
         if (resource.type !== type || resource.size !== info.size) throw problem('INVALID_RESPONSE', 'QQ media resource does not match this account file');
         return { file: info.file, url: media.signedMediaUrl(this, info.file), file_size: String(resource.size),
             ...(Number.isSafeInteger(resource.width) && resource.width > 0 ? { width: resource.width } : {}),
@@ -649,8 +754,10 @@ class OneBotService {
         const source = element.fileElement;
         try {
             if (Number(record.chatType) === 1) {
+                const file = require('../qq/private-file-url.cjs').fromFileElement(source);
                 const result = await this.sessionCall(state, 'nativePrivateFileUrl', {
                     peer: { chatType: 1, peerUid: String(record.peerUid) }, nativeId: String(record.msgId), elementId: element.elementId,
+                    expectedFileId: file.fileId, expectedFileHash: file.fileHash,
                     expectedUin: state.self.uin, timeoutMs: Math.min(10000, this.remaining()) });
                 if (result?.fileId !== source.fileUuid || typeof result.url !== 'string') throw problem('INVALID_RESPONSE', 'QQ returned another private file');
                 return { ...base, url: require('../qq/private-file-url.cjs').validateDownloadUrl(result.url) };
@@ -668,13 +775,25 @@ class OneBotService {
         return base;
     }
 
-    async convert(state, record, id, { queryFiles = false } = {}) {
+    async convert(state, record, id, { queryFiles = false, mode = 'compatible' } = {}) {
         const account = String(state.self.uin);
         const peer = { chatType: Number(record.chatType), peerUid: String(record.peerUid) };
-        const senderId = record.senderUin ? numberId(record.senderUin, 'sender account') :
-            numberId((await this.sessionCall(state, 'resolve', { uid: record.senderUid })).uin, 'sender account');
-        const message = await codec.fromKernel(record, {
-            queryFiles,
+        const time = Number(record.msgTime);
+        if (!['string', 'number'].includes(typeof record.msgTime) || !/^[1-9]\d{0,15}$/.test(String(record.msgTime)) || !Number.isSafeInteger(time) || time <= 0) throw annotate(problem('INVALID_RESPONSE', 'QQ message has no valid timestamp'), { reason: 'invalid_structure', phase: 'validate' });
+        const groupId = peer.chatType === 2 ? numberId(record.peerUin || peer.peerUid, 'group_id') : undefined;
+        let senderId;
+        try {
+            if (record.senderUid !== undefined && (typeof record.senderUid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(record.senderUid))) throw problem('INVALID_RESPONSE', 'QQ message has no verified sender UID');
+            if (record.senderUin) senderId = numberId(record.senderUin, 'sender account');
+            else {
+                if (typeof record.senderUid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(record.senderUid)) throw problem('INVALID_RESPONSE', 'QQ message has no verified sender identity');
+                const resolved = await this.sessionCall(state, 'resolve', { uid: record.senderUid });
+                if (resolved?.uid !== record.senderUid) throw problem('INVALID_RESPONSE', 'QQ sender identity resolution is inconsistent');
+                senderId = numberId(resolved.uin, 'sender account');
+            }
+        } catch (error) { throw annotate(error, { reason: ['NOT_READY', 'SESSION_CHANGED', 'TIMEOUT', 'EXPIRED'].includes(error.code) ? undefined : 'invalid_identity', phase: 'identity' }); }
+        const decoded = await codec.decodeKernel(record, {
+            mode, peer, queryFiles: queryFiles || mode === 'compatible',
             file: (Number(record.chatType) === 2 && state.capabilities?.groupFileUrl === true || Number(record.chatType) === 1 && state.capabilities?.privateFileUrl === true)
                 ? (element, base) => this.receivedFile(state, record, element, base) : undefined,
             forward: element => ({ id: this.forwardRegistry.register(state, record, element) }),
@@ -710,15 +829,23 @@ class OneBotService {
             reply: reference => this.quotedMessage(state, peer, reference)
         });
         await this.assertSession(state);
-        const time = Number(record.msgTime);
-        if (!Number.isSafeInteger(time) || time <= 0) throw problem('INVALID_RESPONSE', 'QQ message has no valid timestamp');
+        const message = decoded.message;
         const result = { time, self_id: Number(account), post_type: 'message',
             message_type: peer.chatType === 2 ? 'group' : 'private',
             sub_type: peer.chatType === 2 ? 'normal' : 'friend', message_id: id,
             user_id: senderId, message, raw_message: codec.stringify(message), font: 0,
             sender: { user_id: senderId, nickname: String(record.sendNickName || record.senderNickname || '') } };
+        const partial = compatibility.metadata(decoded.issues);
+        if (partial) {
+            const traceId = this.operation.getStore()?.traceId;
+            result._freshwater = { ...partial, ...(traceId ? { trace_id: traceId } : {}) };
+            const first = partial.issues[0];
+            this.queueDiagnostic('message_partial', { count: partial.issue_count, messageId: id, selfId: account, traceId,
+                reason: first.reason, elementType: first.element_type, elementIndex: first.element_index,
+                mediaType: first.media_type, wireType: first.wire_type, atType: first.at_type, faceType: first.face_type, phase: 'convert' });
+        }
         if (peer.chatType === 2) {
-            result.group_id = numberId(record.peerUin || peer.peerUid, 'group_id');
+            result.group_id = groupId;
             result.sender.card = String(record.sendMemberName || '');
             const roles = { 2: 'member', 3: 'admin', 4: 'owner' };
             const role = roles[record.senderRole] || (['member', 'admin', 'owner'].includes(record.senderRole) ? record.senderRole : null);
@@ -730,7 +857,12 @@ class OneBotService {
     async event(event) {
         const containsMedia = event?.kind === 'message' && Array.isArray(event.record?.elements) &&
             event.record.elements.some(element => [2, 3, 4, 5].includes(element?.elementType));
-        return this.deadlines.run(Date.now() + (containsMedia ? this.mediaActionTimeoutMs : this.actionTimeoutMs), () => this.eventInto(event));
+        const operation = { stage: 'convert', traceId: randomBytes(16).toString('hex'), diagnostics: [] };
+        return this.operation.run(operation, () => this.deadlines.run(Date.now() + (containsMedia ? this.mediaActionTimeoutMs : this.actionTimeoutMs), async () => {
+            const result = await this.eventInto(event);
+            if (result) for (const diagnostic of operation.diagnostics) this.log(diagnostic.event, diagnostic.data);
+            return result;
+        }));
     }
 
     async eventInto(event) {
@@ -766,10 +898,12 @@ class OneBotService {
                 messageType: converted.message_type, userId: converted.user_id,
                 ...(converted.message_type === 'group' ? { groupId: converted.group_id } : { peerId: converted.user_id }),
                 senderName: converted.sender?.nickname, card: converted.sender?.card, groupName: record.groupName,
+                partial: compatibility.isPartial(converted), partialCount: converted._freshwater?.issue_count, traceId: this.operation.getStore()?.traceId,
                 segments: converted.message });
             return converted;
         } catch (error) {
-            this.log('message_skipped', { code: error.code || 'INTERNAL_ERROR' });
+            this.log('message_skipped', { code: error.code || 'INTERNAL_ERROR',
+                ...errorDiagnostics(error, { traceId: this.operation.getStore()?.traceId }) });
             return null;
         } finally {
             if (ownsProcessing) this.processing.delete(processingKey);
@@ -808,9 +942,9 @@ class OneBotService {
                     throw problem('INVALID_RESPONSE', 'Poke group identity conflicts');
                 }
             } else {
-                const participants = [parsed.actorUid, parsed.targetUid];
-                const otherUid = participants.find(uid => uid !== state.self.uid) || state.self.uid;
-                if (!participants.includes(state.self.uid) || where.peer.peerUid !== otherUid) {
+                const participants = new Set([state.self.uid, where.peer.peerUid]);
+                if (!/^u_[A-Za-z0-9_-]{1,126}$/.test(where.peer.peerUid) ||
+                    !participants.has(parsed.actorUid) || !participants.has(parsed.targetUid)) {
                     throw problem('INVALID_RESPONSE', 'Private poke does not match this conversation');
                 }
             }
@@ -821,19 +955,26 @@ class OneBotService {
             if (this.processing.has(key) || this.noticeSeen.has(key)) return null;
             this.processing.add(key); ownsProcessing = true;
             stage = 'identity_mapping';
+            const identities = new Map();
             const resolve = async uid => {
+                if (identities.has(uid)) return identities.get(uid);
                 const who = await this.sessionCall(state, 'resolve', { uid });
                 if (!who || who.uid !== uid || (uid === state.self.uid) !== (String(who.uin) === String(state.self.uin))) {
                     throw problem('INVALID_RESPONSE', 'Poke participant mapping is inconsistent');
                 }
-                return numberId(who.uin, 'poke participant');
+                const uin = numberId(who.uin, 'poke participant');
+                identities.set(uid, uin); return uin;
             };
             const userId = await resolve(parsed.actorUid);
-            const targetId = parsed.actorUid === parsed.targetUid ? userId : await resolve(parsed.targetUid);
+            const targetId = await resolve(parsed.targetUid);
             if (parsed.actorUid !== parsed.targetUid && userId === targetId) throw problem('INVALID_RESPONSE', 'Different poke identities share an account');
-            if (where.peer.chatType === 1 && record.peerUin) {
-                const peerId = where.peer.peerUid === parsed.actorUid ? userId : targetId;
-                if (numberId(record.peerUin, 'private peer') !== peerId) throw problem('INVALID_RESPONSE', 'Private poke peer mapping conflicts');
+            // Observed native private poke callbacks can carry the string "0"
+            // instead of a positive peer UIN. Resolve the actual conversation
+            // independently even when both participants are the same account.
+            if (where.peer.chatType === 1) {
+                const peerId = await resolve(where.peer.peerUid);
+                if (record.peerUin !== undefined && record.peerUin !== '' && record.peerUin !== '0' &&
+                    numberId(record.peerUin, 'private peer') !== peerId) throw problem('INVALID_RESPONSE', 'Private poke peer mapping conflicts');
             }
             await this.assertSession(state);
             const converted = { time, self_id: Number(state.self.uin), post_type: 'notice', notice_type: 'notify', sub_type: 'poke',

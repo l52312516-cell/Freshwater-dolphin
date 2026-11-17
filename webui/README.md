@@ -1,9 +1,25 @@
 # Freshwater 管理台
 
-独立 Vue 3 / TypeScript / Vite 界面，由管理服务同源提供静态文件、REST 和 SSE。
-默认部署端口是 **4090**，与 AstrBot WebUI 的 6185 无关。
+Freshwater 的浏览器管理界面：集中管理 QQ 账号、OneBot 节点、消息、日志和备份。界面由管理服务同源提供，无需单独启动前端开发服务器。
 
-在项目根目录设置临时与缓存路径，再构建：
+**默认地址：http://127.0.0.1:4090/** · [Windows 运行指南](../docs/windows-runtime.md) · [项目说明](../README.md)
+
+## 使用管理台
+
+1. 启动 Freshwater。Windows 用户运行发行包的 `Freshwater.cmd`，保持该终端开启。
+2. 首次访问时，使用一次性初始化凭据设置至少 **12 位**管理台访问密码。Windows 启动器会在当前终端显示该凭据；普通部署读取运行目录的 `work/control/setup-token.txt`。Windows 的运行数据在 WSL VHDX 内，不要求用户在解压目录查找同名文件。
+3. 添加或选择 QQ 账号，点击「打开远程登录」，在该账号的官方 QQ 窗口中完成登录。
+4. 在「连接节点」配置 OneBot 对接。多个 QQ 对接 AstrBot 时，每个 QQ 使用独立的机器人入口。
+
+这里的 **4090** 是 Freshwater 管理台端口，与 AstrBot 自身的 WebUI 端口无关。初始化凭据只用于首次设置；之后使用管理台访问密码登录，没有“首个访问者直接注册”的流程。
+
+Windows Alpha 会先核验实例，升级时先提交冷快照，再激活账号。如果激活请求超时，账号是否已经启动可能未知；启动器会尝试停止并核验，已提交数据不会自动回滚。遇到停止未确认时保留运行目录并查看终端错误，详见 [更新与恢复](../docs/windows-runtime.md#更新与恢复边界)。
+
+HTTP 不加密密码、会话或备份口令。Windows 发行包默认只通过本机回环访问；其他部署需要公网访问时应配置 TLS。证书和私钥通过 `FWD_TLS_CERT`、`FWD_TLS_KEY` 指向当前工作区的私有文件，二者必须同时设置。
+
+## 前端开发
+
+界面采用 Vue 3 / TypeScript / Vite；管理服务同源提供静态文件、REST 和 SSE。在项目根目录设置临时与缓存路径，再构建：
 
 ```sh
 export TEMP="$PWD/work/temp" TMP="$PWD/work/temp" TMPDIR="$PWD/work/temp"
@@ -13,11 +29,6 @@ npm ci --ignore-scripts
 npm run build
 node scripts/style-audit.cjs   # 死选择器 / 过小字号 / 硬编码色值体检
 ```
-
-首次访问使用 `work/control/setup-token.txt` 中的一次性随机凭据设置至少
-12 位 WebUI 访问密码；没有“首个访问者直接注册”的流程。HTTP 不加密密码、
-会话或备份口令，公网应配置 TLS。证书和私钥通过 `FWD_TLS_CERT`、
-`FWD_TLS_KEY` 指向当前工作区的私有文件，二者必须同时设置。
 
 ## 信息架构
 

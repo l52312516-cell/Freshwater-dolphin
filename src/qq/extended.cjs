@@ -48,7 +48,7 @@ function reactionState(record, emojiId) {
     return clicked;
 }
 const ACTIONS = {
-    'message.poke': ['peer', 'targetUid', 'targetUin'], 'message.emoji': ['peer', 'groupId', 'nativeId', 'sequence', 'emojiId', 'set'],
+    'message.poke': ['peer', 'peerUin', 'targetUid', 'targetUin'], 'message.emoji': ['peer', 'groupId', 'nativeId', 'sequence', 'emojiId', 'set'],
     'group.essence': ['groupId', 'nativeId', 'sequence', 'random', 'set'], 'group.memberTitle': ['groupId', 'uid', 'title'],
     'friend.category': ['uid', 'categoryId'], 'friend.delete': ['uid', 'block', 'both'], 'self.status': ['status', 'extStatus', 'batteryStatus'],
     'self.avatar': ['file'], 'group.avatar': ['groupId', 'file'],
@@ -107,11 +107,22 @@ function createExtended(capture, options = {}) {
         }
         if (operation === 'message.poke') {
             const target = peer(data.peer), targetUid = uid(data.targetUid);
-            if (target.chatType === 1 && target.peerUid !== targetUid) fail('INVALID_PARAMS', 'Poke target differs from the private peer');
-            const identity = await capture.resolve({ uid: targetUid }); saved.active();
-            if (identity.uid !== targetUid || data.targetUin !== undefined && number(data.targetUin, true) !== String(identity.uin)) fail('INVALID_RESPONSE', 'Poke UID and account do not match');
-            const result = await fixedCall(operation, { chatType: target.chatType, peerUin: target.chatType === 2 ? target.peerUid : number(identity.uin, true), targetUin: number(identity.uin, true) }, context, saved);
-            return { ...result, peer: target, targetUid, ...(data.targetUin !== undefined ? { targetUin: data.targetUin } : {}) };
+            const expectedPeerUin = data.peerUin === undefined ? undefined : number(data.peerUin, true);
+            const expectedTargetUin = data.targetUin === undefined ? undefined : number(data.targetUin, true);
+            const resolveIdentity = async value => {
+                const identity = await capture.resolve({ uid: value }); saved.active();
+                if (!identity || identity.uid !== value) fail('INVALID_RESPONSE', 'Poke UID did not resolve to the requested identity');
+                let uin;
+                try { uin = number(identity.uin, true); } catch { fail('INVALID_RESPONSE', 'Poke UID has no real account'); }
+                if ((value === saved.value.uid) !== (uin === String(saved.value.uin))) fail('INVALID_RESPONSE', 'Poke mapping conflicts with the current QQ identity');
+                return uin;
+            };
+            const peerUin = target.chatType === 2 ? target.peerUid : await resolveIdentity(target.peerUid);
+            const targetUin = target.chatType === 1 && targetUid === target.peerUid ? peerUin : await resolveIdentity(targetUid);
+            if (expectedPeerUin !== undefined && expectedPeerUin !== peerUin || expectedTargetUin !== undefined && expectedTargetUin !== targetUin ||
+                target.chatType === 1 && target.peerUid !== targetUid && peerUin === targetUin) fail('INVALID_RESPONSE', 'Poke peer or target account mapping conflicts');
+            const result = await fixedCall(operation, { chatType: target.chatType, peerUin, targetUin }, context, saved);
+            return { ...result, peer: target, peerUin, targetUid, targetUin };
         }
         if (operation === 'message.emoji' || operation === 'group.essence') {
             const where = await locate(data, saved);

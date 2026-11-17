@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const p = require('../src/qq/proto.cjs');
 const protocol = require('../src/qq/admin-oidb.cjs');
 const { createAdminQueries, random, MAX_PENDING } = require('../src/qq/admin-queries.cjs');
+const { Capture } = require('../src/qq/capture.cjs');
 const { ACTIONS, EXTENSION_REQUIREMENTS, READ_ONLY_ACTIONS, runAdminActions, MAX_KICK_MEMBERS } = require('../src/onebot/admin-actions.cjs');
 const { OneBotService } = require('../src/onebot/service.cjs');
 const { createChannel } = require('../src/qq/msf-native.cjs');
@@ -278,16 +279,62 @@ test('tag mutation reads back exact name presence and absence without unnecessar
     await f.action('group.tagDelete', { groupClass: 0, name: 'Missing' }); assert.equal(f.calls.filter(call => call.operation === 'group.tagDelete').length, 1);
 });
 
-test('missing readback expires without retry and holds the same group lock while a native confirmation remains pending', async () => {
-    const f = fixture(); let release;
-    f.overrides.run = (params, perform) => params.operation === 'group.search' ? new Promise(resolve => { release = () => resolve(perform()); }) : perform();
-    const first = f.action('group.search', { groupId: '12345', noFingerOpen: 1 }); await turn();
-    await rejects(f.action('group.historyVisibility', { groupId: '12345', visible: true }), 'BUSY');
-    release(); assert.equal((await first).confirmed, true);
-    const no = fixture();
-    no.overrides.run = (params, perform) => params.operation === 'group.search' ? { operation: params.operation, ...params.request, confirmed: true, confirmation: 'server_ack' } : perform();
-    await rejects(no.action('group.search', { groupId: '12345', noFingerOpen: 1 }, { expiresAt: Date.now() + 25 }), 'EXPIRED');
-    assert.equal(no.calls.filter(call => call.operation === 'group.search').length, 1);
+test('a settings read that consumes the deadline prevents the administration write', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    try {
+        const f = fixture();
+        f.overrides.run = (params, perform) => {
+            if (params.operation === 'group.settingsDetail') t.mock.timers.tick(26);
+            return perform();
+        };
+        await rejects(f.action('group.search', { groupId: '12345', noFingerOpen: 1 }, { expiresAt: Date.now() + 25 }), 'EXPIRED');
+        assert.deepEqual(f.calls.map(call => call.operation), ['group.settingsDetail']);
+        assert.equal(f.detail.noFingerOpen, 0);
+    } finally { t.mock.timers.reset(); }
+});
+
+test('missing readback expires without retry and holds the same group lock while a native confirmation remains pending', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+    try {
+        for (const phase of ['write', 'readback']) {
+            const f = fixture(); let release, entered, reads = 0;
+            f.capture.pending = new Set(); f.capture.deadline = Capture.prototype.deadline;
+            const blocked = new Promise(resolve => { entered = resolve; });
+            f.overrides.run = (params, perform) => {
+                if (params.operation === 'group.settingsDetail') reads++;
+                if (phase === 'write' && params.operation === 'group.search' ||
+                    phase === 'readback' && params.operation === 'group.settingsDetail' && reads === 2) {
+                    return new Promise(resolve => { release = () => resolve(perform()); entered(); });
+                }
+                // A server ACK without changed settings requires confirmation;
+                // it cannot become success merely because the write settled.
+                if (params.operation === 'group.search') return { operation: params.operation, ...params.request,
+                    confirmed: true, confirmation: 'server_ack' };
+                return perform();
+            };
+            const first = f.action('group.search', { groupId: '12345', noFingerOpen: 1 }, { expiresAt: Date.now() + 25 });
+            const rejected = rejects(first, 'TIMEOUT');
+            // Advance time only after the real mutation (and, in the second
+            // case, its exact confirmation read) has physically been invoked.
+            await blocked;
+            const dispatched = ['group.settingsDetail', 'group.search', ...(phase === 'readback' ? ['group.settingsDetail'] : [])];
+            assert.deepEqual(f.calls.map(call => call.operation), dispatched);
+            assert.equal(f.calls.filter(call => call.operation === 'group.search').length, 1);
+            t.mock.timers.tick(25); await rejected;
+            assert.equal(f.capture.pending.size, 0);
+            await rejects(f.action('group.historyVisibility', { groupId: '12345', visible: true }), 'BUSY');
+            assert.deepEqual(f.calls.map(call => call.operation), dispatched);
+            release(); await turn();
+            // Late settlement must neither replay the mutation nor restart a
+            // confirmation read after the original request has expired.
+            assert.deepEqual(f.calls.map(call => call.operation), dispatched);
+            f.overrides.run = undefined;
+            assert.equal((await f.action('group.historyVisibility', { groupId: '12345', visible: true })).confirmed, true);
+            assert.equal(f.calls.filter(call => call.operation === 'group.search').length, 1);
+            assert.equal(f.calls.filter(call => call.operation === 'group.historyVisibility').length, 1);
+            assert.equal(f.capture.pending.size, 0);
+        }
+    } finally { t.mock.timers.reset(); }
 });
 
 test('epoch or UID changes after native mutation suppress all late readback and successful completion', async () => {

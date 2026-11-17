@@ -10,6 +10,7 @@ const { workspacePath } = require('../paths.cjs');
 const ownership = require('./ownership.cjs');
 const { memoryAvailable } = require('./resources.cjs');
 const { prepare } = require('../../tools/prepare-qq.cjs');
+const { normalizeRuntimeSelection } = require('../qq/runtime-profile.cjs');
 
 function sanitize(profile) {
     return { ...profile, bridgeInstalled: profile.bridgeInstalled !== false,
@@ -67,6 +68,7 @@ function notificationSelection(value = { enabled: false, channelIds: [] }) {
 function profile(input, existing = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('INVALID_CONFIG', 'Expected account configuration');
     if (Object.hasOwn(input, 'bridgeInstalled')) throw fail('INVALID_CONFIG', 'Use the dedicated bridge install or uninstall operation');
+    if (Object.hasOwn(input, 'qqRuntime')) throw fail('INVALID_CONFIG', 'Use the dedicated QQ runtime switch operation');
     if (existing.bridgeInstalled !== undefined && typeof existing.bridgeInstalled !== 'boolean') throw fail('INVALID_CONFIG', 'Invalid bridge installation state');
     const id = identifier(existing.id || input.id || crypto.randomBytes(8).toString('hex'));
     const label = input.label === undefined ? existing.label || id : input.label;
@@ -76,6 +78,7 @@ function profile(input, existing = {}) {
     return { id, label, expectedUin: expectedUin(input.expectedUin === undefined ? existing.expectedUin : input.expectedUin),
         boundUin: existing.boundUin || null, desired: existing.desired || 'stopped', revision: (existing.revision || 0) + 1,
         bridgeInstalled: existing.bridgeInstalled !== false,
+        qqRuntime: normalizeRuntimeSelection(undefined, existing.qqRuntime),
         actionTimeoutMs: timeout, nodes: nodes(input.nodes === undefined ? existing.nodes || [] : input.nodes, existing.nodes),
         notifications: notificationSelection(input.notifications === undefined ? existing.notifications : input.notifications) };
 }
@@ -102,6 +105,7 @@ class Accounts {
         this.stopping = new Set();
         this.busy = new Set();
         this.persistenceBlocked = new Set();
+        this.runtimePending = new Set();
         this.closing = false;
         this.document = read(this.file, { version: 1, profiles: [], maintenance: {} });
         if (this.document.version !== 1 || !Array.isArray(this.document.profiles) || !this.document.maintenance) throw fail('INVALID_CONFIG', 'Invalid account registry');
@@ -363,6 +367,7 @@ class Accounts {
         if (!fs.existsSync(keyFile)) atomic(keyFile, crypto.randomBytes(32).toString('hex') + '\n');
         const settings = read(path.join(this.control, 'settings.json'), {});
         atomic(file, { profileId: id, expectedUin: item.expectedUin || item.boundUin || undefined,
+            qqRuntime: normalizeRuntimeSelection(undefined, item.qqRuntime),
             rpcDirectory: path.join(base, 'rpc'), dataDirectory: path.join(base, 'data'), logDirectory: path.join(base, 'logs'),
             healthFile: path.join(base, 'state/health.json'), authorizationFile: path.join(base, 'state/authorization.json'),
             lifecycleEndpointFile: path.join(this.control, 'lifecycle-endpoint.json'),
@@ -377,10 +382,12 @@ class Accounts {
     clearRetry(id) {
         clearTimeout(this.retryTimers.get(id)); this.retryTimers.delete(id);
     }
-    async startAccount(id, { automatic = false } = {}) {
+    async startAccount(id, { automatic = false, runtimeSwitch = false } = {}) {
         const item = this.get(id);
         if (this.closing) throw fail('CLOSING', 'Manager is stopping', 503);
         if (this.persistenceBlocked.has(id)) throw fail('PERSISTENCE_UNAVAILABLE', 'Account registry requires repair before starting', 503);
+        const runtimeJournal = read(path.join(this.control, 'runtime-switches', id + '.json'), null);
+        if (runtimeJournal && runtimeJournal.phase !== 'committed' && !runtimeSwitch) throw fail('MAINTENANCE', 'QQ runtime switch recovery is pending', 409);
         if (this.document.maintenance[id]) throw fail('MAINTENANCE', 'Instance is in maintenance', 409);
         const restoreJournal = read(path.join(this.control, 'restore-journal.json'), null);
         if (restoreJournal && (!Array.isArray(restoreJournal.ids) || restoreJournal.ids.includes(id))) throw fail('MAINTENANCE', 'Restore recovery is pending', 409);
@@ -538,7 +545,7 @@ class Accounts {
         if (expected && expected !== uin) { this.clearGrant(id); this.states.set(id, 'account_mismatch'); return; }
         if (claimed.has(uin)) { this.clearGrant(id); this.states.set(id, 'duplicate_account'); return; }
         claimed.set(uin, id);
-        if (this.document.maintenance[id] || this.closing || item.desired !== 'running' || this.stopping.has(id)) { this.clearGrant(id); return; }
+        if (this.document.maintenance[id] || this.runtimePending.has(id) || this.closing || item.desired !== 'running' || this.stopping.has(id)) { this.clearGrant(id); return; }
         const authorization = path.join(this.location(id), 'state/authorization.json');
         let old;
         try { old = read(authorization, null); } catch { this.clearGrant(id); old = null; }

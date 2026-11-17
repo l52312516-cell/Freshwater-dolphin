@@ -1,4 +1,5 @@
 'use strict';
+const { annotate } = require('../diagnostics.cjs');
 
 const crypto = require('node:crypto');
 const { setTimeout: pause } = require('node:timers/promises');
@@ -22,10 +23,8 @@ function fingerprint(element) { const voice = element.pttElement; return JSON.st
 function createVoiceExtra(capture, { native = require('./msf-native.cjs'), fetchImpl = globalThis.fetch } = {}) {
     const pending = new Set(), textLocks = new Set(), claims = new Set(); let aiWriting = false, generation = 0;
     function capabilities() {
-        // The target Linux build rejects synthesis in both mode 0 and mode 1.
-        // Keep independent original-PTT transcription available; never reissue
-        // a synthesis merely because its prior publication outcome is unknown.
-        const ai = capture.qqVersion !== '3.2.35-54395' && native.available() && typeof capture.on === 'function' && typeof capture.off === 'function' && capture.bus && capture.hasMethods('msg', ['getMsgsByMsgId']);
+        const ai = native.available() && typeof capture.on === 'function' && typeof capture.off === 'function' &&
+            typeof capture.bus?.on === 'function' && typeof capture.bus?.off === 'function' && capture.hasMethods('msg', ['getMsgsByMsgId']);
         return { aiVoiceGenerate: !!ai && typeof fetchImpl === 'function', aiVoiceSend: !!ai,
             pttText: typeof capture.mediaDirectory === 'string' && capture.hasMethods('msg', ['getMsgsByMsgId', 'translatePtt2Text']) };
     }
@@ -76,22 +75,42 @@ function createVoiceExtra(capture, { native = require('./msf-native.cjs'), fetch
             const chunks = []; let size = 0; reader = response.body.getReader();
             for (;;) { const chunk = await reader.read(); scope.active(); if (chunk.done) break; size += chunk.value.byteLength; if (size > node.info.fileSize || size > media.MAX_RECORD_BYTES) p.fail('INVALID_RESPONSE', 'AI voice download exceeded its exact byte budget'); chunks.push(Buffer.from(chunk.value)); }
             const bytes = Buffer.concat(chunks); if (bytes.length !== node.info.fileSize || crypto.createHash('md5').update(bytes).digest('hex') !== node.info.fileHash) p.fail('INVALID_RESPONSE', 'AI voice download differs from its exact media digest');
-            media.recordInfo(bytes); scope.active();
+            try { media.recordInfo(bytes); }
+            catch (error) { throw annotate(error, { reason: error.code === 'UNSUPPORTED' ? 'media_format_invalid' : 'protocol_response_invalid', phase: 'media_parse', mediaType: 'record' }); }
+            scope.active();
         } catch (error) { Promise.resolve(reader?.cancel()).catch(() => {}); if (!reader) Promise.resolve(response?.body?.cancel?.()).catch(() => {}); scope.active(); if (['INVALID_RESPONSE', 'QUERY_FAILED', 'UNSUPPORTED', 'EXPIRED', 'SESSION_CHANGED'].includes(error.code)) throw error; p.fail(signal.aborted ? 'TIMEOUT' : 'QUERY_FAILED', 'AI voice download failed without retry'); }
         finally { reader?.releaseLock(); }
     }
     async function synthesis(data, scope) {
-        const groupId = data.groupId, candidates = new Map(); let overflow = false, expected, done = false;
-        const eligible = record => p.object(record) && record.chatType === 2 && record.peerUid === groupId && String(record.senderUin) === scope.saved.uin && record.senderUid === scope.saved.uid && Array.isArray(record.elements);
+        // Field 5.1 is the random of the newly published group message, not a
+        // pollable job ID. A single synthesis request may itself send the PTT.
+        const groupId = data.groupId, request = { groupId, character: data.character, text: data.text, chatType: data.chatType, sessionId: crypto.randomInt(1, 0x100000000) },
+            startedAt = Date.now(), candidates = new Map(); let overflow = false, expected, done = false;
+        const randomMatches = record => {
+            const observed = [record.msgRandom, record.msg_random].filter(value => value !== undefined && value !== null);
+            if (!observed.length) return false;
+            return observed.every(value => {
+                if (!['string', 'number'].includes(typeof value) || !/^-?\d{1,10}$/.test(String(value))) return false;
+                const number = BigInt(value);
+                return number >= -0x80000000n && number <= 0xffffffffn && Number(BigInt.asUintN(32, number)) === request.sessionId;
+            });
+        };
+        const eligible = record => {
+            const time = Number(record?.msgTime);
+            return p.object(record) && record.chatType === 2 && record.peerUid === groupId && String(record.senderUin) === scope.saved.uin &&
+                record.senderUid === scope.saved.uid && Number(record.sourceType) !== 3 && Number.isSafeInteger(time) && time >= Math.floor(startedAt / 1000) &&
+                time <= Math.floor(Date.now() / 1000) + 1 && randomMatches(record) && Array.isArray(record.elements);
+        };
         const matches = record => {
             if (!eligible(record)) return false;
             const voices = record.elements.filter(element => element?.elementType === 4);
-            return voices.length === 1 && voices[0].pttElement?.fileUuid === expected.fileUuid && typeof voices[0].pttElement.md5HexStr === 'string' &&
+            return record.elements.length === 1 && voices.length === 1 && typeof voices[0].elementId === 'string' && voices[0].elementId.length > 0 &&
+                voices[0].pttElement?.fileUuid === expected.fileUuid && typeof voices[0].pttElement.md5HexStr === 'string' &&
                 voices[0].pttElement.md5HexStr.toLowerCase() === expected.info.fileHash && String(voices[0].pttElement.fileSize) === String(expected.info.fileSize);
         };
         const collect = records => { if (done || scope.saved.generation !== generation || scope.saved.epoch !== capture.epoch || scope.saved.session !== capture.session) return;
             for (const record of records) {
-                if (!eligible(record) || !record.elements.some(element => element?.elementType === 4) || record.sendStatus === 0) continue;
+                if (!eligible(record) || !record.elements.some(element => element?.elementType === 4) || record.sendStatus !== 2) continue;
                 try { nativeId(record.msgId, 'INVALID_RESPONSE'); } catch { continue; }
                 const key = groupId + ':' + record.msgId; if (claims.has(key)) continue;
                 if (candidates.size >= 64 && !candidates.has(key)) { overflow = true; continue; }
@@ -100,17 +119,14 @@ function createVoiceExtra(capture, { native = require('./msf-native.cjs'), fetch
         };
         const observation = value => { if (['onAddSendMsg', 'onMsgInfoListUpdate'].includes(value?.callback) && Array.isArray(value.records)) collect(value.records); };
         const sent = records => { if (Array.isArray(records)) collect(records); };
-        const event = value => { if (value?.kind === 'message' && value.epoch === scope.saved.epoch && value.selfUin === scope.saved.uin) collect([value.record]); };
+        const event = value => { if (value?.kind === 'message' && value.epoch === scope.saved.epoch && value.selfUin === scope.saved.uin &&
+            (value.selfUid === undefined || value.selfUid === scope.saved.uid)) collect([value.record]); };
         capture.bus.on('sendObservation', observation); capture.bus.on('sent', sent); capture.on('event', event);
         try {
-            const request = { groupId, character: data.character, text: data.text, chatType: data.chatType, sessionId: crypto.randomInt(1, 0x100000000) };
-            for (let poll = 0; poll < 30; poll++) {
-                const value = await fixed('voice.synthesize', request, scope);
-                if (!p.object(value) || value.groupId !== groupId || value.sessionId !== request.sessionId || value.character !== request.character || value.text !== request.text || value.chatType !== request.chatType || typeof value.pending !== 'boolean') p.fail('INVALID_RESPONSE', 'QQ returned an unrelated synthesis poll');
-                if (!value.pending) { expected = protocol.node(value.node, 'INVALID_RESPONSE'); break; }
-                await pause(200, undefined, { signal: scope.context.signal }); scope.active();
-            }
-            if (!expected) p.fail('QUERY_FAILED', 'AI voice synthesis did not return a complete media index within the bounded poll budget');
+            const value = await fixed('voice.synthesize', request, scope);
+            if (!p.object(value) || value.groupId !== groupId || value.sessionId !== request.sessionId || value.character !== request.character || value.text !== request.text || value.chatType !== request.chatType || typeof value.pending !== 'boolean') p.fail('INVALID_RESPONSE', 'QQ returned an unrelated synthesis response');
+            if (value.pending) p.fail('QUERY_FAILED', 'AI voice synthesis omitted its complete media index; publication may be unknown and synthesis was not retried');
+            expected = protocol.node(value.node, 'INVALID_RESPONSE');
             let receipt;
             for (let poll = 0; poll < 40; poll++) {
                 scope.active();
@@ -125,7 +141,7 @@ function createVoiceExtra(capture, { native = require('./msf-native.cjs'), fetch
                 if (overflow) p.fail('INVALID_RESPONSE', 'AI voice candidate buffer overflowed before exact receipt correlation');
                 await pause(125, undefined, { signal: scope.context.signal }); scope.active();
             }
-            if (!receipt) p.fail('QUERY_FAILED', 'AI voice may have been published but no exact self/group/media UUID receipt arrived; no retry was attempted');
+            if (!receipt) p.fail('QUERY_FAILED', 'AI voice may have been published but no exact self/group/random/media receipt arrived; no retry was attempted');
             const claim = groupId + ':' + receipt.msgId; if (claims.has(claim)) p.fail('INVALID_RESPONSE', 'AI voice receipt was already claimed'); claims.add(claim);
             if (claims.size > 256) claims.delete(claims.values().next().value);
             const base = { operation: data.operation, uin: scope.saved.uin, groupId, character: data.character, text: data.text, chatType: data.chatType, fileUuid: expected.fileUuid, md5: expected.info.fileHash, size: expected.info.fileSize, confirmed: true, confirmation: 'exact_self_message_readback' };

@@ -32,7 +32,7 @@ test('unknown action names remain absent from diagnostic logs even when they loo
 });
 
 test('forward RPC cannot act without the expected authenticated session epoch', async t => {
-    const capture = new Capture({ install: false, qqVersion: TARGET_VERSION });
+    const capture = new Capture({ install: false, runtimeIdentity: { platform: 'linux', architecture: 'x64' }, qqVersion: TARGET_VERSION });
     t.after(() => capture.close());
     capture.ready = true; capture.session = {}; capture.self = { uin: '3000000002', uid: 'u_self' };
     let dispatched = 0;

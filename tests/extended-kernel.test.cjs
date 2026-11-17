@@ -34,6 +34,62 @@ test('extended poke resolves a real UID and reports exactly the acknowledged tar
     assert.equal(f.calls.length, 1);
 });
 
+test('private poke resolves peer and target independently, including self and third-party real targets', async () => {
+    for (const [targetUid, targetUin] of [['u_self', '12345'], ['u_third', '67890'], ['u_friend', '54321']]) {
+        const f = fixture(), resolutions = [];
+        const ids = { u_self: '12345', u_friend: '54321', u_third: '67890' };
+        f.capture.resolve = async ({ uid }) => { resolutions.push(uid); return { uid, uin: ids[uid] }; };
+        const result = await f.run({ operation: 'message.poke', peer: { chatType: 1, peerUid: 'u_friend' }, peerUin: '54321', targetUid, targetUin });
+        assert.deepEqual(f.calls[0].request, { chatType: 1, peerUin: '54321', targetUin });
+        assert.equal(result.peerUin, '54321'); assert.equal(result.targetUin, targetUin);
+        assert.deepEqual(result.peer, { chatType: 1, peerUid: 'u_friend' }); assert.equal(result.targetUid, targetUid);
+        assert.deepEqual(new Set(resolutions), new Set(['u_friend', targetUid]));
+        assert.equal(f.calls.length, 1); assert.equal(result.confirmation, 'server_ack');
+    }
+});
+
+test('private poke rejects mismapped peer, target, self and identity collisions without a native dispatch', async () => {
+    const base = { operation: 'message.poke', peer: { chatType: 1, peerUid: 'u_friend' }, peerUin: '54321', targetUid: 'u_self', targetUin: '12345' };
+    for (const [request, ids] of [[{ ...base, peerUin: '99999' }, { u_friend: '54321', u_self: '12345' }],
+        [{ ...base, targetUin: '99999' }, { u_friend: '54321', u_self: '12345' }],
+        [base, { u_friend: '12345', u_self: '12345' }], [base, { u_friend: '54321', u_self: '77777' }],
+        [{ ...base, targetUid: 'u_third', targetUin: '54321' }, { u_friend: '54321', u_third: '54321' }]]) {
+        const f = fixture(); f.capture.resolve = async ({ uid }) => ({ uid, uin: ids[uid] });
+        await assert.rejects(f.run(request), { code: 'INVALID_RESPONSE' }); assert.equal(f.calls.length, 0);
+    }
+    for (const invalid of [{ peerUin: null }, { targetUin: null }, { peerUin: '0' }, { targetUin: '0' }, { targetUid: 'made-up' }]) {
+        const f = fixture(); let resolves = 0; f.capture.resolve = async () => { resolves++; throw new Error('must validate first'); };
+        await assert.rejects(f.run({ ...base, ...invalid }), { code: 'INVALID_PARAMS' });
+        assert.equal(resolves, 0); assert.equal(f.calls.length, 0);
+    }
+    for (const bad of [null, { uid: 'u_wrong', uin: '54321' }, { uid: 'u_friend', uin: '0' },
+        { uid: 'u_friend', uin: '4294967296' }]) {
+        const f = fixture(); f.capture.resolve = async () => bad;
+        await assert.rejects(f.run(base), { code: 'INVALID_RESPONSE' }); assert.equal(f.calls.length, 0);
+    }
+});
+
+test('private poke binds both identity lookups to the same session and does not resend native failures', async () => {
+    const base = { operation: 'message.poke', peer: { chatType: 1, peerUid: 'u_friend' }, peerUin: '54321', targetUid: 'u_self', targetUin: '12345' };
+    for (const changeAfter of [1, 2]) for (const change of ['epoch', 'session', 'selfUin', 'selfUid']) {
+        const f = fixture(); let resolves = 0;
+        f.capture.resolve = async ({ uid }) => {
+            if (++resolves === changeAfter) {
+                if (change === 'epoch') f.capture.epoch = 'e2';
+                else if (change === 'session') f.capture.session = {};
+                else if (change === 'selfUin') f.capture.self = { ...f.capture.self, uin: '99999' };
+                else f.capture.self = { ...f.capture.self, uid: 'u_other_self' };
+            }
+            return { uid, uin: uid === 'u_self' ? '12345' : '54321' };
+        };
+        await assert.rejects(f.run(base), { code: 'SESSION_CHANGED' }); assert.equal(f.calls.length, 0);
+    }
+    const f = fixture(); let writes = 0;
+    f.capture.resolve = async ({ uid }) => ({ uid, uin: uid === 'u_self' ? '12345' : '54321' });
+    const api = createExtended(f.capture, { native: { available: () => true, async run() { writes++; throw Object.assign(new Error('ambiguous'), { code: 'TIMEOUT' }); } } });
+    await assert.rejects(api.action({ ...base, expectedEpoch: 'e1' }), { code: 'TIMEOUT' }); assert.equal(writes, 1);
+});
+
 test('message reaction and essence re-read exact 64-bit locators and never guess a random', async () => {
     const f = fixture(), base = { groupId: f.record.peerUid, nativeId: f.record.msgId, sequence: '77', set: true };
     const result = await f.run({ operation: 'group.essence', ...base, random: '0' });

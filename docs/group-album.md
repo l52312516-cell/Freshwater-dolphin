@@ -22,6 +22,8 @@
 
 `get_qun_album_list` 中时间、上传数量和 top flag 使用十进制字符串。旧式 `get_group_album_list` 的数值字段必须能被 JSON number 精确表示，否则明确失败；不舍入。完整旧式列表遍历实际分页，最多 32 页、1000 相册和 1 MiB JSON，达到上限或遇到重复 ID/游标时失败，不返回截断列表冒充完整结果。媒体单页和写入前后的完整媒体扫描同样有 1000 项、32 页、1 MiB 及游标前进约束。
 
+媒体响应只有 `prevAttachInfo/nextAttachInfo`，没有目录响应的 `hasMore`。r15 针对云端已观察到的精确结束标记作窄处理：仅在输入游标非空、返回媒体为空且下一游标逐字匹配 152 字节的 `IndexType/DirectType=next`、空 `Lloc`、`StartIndex=0`、全零 `Loc` 定位器时，将 `nextAttachInfo` 归一为空串。其他 opaque 游标、不同 JSON 形态、首屏和非空页保留原值；错相册、重复字段/资源、畸形 UTF-8、游标不前进仍拒绝。这是依据实际服务端响应的修复；SnowLuma 当前原样透传游标，没有这一归一逻辑。
+
 ## 原生协议与成功证据
 
 `group-album-protocol.cjs` 仅允许以下固定服务：
@@ -34,6 +36,8 @@
 - `QunAlbum.trpc.qzone.webapp_qun_media.QunMedia.DeleteMedias`
 
 它们是 QQ NT TRPC 公共封套，不套用 OIDB 编码。相册列表写入 `3331` 业务序列和两个显式空字节字段；点赞、评论和删除分别核对 `5495/8527/8694`。省略的 protobuf 零状态按默认 0 处理，但读操作必须存在真实 data 子消息，不能把只有错误字段或未知字段的数据解释为空集合。所有已知字段校验 wire type、唯一性、UTF-8、整数范围及集合上限。
+
+protobuf bool 按 `0=false`、任意非零 varint 为 `true` 解码，不截断高位；重复字段、错误 wire、畸形 varint 和其他整数范围限制保持。旧实现仅接受 0/1，曾使真实相册媒体列表返回 `Group album boolean is not canonical`，该问题已在 r12 修复。
 
 点赞前从指定群和相册的真实媒体列表确认 batch 与可选 lloc；回执必须包含完全一致的 `421_1_0_...` 目标和期望状态。评论先定位媒体，再请求真实 feed，保留服务端原始 common/user/media protobuf cell 和其中的未知字段，避免重编码丢失必要数据；没有返回的 cell 仅能从已经验证的媒体身份构造。成功评论必须由服务端返回真实 ID、当前账号、准确正文、clientKey 和时间；不会从请求补造成功结果。删除视频先解析真实封面 lloc 和 batch，收到 ACK 后重新完整分页确认目标不再存在，不能因查询错误或缺失元数据而报告已删除。
 
@@ -58,3 +62,7 @@
 `tests/group-album.test.cjs` 与 `tests/group-album-upload.test.cjs` 共 42 项离线测试通过，涵盖真实 native channel、九项公共 `OneBotService.action`、能力及上传期限、完整分页、精确 ACK/原生读回、固定 Cookie 与 Web 目标、账号隔离、视频与封面两阶段上传、超时和不重试。连同 admin、share、native-channel、媒体、视频和 transports 的定向回归共 167 项全部通过，日志为 `work/group-album-regression.log`。
 
 没有执行真实群相册写入。云端只读验收与后续写入验收由主任务按已经授权的范围单独进行。
+
+后续 [r14q 分页验收](../outputs/qqapi-wave5-readonly-r14q-cloud-acceptance-20261117.json)双账号共 8 次真实公开读取，6 次通过、2 次失败：各自首屏 5 条，第二页为空但返回全零重置定位器，第三页重新读到首屏而被跨页资源唯一性检查拒绝。该轮未证明完整分页；[外部报告](../outputs/qqapi-wave5-readonly-r14q-external-guard-20261117.json)整体同样失败，四项容器/路由/映射/旧证据保留检查均为 true。[原响应诊断](../outputs/qqapi-album-pagination-r14q-diagnostic-20261117.json)只读取已保存的 HTTP 响应，未新增 QQ 调用。r15 修复先以两条失败回归复现问题，再通过相册目标 49/49；正向云端结果须由新批次另记，不能改写 r14q。
+
+2026-11-17 的 [r12q 云端只读验收](../outputs/qqapi-wave5-readonly-r12q-cloud-acceptance-20261116.json)在两个批准账号分别调用旧式目录与媒体列表，共 4/4 通过；均通过目录中的真实 `id` 定位唯一 `test` 相册，首屏各返回 5 条图片记录。两次返回均带非空续页游标，本轮未继续分页、下载照片或验证相册写入。[外部检查](../outputs/qqapi-wave5-readonly-r12q-external-guard-20261117.json)确认运行容器、原配置、17700/17701 路由和消息映射保持。旧 r9q 的验收字段错误及 r10q 的真实媒体解码失败分别保留，不能追改为成功。

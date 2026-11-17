@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 
 function sourceFiles(root) {
   const files = [];
-  const allowedRoots = ['src', 'tests', 'tools', 'deploy', 'docs', 'webui'];
+  const allowedRoots = ['src', 'tests', 'tools', 'deploy', 'docs', 'webui', '.github'];
   function visit(relative) {
     const filename = path.join(root, relative);
     const info = fs.lstatSync(filename);
@@ -25,7 +25,7 @@ function sourceFiles(root) {
     }
   }
   for (const name of allowedRoots) if (fs.existsSync(path.join(root, name))) visit(name);
-  for (const name of ['package.json', 'package-lock.json', 'requirements-test.txt', 'config.example.json', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.gitignore', '.gitattributes', '.dockerignore']) {
+  for (const name of ['package.json', 'package-lock.json', 'requirements-test.txt', 'config.example.json', 'Freshwater.cmd', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'SUPPORT.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.gitignore', '.gitattributes', '.dockerignore']) {
     if (fs.existsSync(path.join(root, name))) visit(name);
   }
   return files.sort();

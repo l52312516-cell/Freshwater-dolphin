@@ -43,7 +43,8 @@ function fixture(t, { selfId = SELF, actionTimeoutMs = 10000, mediaActionTimeout
         const record = { ...params.destination, msgId: NATIVE_ID, msgSeq: '100', clientSeq: '200', msgTime: '1794710400',
             senderUin: selfId, senderUid: state.self.uid, sendStatus: 2, sendNickName: 'Real self',
             elements: [{ elementType: 16, multiForwardMsgElement: { resId: 'complete-test-resource' } }] };
-        return { confirmed: true, confirmation: 'fresh-source-tuple-and-resource-readback',
+        return { confirmed: true, confirmation: params.kind === 'customResourceMerge' ?
+            'custom-resource-metadata-and-delivery-readback' : 'fresh-source-tuple-and-resource-readback',
             destination: { ...params.destination }, nodeCount: params.nodes.length,
             resId: 'complete-test-resource', messageId: NATIVE_ID, record,
             debugPath: '/private/QQ/native-cache', token: 'private-token-must-not-return' };
@@ -126,6 +127,128 @@ test('formal private merge resolves the exact destination UIN and accepts canoni
     assert.deepEqual(fs.readdirSync(f.mediaDirectory), []);
 });
 
+test('original plugin name, uin, time and content nodes retain every author and time through customResourceMerge', async t => {
+    for (const privateTarget of [false, true]) {
+        const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+        const messages = [
+            { type: 'node', data: { name: '  原作者😀  ', uin: 3000000002, time: '1700000001', content: [text('  original\n\n'), image(), text('tail')] } },
+            { type: 'node', data: { name: '本人默认时间', uin: SELF, time: 0, content: '  zero-time\n\n' } },
+            { type: 'node', data: { name: '同作者未指定时间', uin: '3000000002', content: [text('missing-time')] } },
+            node([text('canonical self')], SELF, '本人规范字段')
+        ];
+        const original = request(messages, privateTarget, { plugin: 'anti-revoke', privateTarget }), saved = structuredClone(original);
+        const result = await f.service.action(original);
+        assert.equal(result.retcode, 0); assert.equal(result.status, 'ok');
+        assert.deepEqual(result.echo, original.echo); assert.deepEqual(Object.keys(result.data), ['message_id']);
+        assert.deepEqual(original, saved);
+        assert.deepEqual(f.calls.map(call => call.method), [...(privateTarget ? ['resolve'] : []), 'prepareMedia', 'forwardOperation']);
+        if (privateTarget) assert.equal(f.calls[0].params.uin, USER);
+        const submitted = f.calls.at(-1).params;
+        assert.equal(submitted.kind, 'customResourceMerge');
+        assert.equal(submitted.expectedEpoch, f.state.epoch);
+        assert.deepEqual(submitted.destination, { chatType: privateTarget ? 1 : 2, peerUid: privateTarget ? 'u_destination' : GROUP });
+        assert.deepEqual(submitted.nodes.map(({ authorUin, nickname, time }) => ({ authorUin, nickname, time })), [
+            { authorUin: '3000000002', nickname: '  原作者😀  ', time: 1700000001 },
+            { authorUin: SELF, nickname: '本人默认时间', time: 0 },
+            { authorUin: '3000000002', nickname: '同作者未指定时间', time: undefined },
+            { authorUin: SELF, nickname: '本人规范字段', time: undefined }
+        ]);
+        assert.equal(Object.hasOwn(submitted.nodes[2], 'time'), false);
+        assert.equal(Object.hasOwn(submitted.nodes[3], 'time'), false);
+        assert.deepEqual(submitted.nodes.map(node => node.elements.map(element => element.elementType)), [[1, 2, 1], [1], [1], [1]]);
+        assert.deepEqual(submitted.nodes.map(node => node.elements.filter(element => element.elementType === 1).map(element => element.textElement.content)),
+            [['  original\n\n', 'tail'], ['  zero-time\n\n'], ['missing-time'], ['canonical self']]);
+        const restored = new MessageStore({ directory: f.storeDirectory }).get(SELF, result.data.message_id);
+        assert.equal(restored.locator.nativeId, NATIVE_ID); assert.deepEqual(restored.locator.peer, submitted.destination);
+        assert.deepEqual(fs.readdirSync(f.mediaDirectory), []);
+        for (const privateValue of [NATIVE_ID, 'complete-test-resource', '/private/QQ/', 'private-token-must-not-return', PNG]) {
+            assert.equal(JSON.stringify(result).includes(privateValue), false);
+        }
+    }
+});
+
+test('explicit zero and positive self times each select the metadata runtime while missing self time uses the original branch', async t => {
+    for (const time of [0, 1700000001, undefined]) {
+        const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+        const message = node([text('same self node')]);
+        if (time !== undefined) message.data.time = time;
+        const result = await f.service.action(request([message]));
+        assert.equal(result.retcode, 0);
+        assert.deepEqual(f.calls.map(call => call.method), ['forwardOperation']);
+        const submitted = f.calls[0].params;
+        assert.equal(submitted.kind, time === undefined ? 'customMerge' : 'customResourceMerge');
+        assert.equal(Object.hasOwn(submitted.nodes[0], 'authorUin'), time !== undefined);
+        assert.equal(Object.hasOwn(submitted.nodes[0], 'time'), time !== undefined);
+        if (time !== undefined) { assert.equal(submitted.nodes[0].authorUin, SELF); assert.equal(submitted.nodes[0].time, time); }
+    }
+});
+
+test('absent or false metadata capability rejects custom authors and every explicit time before resolution or imports', async t => {
+    for (const available of [undefined, false]) for (const mode of ['other-author', 'zero-time', 'positive-time']) {
+        const f = fixture(t);
+        if (available !== undefined) f.state.capabilities.mergeCustomMetadata = available;
+        const message = node([image(), text('never prepared')], mode === 'other-author' ? '3000000002' : SELF);
+        if (mode !== 'other-author') message.data.time = mode === 'zero-time' ? 0 : 1700000001;
+        const result = await f.service.action(request([node(), message], true));
+        assert.equal(result.retcode, 1404); assert.equal(result.data, null);
+        noSideEffects(f);
+        assert.equal(f.logs.at(-1).code, 'UNSUPPORTED');
+    }
+    for (const available of [undefined, false]) {
+        const f = fixture(t);
+        if (available !== undefined) f.state.capabilities.mergeCustomMetadata = available;
+        assert.equal((await f.service.action(request([node()]))).retcode, 0);
+        assert.equal(f.calls[0].params.kind, 'customMerge');
+        assert.equal(Object.hasOwn(f.calls[0].params.nodes[0], 'authorUin'), false);
+    }
+});
+
+test('metadata capability cannot replace the general merge or image prerequisites', async t => {
+    for (const mode of ['merge', 'image', 'directory']) {
+        const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+        if (mode === 'merge') f.state.capabilities.mergeCustom = false;
+        if (mode === 'image') f.state.capabilities.image = false;
+        if (mode === 'directory') f.service.mediaDirectory = null;
+        const message = node([image()], '3000000002'); message.data.time = 0;
+        const result = await f.service.action(request([message], true));
+        assert.equal(result.retcode, 1404); assert.equal(result.data, null); noSideEffects(f);
+    }
+});
+
+test('metadata sends require the custom resource delivery proof and never accept another runtime confirmation', async t => {
+    for (const confirmation of ['fresh-source-tuple-and-resource-readback', 'fixed-longmsg-resource-and-semantic-readback', 'kernel_ack', undefined]) {
+        const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+        f.handlers.forwardOperation = params => ({ ...f.receipt(params), confirmation });
+        const message = node([image(), text('metadata')], '3000000002'); message.data.time = 1700000001;
+        const result = await f.service.action(request([message]));
+        assert.equal(result.retcode, 1500); assert.equal(result.status, 'failed'); assert.equal(result.data, null);
+        assert.deepEqual(f.calls.map(call => call.method), ['prepareMedia', 'forwardOperation']);
+        assert.equal(f.calls.at(-1).params.kind, 'customResourceMerge');
+        assert.deepEqual(fs.readdirSync(f.storeDirectory), []); assert.deepEqual(fs.readdirSync(f.mediaDirectory), []);
+        assert.equal(JSON.stringify(result).includes('complete-test-resource'), false);
+    }
+});
+
+test('invalid final plugin time rejects the complete metadata batch before preparing earlier image nodes', async t => {
+    for (const time of [null, '', -1, '01700000001', '1700000001.0', 4294967296]) {
+        const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+        const messages = [node([image()], '3000000002'), { type: 'node', data: { name: 'bad time', uin: SELF, time, content: 'bad' } }];
+        const result = await f.service.action(request(messages, true));
+        assert.equal(result.retcode, 1400); assert.equal(result.data, null); noSideEffects(f);
+    }
+});
+
+test('a metadata delivery after an account epoch change cannot publish its OneBot mapping or retry', async t => {
+    const f = fixture(t); f.state.capabilities.mergeCustomMetadata = true;
+    f.handlers.forwardOperation = params => { const result = f.receipt(params); f.state.epoch = 'different-epoch'; return result; };
+    const message = node([image()], '3000000002'); message.data.time = 0;
+    const result = await f.service.action(request([message]));
+    assert.equal(result.retcode, 1503); assert.equal(result.data, null);
+    assert.deepEqual(f.calls.map(call => call.method), ['prepareMedia', 'forwardOperation']);
+    assert.equal(f.calls.at(-1).params.kind, 'customResourceMerge');
+    assert.deepEqual(fs.readdirSync(f.storeDirectory), []); assert.deepEqual(fs.readdirSync(f.mediaDirectory), []);
+});
+
 test('the sender can query its completed native multimsg Ark root and read actual nodes through the opaque forward handle', async t => {
     const f = fixture(t), contents = ['  first node\n ', ' second & [literal]\n\n'];
     const names = ['📊 第一个报告', '  第二个报告  '];
@@ -167,9 +290,10 @@ test('the sender can query its completed native multimsg Ark root and read actua
     const nodes = await f.service.action({ action: 'get_forward_msg', params: { id: handle } });
     assert.equal(nodes.retcode, 0);
     assert.deepEqual(nodes.data.message, contents.map((content, index) => ({ type: 'node', data: {
-        user_id: SELF, nickname: names[index], content: [text(content)]
+        user_id: SELF, nickname: names[index], time: 1794710400, content: [text(content)]
     } })));
     assert.deepEqual(nodes.data.messages.map(message => message.sender.nickname), names);
+    assert.deepEqual(nodes.data.messages.map(message => message.time), [1794710400, 1794710400]);
     const extended = await f.service.action({ action: 'qqapi_get_forward_messages', params: { message_id: sent.data.message_id } });
     assert.equal(extended.retcode, 0);
     assert.deepEqual(extended.data.message, nodes.data.message);

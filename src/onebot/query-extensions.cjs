@@ -92,7 +92,7 @@ async function runQueryExtension(service, state, action, params) {
     if (state.capabilities?.[flag] !== true) throw problem('UNSUPPORTED', 'The current QQ session does not provide this capability');
     if (action === 'send_like') {
         const uin = identifier(params.user_id, 'user_id');
-        const count = integer(params.times, 1, 10, 'times', 1);
+        const count = integer(params.times, 1, 10, 'times', 0);
         const resolved = await service.sessionCall(state, 'resolve', { uin });
         if (resolved?.uin !== uin || typeof resolved.uid !== 'string' || !/^u_[A-Za-z0-9_-]+$/.test(resolved.uid)) {
             throw problem('INVALID_RESPONSE', 'QQ did not resolve the requested profile identity');

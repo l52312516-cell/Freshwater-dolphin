@@ -1,0 +1,91 @@
+name: 兼容性报告
+description: 反馈精确 QQ 构建、Windows / Linux 环境或下游适配情况
+title: "[Compatibility] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提交通过、失败和部分可用的记录。请限定到实际测试过的平台、build 和接口，不把单个成功样本写成全量兼容。
+        Windows 便携包实际运行 Linux QQ；Windows 宿主通过不代表 Windows QQ 9.9.x 原生兼容。
+        不需要公开真实 QQ 号、群号、服务器地址或登录文件。请用账号 A / B、测试群等别名保留对应关系。
+  - type: input
+    id: freshwater-version
+    attributes:
+      label: Freshwater 版本 / commit
+    validations:
+      required: true
+  - type: textarea
+    id: platform
+    attributes:
+      label: 宿主与实际运行环境
+      value: |
+        宿主系统及版本：
+        运行方式（Windows 便携包 / Linux Docker / 源码 / 其他）：
+        实际 QQ 平台及架构（Linux x64 / Windows x64 / 其他）：
+        WSL / Docker / Node.js 版本（适用时）：
+    validations:
+      required: true
+  - type: textarea
+    id: identity
+    attributes:
+      label: QQ build 与 runtime 身份
+      description: 请填写精确版本和 build；其余字段无法取得时填“未知”。摘要可以公开，安装包和登录文件不要上传。
+      value: |
+        QQ 完整版本及 build：
+        runtime profile ID：
+        稳定 / 实验模式：
+        安装包 SHA256（如可取得）：
+        wrapper.node SHA256（如可取得）：
+        get_capabilities 中相关能力及验证范围（如可取得）：
+    validations:
+      required: true
+  - type: textarea
+    id: routes
+    attributes:
+      label: 下游与账号路由
+      description: 不需要提交节点 token、真实 IP 或 QQ 号。
+      value: |
+        下游程序及版本（例如 AstrBot）：
+        相关插件及版本：
+        OneBot 连接方式：
+        单账号 / 多账号：
+        路由关系（例如账号 A → 入口 A，账号 B → 独立入口 B）：
+  - type: dropdown
+    id: result
+    attributes:
+      label: 本次结果
+      options:
+        - 所列场景通过
+        - 部分通过 / 部分内容可用
+        - 所列场景失败
+        - 仅离线或启动检查，尚未验证真实 QQ 业务
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 测试范围、步骤与证据
+      description: 分开记录离线测试、登录、只读 API、真实收发、完整下载、AstrBot 处理；未执行项写“未验证”。接口返回 0、资源 ID 或连接成功不单独视为业务通过。
+      placeholder: |
+        测试时间及时区：
+        action / 参数变体 / 消息类型：
+        最小步骤：
+        实际结果与独立核对方式：
+        失败 retcode / reason / traceId：
+        _freshwater.content_status（涉及消息时）：
+        未验证范围：
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志、截图或公开参考
+      description: 只提供相关片段，保留类型和错误码；删去 Cookie、token、登录二维码、聊天正文及带签名的下载 URL。不要上传登录目录、QQ 数据库、完整备份或私有原始报文。
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 发布前检查
+      options:
+        - label: 我只报告实际执行过的场景，并已检查正文、附件与截图中的隐私数据。
+          required: true

@@ -28,6 +28,8 @@ async function runMerged(service, state, action, params) {
     // Validate the complete batch before media preparation or any QQ write.
     const nodes = normalizeMergedNodes(params.messages, { selfId: String(state.self.uin) });
     if (state.capabilities?.mergeCustom !== true) throw problem('UNSUPPORTED', 'QQ custom merged sending is unavailable');
+    const metadata = nodes.some(node => node.user_id !== String(state.self.uin) || Object.hasOwn(node, 'time'));
+    if (metadata && state.capabilities?.mergeCustomMetadata !== true) throw problem('UNSUPPORTED', 'QQ custom merged author and time support is unavailable');
     const hasImages = nodes.some(node => node.content.some(segment => segment.type === 'image'));
     if (hasImages && (state.capabilities?.image !== true || !service.mediaDirectory)) {
         throw problem('UNSUPPORTED', 'Merged images require native image preparation');
@@ -54,15 +56,15 @@ async function runMerged(service, state, action, params) {
                 peer: source,
                 prepareMedia: data => service.sessionCall(state, 'prepareMedia', { type: 'image', ...data })
             });
-            prepared.push({ nickname: node.nickname, elements });
+            prepared.push({ nickname: node.nickname, elements, ...(metadata ? { authorUin: node.user_id, ...(Object.hasOwn(node, 'time') ? { time: node.time } : {}) } : {}) });
         }
         await service.assertSession(state);
         if (operation) operation.stage = 'sendForward';
         const result = await service.sessionCall(state, 'forwardOperation', {
-            kind: 'customMerge', destination, nodes: prepared, timeoutMs: service.remaining()
+            kind: metadata ? 'customResourceMerge' : 'customMerge', destination, nodes: prepared, timeoutMs: service.remaining()
         });
         await service.assertSession(state);
-        if (result?.confirmed !== true || result.confirmation !== 'fresh-source-tuple-and-resource-readback' ||
+        if (result?.confirmed !== true || result.confirmation !== (metadata ? 'custom-resource-metadata-and-delivery-readback' : 'fresh-source-tuple-and-resource-readback') ||
             result.destination?.chatType !== destination.chatType || result.destination.peerUid !== destination.peerUid ||
             result.nodeCount !== nodes.length || typeof result.resId !== 'string' || !result.resId ||
             typeof result.messageId !== 'string' || !/^[1-9]\d{0,19}$/.test(result.messageId) ||

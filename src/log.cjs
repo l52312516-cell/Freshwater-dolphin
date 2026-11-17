@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { sanitizeMessageRecord } = require('./message-log.cjs');
+const { safeDiagnostic } = require('./diagnostics.cjs');
 
 function createLogger(directory, { maxBytes = 2 * 1024 * 1024, backups = 3 } = {}) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -31,6 +32,8 @@ function createLogger(directory, { maxBytes = 2 * 1024 * 1024, backups = 3 } = {
             if (['boolean', 'number'].includes(typeof item) || item === null ||
                 (typeof item === 'string' && /^[\w.:-]{1,100}$/.test(item))) safe[key] = item;
         }
+        Object.assign(safe, safeDiagnostic(details));
+        if (Number.isInteger(details.messageId) && details.messageId >= -0x80000000 && details.messageId <= 0x7fffffff) safe.messageId = details.messageId;
         const name = typeof event === 'string' && /^[a-zA-Z0-9_.:-]{1,100}$/.test(event) ? event : 'diagnostic';
         const record = { id: crypto.randomUUID(), time: new Date().toISOString(), event: name, ...safe };
         process.stdout.write(write(file, record));

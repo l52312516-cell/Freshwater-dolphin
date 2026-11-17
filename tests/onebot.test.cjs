@@ -241,6 +241,36 @@ test('group mutation actions never coerce string booleans or pretend an unconfir
     assert.equal((await service.action({ action: 'set_group_name', params: { group_id: 12345, group_name: 'Group' } })).retcode, 1500);
 });
 
+test('group card and ban defaults apply only to absent fields and invalid types never reach the backend', async t => {
+    const { service, backend, calls } = fixture(t);
+    const original = backend.call;
+    backend.call = async (method, params) => {
+        if (method === 'groupAction') { calls.push({ method, params }); return { confirmed: true }; }
+        if (method === 'groupMember') {
+            calls.push({ method, params });
+            return { group_id: Number(params.groupId), user_id: Number(params.uin), role: params.uin === '11111' ? 'owner' : 'member' };
+        }
+        return original(method, params);
+    };
+    for (const [action, value, expected] of [['set_group_card', {}, { operation: 'card', card: '' }],
+        ['set_group_card', { card: '' }, { operation: 'card', card: '' }],
+        ['set_group_ban', {}, { operation: 'memberBan', duration: 1800 }],
+        ['set_group_ban', { duration: 0 }, { operation: 'memberBan', duration: 0 }]]) {
+        const result = await service.action({ action, params: { group_id: 12345, user_id: 22222, ...value } });
+        assert.equal(result.retcode, 0);
+        assert.deepEqual(calls.filter(item => item.method === 'groupAction').at(-1).params,
+            { groupId: '12345', uin: '22222', ...expected, expectedEpoch: 'session-1' });
+    }
+    const before = calls.filter(item => item.method !== 'status').length;
+    for (const [action, values] of [['set_group_card', [null, false, 0, []]], ['set_group_ban', [null, false, '', [], 1.5]]]) {
+        const key = action === 'set_group_card' ? 'card' : 'duration';
+        for (const value of values) {
+            assert.equal((await service.action({ action, params: { group_id: 12345, user_id: 22222, [key]: value } })).retcode, 1400);
+        }
+    }
+    assert.equal(calls.filter(item => item.method !== 'status').length, before);
+});
+
 test('CQ strings preserve escapes, whitespace and literal auto_escape', () => {
     const text = 'a & [CQ:at,qq=123] ,\n';
     const segments = [{ type: 'text', data: { text } }, { type: 'at', data: { qq: '22222' } }];
@@ -340,12 +370,15 @@ test('incoming events use arrays, real identities and native deduplication', asy
     assert.equal(await restarted.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample() }), null);
 });
 
-test('self echoes and mixed media do not trigger partial text events', async t => {
+test('self echoes are suppressed and unavailable media retains ordered text placeholders', async t => {
     const { service } = fixture(t);
     assert.equal(await service.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample({ senderUin: '11111', senderUid: 'u_self' }) }), null);
-    assert.equal(await service.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample({ elements: [
+    const event = await service.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample({ elements: [
         { elementType: 1, textElement: { content: '部分', atType: 0 } }, { elementType: 2, picElement: {} }
-    ] }) }), null);
+    ] }) });
+    assert.equal(event._freshwater.content_status, 'partial');
+    assert.equal(event.message[0].data.text, '部分');
+    assert.match(event.message[1].data.text, /QQ媒体暂不可读取/);
 });
 
 test('private send resolves UID, preserves text and returns the confirmed message ID', async t => {
@@ -451,7 +484,8 @@ test('account change during conversion cancels the outgoing send', async t => {
 });
 
 test('reply without identity never guesses a unique message from sender alone', async t => {
-    const { service, store } = fixture(t);
+    const { service, store, calls } = fixture(t), logs = [];
+    service.logger = (event, details) => logs.push({ event, ...details });
     await service.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample() });
     assert.equal(store.find('11111', { peer: { chatType: 2, peerUid: '12345' }, senderUin: '22222' }), null);
     const reply = await service.event({ kind: 'message', epoch: 'session-1', selfUin: '11111', record: sample({ msgId: 'new', elements: [
@@ -459,6 +493,9 @@ test('reply without identity never guesses a unique message from sender alone', 
         { elementType: 1, textElement: { content: '不能猜引用', atType: 0 } }
     ] }) });
     assert.equal(reply, null);
+    assert.equal(calls.some(item => item.method === 'getMessage'), false);
+    const skipped = logs.find(item => item.event === 'message_skipped');
+    assert.equal(skipped.code, 'NOT_FOUND'); assert.equal(skipped.reason, 'invalid_identity');
 });
 
 test('rounded native quote IDs or sequences never reach a QQ lookup', async t => {

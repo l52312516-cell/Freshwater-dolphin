@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Prepare workspace paths
+        run: |
+          mkdir -p work/temp work/cache/npm
+          echo "TEMP=$GITHUB_WORKSPACE/work/temp" >> "$GITHUB_ENV"
+          echo "TMP=$GITHUB_WORKSPACE/work/temp" >> "$GITHUB_ENV"
+          echo "TMPDIR=$GITHUB_WORKSPACE/work/temp" >> "$GITHUB_ENV"
+          echo "npm_config_cache=$GITHUB_WORKSPACE/work/cache/npm" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$GITHUB_WORKSPACE/work/cache" >> "$GITHUB_ENV"
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.23.5
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check source and public documentation
+        run: |
+          npm run check
+          node tools/check-public-docs.cjs
+          git diff --check
+      - name: Test application
+        run: npm test
+      - name: Install locked WebUI dependencies
+        run: npm --prefix webui ci --ignore-scripts --no-audit --no-fund
+      - name: Test and build WebUI
+        run: |
+          npm --prefix webui test
+          npm run build:webui
+
+  pr-policy:
+    name: PR policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check pull request metadata
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          title = os.environ.get('PR_TITLE', '').strip()
+          body = os.environ.get('PR_BODY', '').strip()
+          if os.environ.get('PR_BASE') != 'main':
+              raise SystemExit('Pull requests should target main.')
+          if len(title) < 8 or len(title) > 180:
+              raise SystemExit('Use a descriptive pull request title (8–180 characters).')
+          if len(body) < 40:
+              raise SystemExit('Describe the change and the verification performed in the PR body.')
+          print('PR metadata passed. Issue references are optional for small fixes.')
+          PY

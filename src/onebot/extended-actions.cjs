@@ -2,6 +2,7 @@
 
 const { locator } = require('./store.cjs');
 const media = require('../qq/media.cjs');
+const { importAccountImage, callAvatarAction } = require('./image-import.cjs');
 const STANDARD_REQUIREMENTS = Object.freeze({ get_group_honor_info: 'groupHonor', set_group_special_title: 'groupSpecialTitle' });
 const EXTENSION_REQUIREMENTS = Object.freeze({ send_poke: 'messagePoke', group_poke: 'messagePoke', friend_poke: 'messagePoke',
     set_msg_emoji_like: 'messageEmoji', set_essence_msg: 'groupEssence', delete_essence_msg: 'groupEssence',
@@ -43,7 +44,7 @@ async function resolve(service, state, uin) {
 }
 function confirmed(result, request) {
     if (!object(result) || result.confirmed !== true || result.operation !== request.operation) throw problem('INVALID_RESPONSE', 'QQ did not confirm the extended operation');
-    for (const key of ['groupId', 'uid', 'targetUid', 'targetUin', 'nativeId', 'sequence', 'random', 'emojiId', 'set', 'categoryId', 'noticeId', 'content', 'title',
+    for (const key of ['groupId', 'uid', 'peerUin', 'targetUid', 'targetUin', 'nativeId', 'sequence', 'random', 'emojiId', 'set', 'categoryId', 'noticeId', 'content', 'title',
         'file', 'status', 'extStatus', 'batteryStatus', 'block', 'both']) {
         if (Object.hasOwn(request, key) && result[key] !== request[key]) throw problem('INVALID_RESPONSE', 'QQ confirmed a different extended operation target or value');
     }
@@ -66,13 +67,16 @@ async function runExtended(service, state, action, params) {
         request = { operation: 'friend.delete', uid: await resolve(service, state, uin), block, both };
     } else if (action === 'set_online_status') {
         fields(params, ['status', 'ext_status', 'battery_status']);
-        request = { operation: 'self.status', status: integer(params.status, 'status'), extStatus: integer(params.ext_status ?? 0, 'ext_status'),
-            batteryStatus: integer(params.battery_status ?? 0, 'battery_status') };
+        request = { operation: 'self.status', status: integer(params.status, 'status', 0xffffffff, 1), extStatus: integer(params.ext_status === undefined ? 0 : params.ext_status, 'ext_status'),
+            batteryStatus: integer(params.battery_status === undefined ? 100 : params.battery_status, 'battery_status') };
     } else if (action === 'set_qq_avatar' || action === 'set_group_portrait') {
         fields(params, action === 'set_qq_avatar' ? ['file'] : ['file', 'group_id']);
-        if (typeof params.file !== 'string' || !media.IMAGE_RESOURCE.test(params.file)) throw problem('INVALID_PARAMS', 'Avatar updates require an account image resource handle');
-        request = action === 'set_qq_avatar' ? { operation: 'self.avatar', file: params.file } :
-            { operation: 'group.avatar', groupId: id(params.group_id, 'group_id'), file: params.file };
+        const groupId = action === 'set_group_portrait' ? id(params.group_id, 'group_id') : undefined;
+        const file = await importAccountImage(service, state, params.file);
+        request = action === 'set_qq_avatar' ? { operation: 'self.avatar', file } :
+            { operation: 'group.avatar', groupId, file };
+        const result = await callAvatarAction(service, state, request);
+        confirmed(result, request); return null;
     } else if (action === 'ocr_image') {
         fields(params, ['image']);
         let imageUrl = text(params.image, 'image', 8192);
@@ -114,13 +118,22 @@ async function runExtended(service, state, action, params) {
         if (!object(result) || !Array.isArray(result.faces) || result.faces.length > 10000 || result.faces.some(row => !object(row))) throw problem('INVALID_RESPONSE', 'QQ returned an invalid system face catalog');
         return result.faces;
     } else if (['send_poke', 'group_poke', 'friend_poke'].includes(action)) {
-        fields(params, ['group_id', 'user_id']);
-        const targetUin = id(params.user_id, 'user_id');
+        fields(params, action === 'friend_poke' ? ['user_id', 'target_id'] : ['group_id', 'user_id']);
+        const peerUin = id(params.user_id, 'user_id');
+        const targetUin = action === 'friend_poke' && params.target_id !== undefined ? id(params.target_id, 'target_id') : peerUin;
         const hasGroup = params.group_id !== undefined;
         if (action === 'group_poke' && !hasGroup || action === 'friend_poke' && hasGroup) throw problem('INVALID_PARAMS', 'Poke action and conversation do not match');
         const groupId = hasGroup ? id(params.group_id, 'group_id') : null;
-        const targetUid = await resolve(service, state, targetUin);
-        request = { operation: 'message.poke', peer: { chatType: groupId ? 2 : 1, peerUid: groupId || targetUid }, targetUid, targetUin };
+        const resolvePoke = async uin => {
+            const mapped = await resolve(service, state, uin);
+            if ((uin === String(state.self.uin)) !== (mapped === state.self.uid)) throw problem('INVALID_RESPONSE', 'Poke account mapping conflicts with the current QQ identity');
+            return mapped;
+        };
+        const peerUid = groupId ? groupId : await resolvePoke(peerUin);
+        const targetUid = !groupId && targetUin === peerUin ? peerUid : await resolvePoke(targetUin);
+        if (!groupId && targetUin !== peerUin && targetUid === peerUid) throw problem('INVALID_RESPONSE', 'Different poke accounts share a UID');
+        request = { operation: 'message.poke', peer: { chatType: groupId ? 2 : 1, peerUid },
+            ...(!groupId ? { peerUin } : {}), targetUid, targetUin };
     } else if (action === 'set_msg_emoji_like' || ['set_essence_msg', 'delete_essence_msg'].includes(action)) {
         fields(params, action === 'set_msg_emoji_like' ? ['message_id', 'emoji_id', 'set'] : ['message_id']);
         const set = action === 'set_msg_emoji_like' ? boolean(params.set, 'set', true) : action === 'set_essence_msg';
@@ -144,7 +157,7 @@ async function runExtended(service, state, action, params) {
     } else if (action === 'set_group_special_title') {
         fields(params, ['group_id', 'user_id', 'special_title', 'duration']);
         const groupId = id(params.group_id, 'group_id'), uin = id(params.user_id, 'user_id');
-        const title = text(params.special_title ?? '', 'special_title', 256, true);
+        const title = text(params.special_title === undefined ? '' : params.special_title, 'special_title', 256, true);
         if (params.duration !== undefined && params.duration !== -1 && params.duration !== '-1') throw problem('UNSUPPORTED', 'This QQ version only supports persistent special titles');
         request = { operation: 'group.memberTitle', groupId, uid: await resolve(service, state, uin), title };
     } else {

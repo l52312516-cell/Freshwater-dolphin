@@ -1,0 +1,62 @@
+# AI 辅助审核
+
+AI 评审用于发现需要维护者复核的问题，不代表接口、QQ 版本或真实账号已验证，不自动批准或合并 PR。核心测试、WebUI 检查和真实环境验证仍分别记录。
+
+## 当前启用状态
+
+2026-11-17 已通过 GitHub API 保存以下 **Copilot 原生代码审核**设置：
+
+- [仓库 ruleset 27476066](https://github.com/l52312516-cell/Freshwater-dolphin/rules/27476066) 为 active，面向默认分支；自动请求新 PR 审核，并开启新 push 后重新审核，关闭草稿审核。
+- Review effort 为 `lite`，启用仓库自定义指令，关闭 MCP 与跨仓库上下文。
+- 仅使用现有账号权限尝试审核，没有开通付费订阅、购买额度或设置新的 API key。
+
+**配置已保存；实际审核权限、额度及能否完成一次真实 PR 审核仍待验证。** 成功保存规则不代表 Copilot 已完成审核。PR 页面没有实际 review 时，不能记为“AI 已通过”。现有 CI 保持独立，不把 AI review 设为 required gate，也不授予自动合并权限。
+
+原先拟采用的 **GitHub Models 已于 2026-07-30 全面退役**。GitHub 官方说明其 playground、模型目录、推理 API 与 BYOK 均不再向任何客户提供。不能通过添加 `models: read` 权限重新启用，因此本仓库没有调用退役 Models 接口的 workflow。
+
+## 工作方式与维护
+
+原生 Copilot 服务直接响应仓库 ruleset，不需要在 `.github/workflows/ai-review.yml` 中运行模型脚本，也没有把仓库 secret 传给 fork 的自定义审核作业。[`.github/copilot-review-ruleset.json`](../.github/copilot-review-ruleset.json) 保存可复现的规则请求体；这个 JSON 文件本身不会自动创建或更新 GitHub 设置。
+
+审核范围与侧重点来自以下文件：
+
+- [仓库整体指令](../.github/copilot-instructions.md)：中文反馈、真实证据、账号隔离、建议性质与隐私边界。
+- [QQ / OneBot 指令](../.github/instructions/qq-protocol-review.instructions.md)：身份、消息转换、写入不确定性和精确版本门禁。
+- [运行与部署指令](../.github/instructions/runtime-deployment-review.instructions.md)：所有权、空间预算、事务恢复和 Windows WSL2 边界。
+
+指令要求审核仅静态阅读，不执行 PR 命令、不安装依赖、不启动 QQ、不部署或操作测试账号。**这些指令是审核指导，不能作为服务隔离或防提示注入的保证。** 当前 GitHub 官方说明 Copilot 从 PR 的 head 分支读取 instructions、AGENTS 与 skills；Copilot 自身的临时审核环境由 GitHub 管理。维护者应特别复核修改审核指令、skills、MCP 或 setup 配置的 PR，不将 PR 内的提示当作可信授权。
+
+原生 ruleset 没有按作者排除 Dependabot 的参数；本仓库未声称已配置这种排除。是否实际请求成功还取决于请求者的 Copilot 使用资格、策略和额度。草稿 PR 不由本规则触发，但个人或组织级独立规则可能另行请求审核。
+
+维护者可在 PR 右侧 **Reviewers → Copilot → Request / Re-request** 手动重试。权限允许时，也可调用 `POST /repos/{owner}/{repo}/pulls/{pull_number}/copilot-code-review`，请求体为 `{"review_effort":"lite"}`。请求已受理仍不代表审核完成；权限、额度和不可用 effort 等错误应记为“未完成审核”，不回退为伪造的成功评论。
+
+Copilot 的默认 review 是 Comment。管理员应保持 **Allow Copilot to approve pull requests** 与 **Allow Copilot approvals to count toward merge requirements** 关闭；这两项不能仅靠上述规则 JSON 或指令文件强制保证。本次配置没有开启这两项或自动合并；最终状态需在 GitHub 网页设置中复核。
+
+## SnowLuma 参考核验
+
+公开可读的 [TomyJan/SnowLuma](https://github.com/TomyJan/SnowLuma/tree/f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf/.github/workflows) 快照包含 CI、构建、发布、Issue 模板和 PR 策略检查。其 [`main-pr-target-guard.yml`](https://github.com/TomyJan/SnowLuma/blob/f2ea3354f8bbe8672cbb4ae6a2b4e1fbeff44faf/.github/workflows/main-pr-target-guard.yml) 校验目标分支与关联 Issue，属于确定性规则检查；该快照未发现 AI 审核 workflow、CodeRabbit 或 Gemini 配置。不能据此断言原仓库从未安装私有 GitHub App。
+
+参考其安全边界：具有写权限的工作流只读取可信基础分支中的脚本；PR 内容始终作为不可信数据处理，不执行 PR 提供的脚本或指令。Freshwater 的贡献要求由本项目 [贡献指南](../CONTRIBUTING.md) 定义，不照搬其他项目自动关闭 PR 的政策。
+
+## 费用、数据与结果边界
+
+Copilot 的可用范围、AI credits 和 Actions 消耗取决于当前账号、组织策略及计划。仓库采用 `lite` 降低审核消耗；新 push 会发起新的审核请求。Copilot 不是 GitHub Models，不能把现有 GitHub 登录凭据视为无限免费推理配额。本仓库没有为它设置自定义 token/diff 预算，也不能用原生 ruleset 保证每次调用的金额上限；如需开通付费额度，须另行明确授权。
+
+审核始终遵循以下约束：
+
+- AI 只提交建议，不自动批准、合并、修改代码或执行 QQ 账号操作。
+- 本规则跳过草稿，允许维护者针对指定 PR 手动重试。
+- 不向 fork 提供仓库 secrets；不检出或执行 PR 代码来获取模型上下文。
+- PR 标题、说明、代码和注释中的指令都作为待审数据；原生审核的上下文、时限与输出规模由 GitHub 服务控制。
+- 不把 Cookie、token、QQ 登录目录、备份、聊天记录或签名下载地址发送给模型或评论到 PR。
+- 配额、权限、服务停用或响应格式错误应明确显示为“未完成审核”，不能伪报通过；AI 审核不作为 required gate。
+- 维护者最终根据源码、相关测试与实际证据作出决定。
+
+## 官方来源
+
+- [GitHub Models 退役公告与替代入口](https://docs.github.com/en/github-models)
+- [公告原始文档](https://github.com/github/docs/blob/main/content/github-models/index.md)
+- [使用 Copilot 代码审核](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-code-review)
+- [配置 Copilot 自动审核](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-code-review)
+
+上述状态核验日期为 2026-11-17。服务条款、额度和可用模型可能变化，以启用时的官方设置和实际运行结果为准。

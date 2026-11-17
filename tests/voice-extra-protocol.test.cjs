@@ -9,7 +9,7 @@ const node = { fileUuid: 'real_media_uuid', info: { fileSize: 16, fileHash: 'a'.
 const envelope = (prepared, body, extra = []) => Buffer.concat([n(1, prepared.command), n(2, prepared.sub), b(4, body), ...extra]);
 const index = (overrides = {}) => m(1, [m(1, [n(1, overrides.fileSize ?? 16), s(2, overrides.fileHash ?? 'a'.repeat(32)), s(4, 'voice.silk'), m(5, [n(1, overrides.type ?? 3), n(4, 1)]), n(8, 1)]), s(2, overrides.uuid ?? 'real_media_uuid'), n(3, 1), n(5, 100)]);
 
-test('AI synthesis fixes 0x929B and preserves group, character, text, chat type and deduplication session', () => {
+test('AI synthesis fixes 0x929B and preserves group, character, text, chat type and message random', () => {
     const prepared = protocol.prepare('voice.synthesize', request), outer = wire.fields(prepared.body), body = child(outer, 4);
     assert.equal(prepared.name, 'OidbSvcTrpcTcp.0x929b_0'); assert.equal(prepared.mode, 1); assert.equal(read(outer, 12), 1n);
     assert.equal(read(body, 1), 33333n); assert.equal(read(body, 2).toString(), request.character); assert.equal(read(body, 3).toString(), request.text);
@@ -25,6 +25,7 @@ test('AI synthesis distinguishes known pending replies from complete exact media
     assert.equal(protocol.decode(envelope(prepared, m(4, [])), prepared).pending, true);
     const result = protocol.decode(envelope(prepared, m(4, [m(1, [index()])])), prepared);
     assert.deepEqual(result, { ...request, pending: false, node });
+    assert.deepEqual(protocol.decode(envelope(prepared, Buffer.concat([n(1, 1), m(4, [m(1, [index()])])])), prepared), result);
     for (const overrides of [{ fileSize: 0 }, { fileHash: 'invalid' }, { type: 2 }, { uuid: 'wrong uuid' }]) assert.throws(() => protocol.decode(envelope(prepared, m(4, [m(1, [index(overrides)])])), prepared), { code: 'INVALID_RESPONSE' });
     for (const bytes of [Buffer.alloc(0), envelope(prepared, n(1, 5)), envelope(prepared, Buffer.alloc(0), [n(3, 1)]), envelope(prepared, Buffer.alloc(0), [n(12, 0)]),
         envelope(prepared, Buffer.alloc(0), [n(2, 0)]), envelope(prepared, m(4, [m(1, [index()]), m(1, [index()])])), envelope(prepared, m(4, [m(1, [index(), index()])]))]) assert.throws(() => protocol.decode(bytes, prepared));
@@ -34,7 +35,7 @@ test('voice rejections expose only a fixed envelope or business stage and an exa
     const synth = protocol.prepare('voice.synthesize', request), download = protocol.prepare('voice.url', { groupId: '33333', node });
     for (const code of [1, 0xffffffff]) {
         for (const [prepared, body, extra, phase] of [[synth, Buffer.alloc(0), [n(3, code)], 'oidb-envelope'],
-            [synth, Buffer.concat([n(1, code), s(99, 'private-server-text')]), [], 'synthesis-body'],
+            ...(code === 1 ? [] : [[synth, Buffer.concat([n(1, code), s(99, 'private-server-text')]), [], 'synthesis-body']]),
             [download, m(1, [n(2, code)]), [], 'download-head']]) {
             assert.throws(() => protocol.decode(envelope(prepared, body, extra), prepared), error => {
                 assert.equal(error.code, 'KERNEL_ERROR'); assert.match(error.message, new RegExp('phase=' + phase + '; business_code=' + code + '$'));
@@ -44,6 +45,16 @@ test('voice rejections expose only a fixed envelope or business stage and an exa
     }
     assert.equal(protocol.decode(envelope(synth, m(4, [m(1, [index()])]), [n(12, 1)]), synth).pending, false);
     assert.throws(() => protocol.decode(envelope(synth, n(1, 0x100000000)), synth), { code: 'INVALID_RESPONSE' });
+});
+
+test('status1 requires a single complete voice index and unknown codes remain rejected even with media', () => {
+    const prepared = protocol.prepare('voice.synthesize', request);
+    for (const body of [n(1, 1), Buffer.concat([n(1, 1), m(4, [])])]) assert.throws(() => protocol.decode(envelope(prepared, body), prepared), { code: 'QUERY_FAILED' });
+    for (const overrides of [{ fileSize: 0 }, { fileHash: 'invalid' }, { type: 2 }, { uuid: 'wrong uuid' }])
+        assert.throws(() => protocol.decode(envelope(prepared, Buffer.concat([n(1, 1), m(4, [m(1, [index(overrides)])])])), prepared), { code: 'INVALID_RESPONSE' });
+    const missingType = m(1, [m(1, [n(1, 16), s(2, 'a'.repeat(32))]), s(2, 'real_media_uuid')]);
+    assert.throws(() => protocol.decode(envelope(prepared, Buffer.concat([n(1, 1), m(4, [m(1, [missingType])])])), prepared), { code: 'INVALID_RESPONSE' });
+    for (const code of [2, 0xffffffff]) assert.throws(() => protocol.decode(envelope(prepared, Buffer.concat([n(1, code), m(4, [m(1, [index()])])])), prepared), { code: 'KERNEL_ERROR' });
 });
 
 test('generated voice URL request retains actual media index and fixed group voice scene', () => {

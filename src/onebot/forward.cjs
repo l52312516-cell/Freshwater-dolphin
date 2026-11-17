@@ -2,6 +2,8 @@
 
 const { randomBytes } = require('node:crypto');
 const codec = require('./codec.cjs');
+const compatibility = require('./message-compat.cjs');
+const { annotate } = require('../diagnostics.cjs');
 const { descriptor, rootDescriptor } = require('../qq/forward.cjs');
 const ACTIONS = new Set(['get_forward_msg', 'qqapi_get_forward_messages', 'qqapi_message_forward']);
 const IMAGE_HOSTS = new Set(['multimedia.nt.qq.com', 'multimedia.nt.qq.com.cn', 'multimedia.qfile.qq.com', 'gchat.qpic.cn', 'c2cpicdw.qpic.cn']);
@@ -94,15 +96,15 @@ function createForwardRegistry({ now = Date.now, ttlMs = 60000, maxHandles = 204
 
 function officialImageUrl(value, relative = false) {
     if (typeof value !== 'string' || !value || Buffer.byteLength(value) > 16384 || /[\\\x00-\x20\x7f]/.test(value)) {
-        throw problem('UNSUPPORTED', 'Merged image has no complete official resource URL');
+        throw annotate(problem('UNSUPPORTED', 'Merged image has no complete official resource URL'), { reason: !value ? 'media_unavailable' : 'invalid_identity' });
     }
     let url;
     try {
         if (relative && value.startsWith('/download?')) url = new URL(value, 'https://multimedia.nt.qq.com.cn');
         else url = new URL(value);
-    } catch { throw problem('UNSUPPORTED', 'Merged image has no complete official resource URL'); }
+    } catch { throw annotate(problem('UNSUPPORTED', 'Merged image has no complete official resource URL'), { reason: 'invalid_identity' }); }
     if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port || !IMAGE_HOSTS.has(url.hostname)) {
-        throw problem('UNSUPPORTED', 'Merged image is not an official HTTPS resource');
+        throw annotate(problem('UNSUPPORTED', 'Merged image is not an official HTTPS resource'), { reason: 'invalid_identity' });
     }
     return url;
 }
@@ -118,11 +120,11 @@ async function mergedImage(service, state, element) {
     if (NT_IMAGE_HOSTS.has(url.hostname) && url.pathname === '/download') {
         if ([...url.searchParams.keys()].some(key => !['appid', 'fileid', 'spec', 'rkey'].includes(key)) ||
             [...new Set(url.searchParams.keys())].some(key => url.searchParams.getAll(key).length !== 1)) {
-            throw problem('UNSUPPORTED', 'Merged image has an unverified or ambiguous download locator');
+            throw annotate(problem('UNSUPPORTED', 'Merged image has an unverified or ambiguous download locator'), { reason: 'invalid_identity' });
         }
         const appid = url.searchParams.get('appid'), fileId = url.searchParams.get('fileid');
         if (!['1406', '1407'].includes(appid) || typeof fileId !== 'string' || !fileId || fileId.length > 4096 || /[\x00-\x20\x7f]/.test(fileId)) {
-            throw problem('UNSUPPORTED', 'Merged image requires an actual QQ appid and file identity');
+            throw annotate(problem('UNSUPPORTED', 'Merged image requires an actual QQ appid and file identity'), { reason: 'invalid_identity' });
         }
         // A forwarded private image can be inside a group merged message.
         // Its own QQ appid, rather than the outer peer, determines the rkey.
@@ -164,14 +166,24 @@ async function forwardMessages(service, state, registry, handle) {
     const result = await service.sessionCall(state, 'forwardOperation', { kind: 'read', peer: binding.peer,
         rootMsgId: binding.rootMsgId, parentMsgId: binding.parentMsgId, resId: binding.resId });
     if (!result || result.rootMsgId !== binding.rootMsgId || result.parentMsgId !== binding.parentMsgId || result.resId !== binding.resId ||
-        result.peer?.chatType !== binding.peer.chatType || result.peer.peerUid !== binding.peer.peerUid || !Array.isArray(result.records) || result.records.length > 1000) {
+        result.peer?.chatType !== binding.peer.chatType || result.peer.peerUid !== binding.peer.peerUid) {
         throw problem('INVALID_RESPONSE', 'QQ returned a different merged-forward root or parent');
+    }
+    const resourceRead = Object.hasOwn(result, 'resourceNodes');
+    if (resourceRead ? Object.hasOwn(result, 'records') || binding.parentMsgId !== binding.rootMsgId || !Array.isArray(result.resourceNodes) ||
+        !result.resourceNodes.length || result.resourceNodes.length > 100 : !Array.isArray(result.records) || result.records.length > 1000) {
+        throw problem('INVALID_RESPONSE', 'QQ returned an invalid merged-forward node representation');
     }
     const operation = service.operation?.getStore();
     if (operation) operation.stage = 'convertForward';
-    const messages = [];
-    for (const record of result.records) {
-        exactId(record?.msgId);
+    const messages = [], allIssues = [];
+    for (const [nodeIndex, source] of (resourceRead ? result.resourceNodes : result.records).entries()) {
+        if (resourceRead && (!source || Object.hasOwn(source, 'msgId') || typeof source.authorUid !== 'string' || !/^u_[A-Za-z0-9_-]{1,126}$/.test(source.authorUid) ||
+            !Array.isArray(source.elements) || !source.elements.length ||
+            typeof source.nickname !== 'string')) throw problem('INVALID_RESPONSE', 'QQ resource node has no complete verified author or content');
+        const record = resourceRead ? { senderUin: source.authorUin, senderUid: source.authorUid, msgTime: source.time,
+            sendNickName: source.nickname, elements: source.elements } : source;
+        if (!resourceRead) exactId(record?.msgId);
         let sender = record.senderUin;
         if (sender === undefined || sender === null || sender === '' || sender === 0 || sender === '0') {
             if (typeof record.senderUid !== 'string' || !/^u_[A-Za-z0-9_-]+$/.test(record.senderUid)) throw problem('INVALID_RESPONSE', 'Merged node has no real author');
@@ -181,28 +193,39 @@ async function forwardMessages(service, state, registry, handle) {
         }
         const userId = Number(account(sender)), timestamp = Number(record.msgTime);
         if (!['string', 'number'].includes(typeof record.msgTime) || !/^[1-9]\d*$/.test(String(record.msgTime)) || !Number.isSafeInteger(timestamp)) throw problem('INVALID_RESPONSE', 'Merged node has no reliable timestamp');
-        const content = await codec.fromKernel(record, {
+        const decoded = await codec.decodeKernel(record, {
+            mode: 'compatible',
             selfUin: String(state.self.uin), selfUid: state.self.uid,
             queryFiles: true,
             resolveUid: uid => service.sessionCall(state, 'resolve', { uid }),
-            forward: element => ({ id: registry.registerChild(state, handle, record, element) }),
+            forward: element => {
+                if (resourceRead) throw annotate(problem('UNSUPPORTED', 'Resource-only nested forwards have no verified native parent'), { reason: 'unsupported_element' });
+                return { id: registry.registerChild(state, handle, record, element) };
+            },
             image: element => mergedImage(service, state, element),
             record: () => { throw problem('UNSUPPORTED', 'Merged-forward voice download context is not verified'); },
             video: () => { throw problem('UNSUPPORTED', 'Merged-forward video download context is not verified'); },
-            reply: () => { throw problem('UNSUPPORTED', 'Merged-forward quoted-message identity is not verified'); }
+            reply: () => { throw annotate(problem('UNSUPPORTED', 'Merged-forward quoted-message identity is not verified'), { reason: 'quote_unavailable' }); }
         });
+        const content = decoded.message, partial = compatibility.metadata(decoded.issues);
+        allIssues.push(...decoded.issues.map(item => ({ ...item, node_index: nodeIndex })));
         const nickname = record.sendNickName ?? record.senderNickname;
         if (nickname !== undefined && typeof nickname !== 'string') throw problem('INVALID_RESPONSE', 'Merged node has an invalid nickname');
         messages.push({ time: timestamp, sender: { user_id: userId, nickname: nickname ?? '' }, content,
+            ...(partial ? { _freshwater: partial } : {}),
             ...(typeof record.sendMemberName === 'string' ? { sender_card: record.sendMemberName } : {}) });
     }
     await service.assertSession(state);
     // OneBot v11 names the node-segment array `message`. Common QQ clients
     // additionally consume `messages` with per-node sender/time/content.
     const message = messages.map(node => ({ type: 'node', data: {
-        user_id: String(node.sender.user_id), nickname: node.sender.nickname, content: node.content
+        user_id: String(node.sender.user_id), nickname: node.sender.nickname, time: node.time, content: node.content,
+        ...(node._freshwater ? { _freshwater: node._freshwater } : {})
     } }));
-    return { message, messages };
+    const partial = compatibility.metadata(allIssues);
+    if (partial) (service.queueDiagnostic || service.log)?.call(service, 'message_partial', { count: partial.issue_count, traceId: operation?.traceId,
+        phase: 'forward_read', reason: partial.issues[0].reason, nodeIndex: partial.issues[0].node_index });
+    return { message, messages, ...(partial ? { _freshwater: { ...partial, ...(operation?.traceId ? { trace_id: operation.traceId } : {}) } } : {}) };
 }
 
 async function runForward(service, state, action, params) {

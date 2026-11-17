@@ -52,11 +52,12 @@ async function runForwardExtra(service, state, action, params) {
     const normalized = normalizeMergedNodes(messages, { selfId: String(state.self.uin) });
     if (normalized.some(node => node.content.some(segment => segment.type !== 'text'))) fail('UNSUPPORTED', 'Upload-only forwarding currently supports complete text nodes; image uploads need a separate verified resource upload path');
     if (state.capabilities?.forwardUpload !== true) fail('UNSUPPORTED', 'QQ fixed forward resource upload is unavailable');
-    const nodes = normalized.map(node => ({ nickname: node.nickname, texts: node.content.map(segment => segment.data.text) }));
+    const nodes = normalized.map(node => ({ authorUin: node.user_id, nickname: node.nickname,
+        ...(node.time === undefined ? {} : { time: node.time }), texts: node.content.map(segment => segment.data.text) }));
     const result = await service.sessionCall(state, 'forwardUpload', { nodes, ...(groupId !== '0' ? { groupId } : {}) });
     await service.assertSession(state);
-    if (result?.uploaded !== true || result.sent !== false || result.confirmation !== 'fixed-longmsg-resource-and-exact-readback' || result.nodeCount !== nodes.length ||
-        (groupId === '0' ? result.groupId !== undefined : result.groupId !== groupId)) fail('INVALID_RESPONSE', 'QQ supplied no exact upload-only forward resource confirmation');
+    if (result?.uploaded !== true || result.sent !== false || result.confirmation !== 'fixed-longmsg-resource-and-semantic-readback' || result.nodeCount !== nodes.length ||
+        (groupId === '0' ? result.groupId !== undefined : result.groupId !== groupId)) fail('INVALID_RESPONSE', 'QQ supplied no verified upload-only forward resource confirmation');
     const resId = protocol.resource(result.resId, 'INVALID_RESPONSE');
     return { message_id: 0, res_id: resId, forward_id: resId, ...(action === 'upload_forward_msg' && groupId !== '0' ? { group_id: Number(groupId) } : {}) };
 }

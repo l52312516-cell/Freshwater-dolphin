@@ -45,7 +45,8 @@ test('misc protocol rejects malformed miniapp JSON, missing card delivery and co
         ['miniapp.ark', { ...inputs['miniapp.ark'], picUrl: 'file:///etc/passwd' }], ['card.send', { ...inputs['card.send'], peerType: true }], ['group.sign', { ...inputs['group.sign'], command: 'raw' }]]) assert.throws(() => wire.prepare(operation, input), { code: 'INVALID_PARAMS' });
 });
 function fixture() {
-    const calls = [], capture = { epoch: 'e1', session: {}, self: { uin: '12345', uid: 'u_self' }, ensureReady() {}, deadline: fn => fn() };
+    const calls = [], capture = { epoch: 'e1', session: {}, self: { uin: '12345', uid: 'u_self' }, ensureReady() {}, deadline: fn => fn(),
+        runtimeProfile() { return { features: { tuwenArk: this.qqVersion !== '3.2.35-54395' } }; } };
     const native = { available: () => true, async run(_capture, params) { calls.push(params); assert.equal(params.op, 'fixedMiscExtra'); assert.equal(params.expectedEpoch, capture.epoch);
         const prepared = wire.prepare(params.operation, params.request); return wire.decode(reply(prepared), prepared); } };
     const api = createMiscExtra(capture, { native }), state = () => ({ ready: true, epoch: capture.epoch, self: capture.self, capabilities: { ...api.capabilities(), reply: true } });
