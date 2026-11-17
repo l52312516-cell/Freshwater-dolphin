@@ -1,8 +1,10 @@
 # 闪传扩展（11 个 action）
 
+公开验证范围见 [发行验证摘要](releases/0.2.0-alpha.3.md)；历史批次的内部执行记录不随源码发布。
+
 协议依据只读参考 SnowLuma 2.4.2（`5dcbfa6f`）的 flash-transfer 定义、固定命令，以及 LLBot 固定提交 `0308b628` 的服务端上传凭据字段和顺序；账号历史删除另以实际 Linux QQ `3.2.35-54395` 的 `wrapper.node` 转换器确认固定 native 契约。所有请求由内部固定 operation 生成；调用者不能指定 SSO 命令、OIDB 模式、native 方法、HTTP 目标或原始 protobuf。`flashCreate` 按 native、HTTP 和账号媒体目录就绪状态计算；完整创建仍待真实云端验收，不会仅凭离线实现或任务受理宣称完成。本次服务端 token 修复是未部署的本地候选，历史验收与门控证据独立保留。
 
-2026-11-16 的 wave4r3 已在副账号真实验证 `delete_flash_file`：对先前创建的唯一临时 fileset，精确 native ACK 后重新查询目录未见目标，报告 `flashCleanupConfirmed=true`；账号健康和既有消息映射保留。验证范围是该账号历史条目移除，不包括物理存储销毁、其他用户副本或全部分享权限撤销。当时创建保持版本禁用，历史验收结论不因本地修复改写。脱敏验收记录：`outputs/qqapi-wave4r3-secondary-cloud-acceptance-20261116.json`。
+2026-11-16 的 wave4r3 已在副账号真实验证 `delete_flash_file`：对先前创建的唯一临时 fileset，精确 native ACK 后重新查询目录未见目标，报告 `flashCleanupConfirmed=true`；账号健康和既有消息映射保留。验证范围是该账号历史条目移除，不包括物理存储销毁、其他用户副本或全部分享权限撤销。当时创建保持版本禁用，历史验收结论不因本地修复改写。脱敏验收记录：`qqapi-wave4r3-secondary-cloud-acceptance-20261116.json`（内部归档）。
 
 | Action | 参数 | 返回及边界 |
 | --- | --- | --- |
@@ -54,6 +56,6 @@
 
 离线测试覆盖固定 command/sub/mode、显式零值、主文件/缩略图区分、精确身份与大小、全部上传阶段、文件目录边界、HTTP 限制、取消/会话切换的物理并发占用及写操作不重放。恢复回归另覆盖 commit 前持久化、部分失败、跨实例/会话显式删除、跨账号及共享文件拒绝、失败 ACK 保留记录、迟到分配、容量预留与链接/权限/schema 校验；Windows 无符号链接权限时只验证硬链接拒绝，POSIX 权限用例仅在 POSIX 运行。此前额外用参考项目原始 TypeScript schema 经其 `ProtobufCompiler` 独立编译，7 组纯合成 prepare/apply（主文件、PNG、JPG）及主文件 download 编码逐字节一致；这是历史证据，不覆盖本次服务端 grant 的新语义。本次另覆盖服务端 summary 字段、缺失/重复/错型凭据与 U32 边界、原值重用、上传后 commit、缺 token 零上传、切片失败零 commit、未知 commit 结果与恢复，以及不透明 token 的精确 URL 参数比较。没有把真实账号身份、包内容或上传凭据作为测试 fixture。
 
-2026-11-17 的 [r11q 只读验收](../outputs/qqapi-wave5-readonly-r11q-cloud-acceptance-20261116.json)使用批准测试群实际缓存的官方分享链接，两个账号的 `get_fileset_id`、`get_fileset_info`、`get_flash_file_list`、`get_share_link` 共 8/8 通过，详情与列表仅证明同一条实际元数据和分享链接闭环。该批两次 `download_fileset` 失败与两个 URL 别名跳过保留；[已存回包的离线分析](../outputs/qqapi-wave5-flash-url-shape-offline-r3-report.json)证实独立凭据带有前导 `&`，原解析器漏识别。
+2026-11-17 的 r11q 只读验收使用批准测试群实际缓存的官方分享链接，两个账号的 `get_fileset_id`、`get_fileset_info`、`get_flash_file_list`、`get_share_link` 共 8/8 通过，详情与列表仅证明同一条实际元数据和分享链接闭环。该批两次 `download_fileset` 失败与两个 URL 别名跳过保留；已存回包的离线分析证实独立凭据带有前导 `&`，原解析器漏识别。
 
-修复在 r12 云端部署后，[r13q](../outputs/qqapi-wave5-readonly-r13q-cloud-acceptance-20261116.json)两个账号各一次 `download_fileset` 和 `get_flash_file_url`，共 4/4 通过；URL 对原始主文件元信息中的精确 fileId 校验，文件名、大小与实际索引 1 相符。[外部检查](../outputs/qqapi-wave5-readonly-r13q-external-guard-20261117.json)确认运行容器、配置、双路由及消息映射保持。本轮未下载闪传文件字节，未验证内容摘要、完整目录、创建或发送，历史失败不改写。
+修复在 r12 云端部署后，r13q两个账号各一次 `download_fileset` 和 `get_flash_file_url`，共 4/4 通过；URL 对原始主文件元信息中的精确 fileId 校验，文件名、大小与实际索引 1 相符。外部检查确认运行容器、配置、双路由及消息映射保持。本轮未下载闪传文件字节，未验证内容摘要、完整目录、创建或发送，历史失败不改写。

@@ -73,7 +73,7 @@ QQ 账号先保持延迟启动。新镜像完成身份握手和冷快照提交�
 
 首次尚未初始化时，启动器通过固定 guest 命令读取原有 `setup-token.txt`，仅显示到当前终端，不进入常规日志、浏览器 URL 或额外 Windows 凭据副本。初始化后沿用管理台删除该文件的行为。
 
-如果已有 `.wslconfig` 指定 `localhostForwarding=false`，保留原配置并拒绝运行，提示用户明确启用后重试。没有自动 `netsh portproxy`、网卡监听或 eth0 直连回退。每个 QQ 账号独立配置 OneBot/AstrBot 连接；更新保留已有节点和每账号数据，一个容器管理多个独立 QQ 进程。多个 QQ 对接 AstrBot 时，建议每个 QQ 配置独立机器人入口。
+如果已有 `.wslconfig` 指定 `localhostForwarding=false`，保留原配置并拒绝运行，提示用户明确启用后重试。没有自动 `netsh portproxy`、网卡监听或 eth0 直连回退。每个 QQ 账号独立配置 OneBot v11 应用连接；更新保留已有节点和每账号数据，一个容器管理多个独立 QQ 进程。多个 QQ 对接同一下游框架时，建议每个 QQ 配置独立机器人入口。
 
 ## 更新与恢复边界
 

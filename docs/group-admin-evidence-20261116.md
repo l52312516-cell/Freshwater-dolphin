@@ -4,7 +4,7 @@
 
 ## 匿名接口
 
-`E:/worke/snowluma.git/SnowLuma-latest/packages/onebot/src/actions/group-admin.ts:689` 和 `:706` 将 `set_group_anonymous`、`set_group_anonymous_ban` 明确放在 `No-op stubs` 下，handler 直接返回 `okResponse()`，没有协议或原生业务调用。对该参考的 protocol 与 groupAdmin API 检索未发现可复用的真实匿名操作。
+所参考的 SnowLuma 源码 `packages/onebot/src/actions/group-admin.ts` 将 `set_group_anonymous`、`set_group_anonymous_ban` 明确放在 `No-op stubs` 下，handler 直接返回 `okResponse()`，没有协议或原生业务调用。对该参考的 protocol 与 groupAdmin API 检索未发现可复用的真实匿名操作。
 
 本项目保留这两个标准名称的 `UNSUPPORTED` 结果，不注册成功实现、不把未修改设置报告为成功。后续若要开放，需有真实固定协议或 QQ 内核方法、精确匿名目标标识和可归属回执的证据。
 

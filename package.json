@@ -1,7 +1,7 @@
 {
   "name": "freshwater-dolphin",
   "version": "0.2.0-alpha.3",
-  "description": "An independent QQ kernel adapter for OneBot v11 and AstrBot",
+  "description": "An independent QQ adapter for the OneBot v11 ecosystem",
   "private": true,
   "license": "LicenseRef-Freshwater-Source-Available-Noncommercial",
   "type": "commonjs",

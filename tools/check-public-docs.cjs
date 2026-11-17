@@ -2,10 +2,14 @@
 
 const fs = require('node:fs'), path = require('node:path');
 const root = path.resolve(__dirname, '..');
+function markdownFiles(directory) {
+    return fs.readdirSync(path.join(root, directory), { withFileTypes: true }).flatMap(item => {
+        const relative = path.posix.join(directory, item.name);
+        return item.isDirectory() ? markdownFiles(relative) : item.isFile() && item.name.endsWith('.md') ? [relative] : [];
+    });
+}
 const documents = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'SUPPORT.md', 'THIRD_PARTY_NOTICES.md',
-    'docs/README.md', 'docs/linux-deployment.md', 'docs/usage.md', 'docs/windows-runtime.md',
-    'docs/qq-runtime-management.md', 'docs/message-compatibility.md', 'docs/contributing-ai-review.md',
-    'docs/releases/0.2.0-alpha.3.md', 'webui/README.md'];
+    'webui/README.md', ...markdownFiles('docs')];
 const broken = [];
 for (const relative of documents) {
     const file = path.join(root, relative);
@@ -17,6 +21,7 @@ for (const relative of documents) {
         const local = decodeURIComponent(target.split('#')[0].split('?')[0]);
         if (!local) continue;
         const full = path.resolve(path.dirname(file), local), fromRoot = path.relative(root, full);
+        if (/^(?:work|outputs)[/\\]/.test(fromRoot)) { broken.push(relative + ': private artifact link ' + target); continue; }
         if (fromRoot.startsWith('..') || path.isAbsolute(fromRoot) || !fs.existsSync(full)) broken.push(relative + ': ' + target);
     }
 }
