@@ -2,14 +2,14 @@
 
 [项目首页](../README.md) · [下载发行版](https://github.com/l52312516-cell/Freshwater-dolphin/releases) · [获取帮助](../SUPPORT.md)
 
-首次使用可按顺序阅读：选择运行平台 → 初始化与 QQ 登录 → 连接 AstrBot → 查询当前账号能力。
+首次使用可按顺序阅读：选择运行平台 → 初始化与 QQ 登录 → 连接 OneBot v11 应用 → 查询当前账号能力。
 
 ## 使用与部署
 
 - [项目介绍与快速开始](../README.md)
 - [Windows 命令行预览包](windows-runtime.md)
 - [Linux / Docker 部署](linux-deployment.md)
-- [管理台、QQ 登录与 AstrBot](usage.md)
+- [管理台、QQ 登录与 OneBot v11](usage.md)
 - [QQ 版本选择、切换与备份 v3](qq-runtime-management.md)
 - [原生模块构建](native-build.md)
 - [消息存储、恢复与专用 Docker 服务](storage-and-recovery.md)

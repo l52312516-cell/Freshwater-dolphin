@@ -4,7 +4,7 @@
 
 # Freshwater-dolphin
 
-**面向 OneBot v11 与 AstrBot 的 QQ 适配器**
+**面向 OneBot v11 生态的 QQ 适配器**
 
 中文 WebUI · 多账号管理 · 消息与媒体 · 版本与恢复
 
@@ -18,7 +18,7 @@
 
 </div>
 
-Freshwater 将 QQ 接入、OneBot 协议、账号管理和运行诊断集中在一个项目中。你可以在浏览器里管理 QQ 实例、完成远程登录，并将各账号连接到 AstrBot 等 OneBot v11 应用。
+Freshwater 将 QQ 接入、OneBot 协议、账号管理和运行诊断集中在一个项目中。你可以在浏览器里管理 QQ 实例、完成远程登录，并将各账号连接到任何兼容 OneBot v11 的机器人框架、应用或自建服务。
 
 > [!IMPORTANT]
 > 当前为 **Alpha / 小范围试运行版本**。稳定参考是 **Linux x64 + QQ 3.2.35-54395**。Windows 发行包通过 Alpine WSL2 运行 Linux QQ，仍待真实 WSL 与双账号完整验收；其他 Linux QQ 构建仅提供受限实验兼容，Windows QQ 9.9.x 原生适配尚未实现。
@@ -66,17 +66,17 @@ docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml logs --tail 100
 ```
 
-管理台默认端口为 **4090**。首次口令位于运行目录 `work/control/setup-token.txt`；初始化后设置独立管理密码。对外提供管理台时，请配置 HTTPS 和访问范围。
+管理台默认端口为 **4090**。首次口令位于实例私有运行目录的 `control/setup-token.txt`；初始化后设置独立管理密码。对外提供管理台时，请配置 HTTPS 和访问范围。运行目录属于本机部署数据，不会进入源码包或 GitHub Release。
 
 源码包不含 QQ 安装内容；Windows 离线二进制包内置 Linux QQ 安装内容。QQ 及其他第三方组件遵循各自条款，详见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-### 连接 AstrBot
+### 连接 OneBot v11 应用
 
-在管理台创建账号并完成 QQ 登录，再添加反向 WebSocket 节点；AstrBot 侧选择 **OneBot v11 / aiocqhttp**，填入匹配的地址与 token。
+在管理台创建账号并完成 QQ 登录，再添加 HTTP 或反向 WebSocket 节点；在下游框架中选择其 **OneBot v11** 适配器，填入匹配的地址、路径与 token。AstrBot / aiocqhttp 只是一个配置示例，其他支持 OneBot v11 的框架同样可以连接。
 
-双账号应分别使用独立 AstrBot 平台入口。既有配置保持 **legacy → 17700、secondary → 17701**；端口和路径以你的实际部署为准。容器中的 `127.0.0.1` 代表该容器，跨容器连接请使用实际可达地址。
+双账号应分别使用独立的下游机器人入口。既有 AstrBot 配置保持 **legacy → 17700、secondary → 17701**；端口和路径以你的实际部署为准。容器中的 `127.0.0.1` 代表该容器，跨容器连接请使用实际可达地址。
 
-详细步骤、鉴权、远程登录与备份见 [管理台与 AstrBot 指南](docs/usage.md)。
+详细步骤、鉴权、远程登录与备份见 [管理台与 OneBot v11 指南](docs/usage.md)。
 
 ## 文档
 
@@ -84,7 +84,7 @@ docker compose -f deploy/compose.yaml logs --tail 100
 | --- | --- |
 | [Windows 运行说明](docs/windows-runtime.md) | [运行结构](docs/architecture.md) |
 | [Linux 部署](docs/linux-deployment.md) | [能力矩阵](docs/reference/capability-matrix.md) |
-| [管理台与 AstrBot](docs/usage.md) | [消息兼容与日志](docs/message-compatibility.md) |
+| [管理台与 OneBot v11](docs/usage.md) | [消息兼容与日志](docs/message-compatibility.md) |
 | [QQ 运行版本与恢复](docs/qq-runtime-management.md) | [能力边界](docs/capability-limits.md) |
 | [通知设置](docs/notifications.md) | [存储与故障恢复](docs/storage-and-recovery.md) |
 
@@ -114,4 +114,4 @@ native 后端要求完整构建和二进制指纹精确匹配。QQ 进程存活�
 
 Freshwater 原创源码使用 [源码可见非商业许可](LICENSE)，**不是 OSI 开源许可证**。使用、商业用途、再分发与修改版发布的范围以许可证正文为准；第三方组件保持原许可。
 
-感谢 [OneBot](https://onebot.dev/)、[AstrBot](https://github.com/AstrBotDevs/AstrBot)、[SnowLuma](https://github.com/TomyJan/SnowLuma)、[NapCatQQ](https://github.com/NapNeko/NapCatQQ)、[LuckyLilliaBot](https://github.com/LuckyLilliaDev/LuckyLilliaBot) 及相关协议研究项目提供的生态和公开参考。具体契约来源、组件和实现边界记录于 [第三方声明](THIRD_PARTY_NOTICES.md)。
+感谢 [OneBot](https://onebot.dev/)、[AstrBot](https://github.com/AstrBotDevs/AstrBot)、[SnowLuma](https://github.com/TomyJan/SnowLuma)、[NapCatQQ](https://github.com/NapNeko/NapCatQQ)、[LuckyLilliaBot](https://github.com/LuckyLilliaDev/LuckyLilliaBot) 及相关协议研究项目提供的生态和公开参考。Freshwater 可连接任何兼容 OneBot v11 的下游实现；具体契约来源、组件和实现边界记录于 [第三方声明](THIRD_PARTY_NOTICES.md)。
