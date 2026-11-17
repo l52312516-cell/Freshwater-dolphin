@@ -164,7 +164,7 @@ defineExpose({ openSection });
           <form @submit.prevent="emit('saveSettings')">
             <fieldset :disabled="busy">
               <label>同时运行账号上限<input v-model.number="settings.maxAccounts" type="number" min="1" max="16" required /><small>默认 2 个；增加上限前请核对可用内存。</small></label>
-              <label>对外资源链接地址<input v-model="settings.publicBaseUrl" type="url" placeholder="https://your-server.example:4090" /><small>填写 AstrBot 可访问的管理台 HTTP(S) 地址，用于签名资源链接；留空不生成外部地址。</small></label>
+              <label>对外资源链接地址<input v-model="settings.publicBaseUrl" type="url" placeholder="https://your-server.example:4090" /><small>填写下游 OneBot 应用可访问的管理台 HTTP(S) 地址，用于签名资源链接；留空不生成外部地址。</small></label>
               <section class="status-command-settings" aria-label="内置状态指令">
                 <div class="status-command-heading"><div><span class="eyebrow">BUILT-IN COMMAND</span><h3>内置状态指令</h3><p>向当前 QQ 发送触发词，查看适配器状态。</p></div><span class="badge" :class="settings.statusCommand.enabled ? 'running' : 'stopped'">{{ settings.statusCommand.enabled ? '已开启' : '已关闭' }}</span></div>
                 <div class="switch-row"><div class="switch-row-text"><strong>开启状态指令</strong><small>关闭后不响应触发词，不影响 OneBot 连接。</small></div><button type="button" class="switch" :class="{ on: settings.statusCommand.enabled }" role="switch" aria-label="开启内置状态指令" :aria-checked="settings.statusCommand.enabled" @click="settings.statusCommand.enabled = !settings.statusCommand.enabled"><span></span></button></div>
@@ -252,7 +252,7 @@ defineExpose({ openSection });
       <template v-else>
         <section class="panel">
           <h2>关于 Freshwater-dolphin</h2>
-          <p>独立维护的 QQ kernel / OneBot v11 适配器管理台。协议适配与应用逻辑分离，AstrBot 及其插件独立部署。</p>
+          <p>独立维护的 QQ kernel / OneBot v11 适配器管理台。协议适配与应用逻辑分离，下游机器人框架及插件独立部署。</p>
           <div class="summary-list">
             <div class="info-row"><span>管理台版本</span><strong>{{ overview.version || '未知' }}</strong></div>
             <div class="info-row"><span>目标环境</span><strong>Linux x64 · QQ 3.2.35-54395</strong></div>

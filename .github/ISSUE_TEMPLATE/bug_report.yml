@@ -61,9 +61,9 @@ body:
     id: downstream
     attributes:
       label: 下游客户端与连接配置
-      description: 如涉及 AstrBot，请填写版本、插件版本与连接方式。多账号只需用 A / B 别名说明路由，不需要真实 QQ 号、地址或 token。
+      description: 如涉及下游 OneBot v11 框架（例如 AstrBot），请填写框架版本、相关插件版本与连接方式。多账号只需用 A / B 别名说明路由，不需要真实 QQ 号、地址或 token。
       placeholder: |
-        AstrBot 版本 / 相关插件版本：
+        下游 OneBot v11 框架及版本（例如 AstrBot）/ 相关插件版本：
         账号 A → 反向 WS 入口 A，账号 B → 独立入口 B
         同一入口是否连接多个账号：
   - type: textarea

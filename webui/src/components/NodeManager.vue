@@ -236,7 +236,7 @@ watch(() => props.selectedId, closeEditors);
         <fieldset :disabled="busy">
           <SectionCard title="基础" hint="节点标识与连接类型">
             <div class="form-grid">
-              <label>节点名称<input v-model="editor.label" maxlength="100" placeholder="例如：AstrBot" /></label>
+              <label>节点名称<input v-model="editor.label" maxlength="100" placeholder="例如：OneBot 机器人" /></label>
               <label>节点 ID<input v-model="editor.id" :readonly="editorIndex >= 0" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required /><small>用于独立接入路径，已有节点保持 ID 不变。</small></label>
               <label>连接类型<select v-model="editor.type"><option value="httpApi">HTTP API</option><option value="httpPost">HTTP 客户端</option><option value="wsServer">WS 服务端</option><option value="wsClient">WS 客户端</option></select></label>
             </div>
@@ -248,7 +248,7 @@ watch(() => props.selectedId, closeEditors);
 
           <SectionCard title="连接" :hint="editor.type.startsWith('ws') ? '地址、角色与心跳' : '上游地址'">
             <div class="form-grid">
-              <label v-if="['httpPost', 'wsClient'].includes(editor.type)" class="full-row">连接地址<input v-model="editor.url" :placeholder="editor.type === 'httpPost' ? 'https://bot.example/events' : 'ws://astrbot:6199/ws'" required /></label>
+              <label v-if="['httpPost', 'wsClient'].includes(editor.type)" class="full-row">连接地址<input v-model="editor.url" :placeholder="editor.type === 'httpPost' ? 'https://bot.example/events' : 'ws://bot.example:6199/ws'" required /></label>
               <label v-if="editor.type.startsWith('ws')">连接角色<select v-model="editor.role"><option value="Universal">Universal · 动作与事件</option><option value="Api">Api · 仅动作</option><option value="Event">Event · 仅事件</option></select></label>
               <label v-if="editor.type.startsWith('ws')">心跳间隔（毫秒）<input v-model.number="editor.heartbeatMs" type="number" min="100" max="300000" required /></label>
               <label>请求超时（毫秒）<input v-model.number="editor.timeoutMs" type="number" min="100" max="120000" /></label>

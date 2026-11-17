@@ -23,7 +23,7 @@ QQ 会话由官方应用创建和初始化，接入代码观察这一过程后�
 | HTTP API | 下游经管理服务调用账号工作进程 |
 | HTTP 事件上报 | 工作进程向配置的 HTTP(S) 地址发送事件 |
 | 正向 WebSocket | 下游经管理服务连接账号工作进程，支持 Universal、Api、Event 角色 |
-| 反向 WebSocket | 工作进程主动连接 AstrBot 等下游的 WS(S) 地址 |
+| 反向 WebSocket | 工作进程主动连接 OneBot v11 下游应用的 WS(S) 地址 |
 
 HTTP API 和正向 WS 对外使用 `/onebot/<profileId>/<nodeId>` 前缀，下面保留动作或角色路径。管理服务转发到相应工作进程在 `127.0.0.1` 上动态分配的网关端口；节点验证自己的 OneBot token，不接受管理台 Cookie 代替。管理台动作入口使用单独的会话授权凭据。结果只返回原请求连接，节点独立排队、限流和记录连接状态。
 

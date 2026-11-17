@@ -18,7 +18,7 @@ Freshwater-dolphin 的原创源码适用根目录 `LICENSE`。本文件不会改
 | Alpine Linux / Docker Engine / Compose | Windows 离线包内的确切版本及软件包清单见 release manifest 与 `docs/alpine-packages.txt` | 各软件包独立许可；Alpine rootfs 内保留软件包元数据，Docker/Moby 及 Compose 按各自许可分发 |
 | aiocqhttp / Hypercorn / Quart / Flask | 仅可选互操作测试，版本见 requirements-test.txt | 前三者 MIT，Flask 为 BSD-3-Clause；其他间接依赖按各自许可。通过独立 Python 环境安装，不打入运行镜像 |
 
-OneBot v11 是本项目实现的通信协议。AstrBot 是对接目标；本项目不包含 AstrBot 源码。
+OneBot v11 是本项目实现的通信协议，可连接兼容该协议的下游框架，AstrBot 是其中一个示例；本项目不包含 AstrBot 源码。
 
 Windows 离线包同时附带 Node.js 的 `runtime/node/LICENSE`、系统软件包清单及本声明。QQ 安装包仅供相应兼容运行环境使用；Electron/Chromium 的第三方许可不等于腾讯 QQ 整体许可。本项目不授予任何 QQ 服务、账号或第三方商标权利。
 

@@ -1,5 +1,7 @@
 # 资料互动与群文件查询
 
+公开验证范围见 [发行验证摘要](releases/0.2.0-alpha.3.md)；历史批次的内部执行记录不随源码发布。
+
 本批独立实现参考最新 QQApi `ea266f1` 已确认的普通 kernel 契约，不加载参考项目的原生库或脚本。目标版本仍为 Linux x64 QQ `3.2.35-54395`。接口可通过已配置的 HTTP、正向或反向 WebSocket 以及管理台消息调试使用，复用账号、会话、鉴权、超时和 `echo` 规则。
 
 | action | 参数 | 返回与边界 |
@@ -15,11 +17,11 @@
 
 ### r13 私聊文件参数与限定云验
 
-正式[r13 兼容修复与云验汇总](../outputs/qqapi-compatibility-r13-cloud-acceptance-20261117.md)与最新[r3 覆盖台账](../outputs/qqapi-wave5r3-200-coverage-20261117.md)已生成；r2 台账与计数继续保留为历史快照。
+正式r13 兼容修复与云验汇总与最新r3 覆盖台账已生成；r2 台账与计数继续保留为历史快照。
 
-[r13-r1 部署](../outputs/qqapi-wave5r13-r1-deployment-20261117.json)确认 Linux 全量 **1883/1883**；[运行镜像校验](../outputs/qqapi-wave5r13-r1-running-image-verification-20261117.json)确认 **176 个运行文件、8 个 WebUI 文件**一致，原 **legacy→17700、secondary→17701** 路由保留并连接。
+r13-r1 部署确认 Linux 全量 **1883/1883**；运行镜像校验确认 **176 个运行文件、8 个 WebUI 文件**一致，原 **legacy→17700、secondary→17701** 路由保留并连接。
 
-[r9fid](../outputs/qqapi-wave5-privatefile-r9fid-cloud-acceptance-20261117.json)仅复用原 r7/r8rx 三条既有接收资源：每条四种成功参数为 `message_id+file_id+真实 user_id+原 hash`、仅 `file_id`、`file_id+user_id+hash`、`file_id+file_hash:''`，共 **12 个正向结果**；错误 peer（本号）与错误 hash 均走 `file_id` 路径，共 **6 个精确 retcode 1404 拒绝**。前两种成功变体各完整下载一次，合计 **6 次**，**60、852、852 字节各两次**与原 payload 逐字节及 SHA256 一致；后两种仅验证生产 URL 形状。总计 **18 次公开 action、2 次独立 RPC status、0 业务写入、0 history、0 验收工具 direct native 读取**。[外部守卫](../outputs/qqapi-wave5-privatefile-r9fid-external-guard-20261117.json)确认原容器、镜像、配置、两条路由和旧映射保持。
+r9fid仅复用原 r7/r8rx 三条既有接收资源：每条四种成功参数为 `message_id+file_id+真实 user_id+原 hash`、仅 `file_id`、`file_id+user_id+hash`、`file_id+file_hash:''`，共 **12 个正向结果**；错误 peer（本号）与错误 hash 均走 `file_id` 路径，共 **6 个精确 retcode 1404 拒绝**。前两种成功变体各完整下载一次，合计 **6 次**，**60、852、852 字节各两次**与原 payload 逐字节及 SHA256 一致；后两种仅验证生产 URL 形状。总计 **18 次公开 action、2 次独立 RPC status、0 业务写入、0 history、0 验收工具 direct native 读取**。外部守卫确认原容器、镜像、配置、两条路由和旧映射保持。
 
 `file_id` 查找范围只覆盖本账号 retained 的完整 records；已裁剪 record 需使用仍有效的已知 `message_id`/locator 刷新，不能据此下载任意文件或恢复失效定位。早期 **56041 字节**样本仍见 `native-validation-20261116.md`，它本身不覆盖其他参数变体。r5 旧失败及 r7 接收端 0/3 保留，新验收不外推任意文件、账号、格式、classic Offline、完整入站导出或 AstrBot/plugin 传输，历史分层见[能力边界](capability-limits.md)。
 

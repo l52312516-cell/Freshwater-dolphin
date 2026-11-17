@@ -1,5 +1,7 @@
 # 群相册扩展
 
+公开验证范围见 [发行验证摘要](releases/0.2.0-alpha.3.md)；历史批次的内部执行记录不随源码发布。
+
 本模块对照 `SnowLuma-latest/packages/onebot/src/actions/group-album.ts` 的实际 registry、`packages/core/src/bridge/apis/group-album.ts`、`packages/proto-defs/src/oidb-actions/group-album.ts` 以及 `packages/protocol/src/web/group-album.ts` 独立实现。列表使用 QQ NT 原生 AlbumService，上传使用固定 Qzone Web 服务。本记录和离线测试不代表群相册云端写入已验收。
 
 ## 公开动作
@@ -45,7 +47,7 @@ protobuf bool 按 `0=false`、任意非零 varint 为 `true` 解码，不截断�
 
 `file` 只接受当前账号媒体目录中的 `fwd-image-...` 或 `fwd-video-...` 不透明句柄，以及 canonical `base64://`。拒绝任意本地路径、`file://`、远程 URL 和其他账号资源。图片沿用本项目已经实现的 PNG/JPEG/GIF 字节校验及 10 MiB 上限；WebP/BMP 不因参考仓库支持就跳过本项目媒体验证。视频沿用 50 MiB、完整 H.264 MP4、真实尺寸与时长校验及工作区 FFmpeg 封面生成；没有可用解码器时只禁用视频上传能力。
 
-外层 OneBot action 仍受 16 MiB 请求上限约束，因此较大的视频应使用已经存在的账号媒体句柄。视频临时导入只在账号媒体目录内暂存，并在准备结束后清理，不删除调用方原有资源。FFmpeg 自身的临时文件和缓存遵循工作区 `work/temp`、`work/cache` 约定。
+外层 OneBot action 仍受 16 MiB 请求上限约束，因此较大的视频应使用已经存在的账号媒体句柄。视频临时导入只在账号媒体目录内暂存，并在准备结束后清理，不删除调用方原有资源。FFmpeg 自身的临时文件和缓存保存在实例私有运行目录。
 
 上传前核对真实相册 ID 与名称，并确认媒体列表可读。登录仅允许固定 `ssl.ptlogin2.qq.com`、`ptlogin2.qzone.qq.com/check_sig` 和 `qzone.qq.com` HTTPS 跳转；CookieJar 限制域、路径和有效期，核对登录账号，必要时只向原生 `getPskey` 请求 `qzone.qq.com`。凭据、clientKey、upload session 和服务端原始错误文本不进入 RPC 结果或日志。
 
@@ -59,10 +61,10 @@ protobuf bool 按 `0=false`、任意非零 varint 为 `true` 解码，不截断�
 
 `createGroupAlbum(capture)` 提供 `capabilities/query/action`。公开 RPC 为 `groupAlbumQuery`、`groupAlbumAction`；native operation 为 `fixedGroupAlbum`。OneBot 模块导出 `ACTIONS/READ_ONLY_ACTIONS/EXTENSION_REQUIREMENTS/runGroupAlbum`。
 
-`tests/group-album.test.cjs` 与 `tests/group-album-upload.test.cjs` 共 42 项离线测试通过，涵盖真实 native channel、九项公共 `OneBotService.action`、能力及上传期限、完整分页、精确 ACK/原生读回、固定 Cookie 与 Web 目标、账号隔离、视频与封面两阶段上传、超时和不重试。连同 admin、share、native-channel、媒体、视频和 transports 的定向回归共 167 项全部通过，日志为 `work/group-album-regression.log`。
+`tests/group-album.test.cjs` 与 `tests/group-album-upload.test.cjs` 共 42 项离线测试通过，涵盖真实 native channel、九项公共 `OneBotService.action`、能力及上传期限、完整分页、精确 ACK/原生读回、固定 Cookie 与 Web 目标、账号隔离、视频与封面两阶段上传、超时和不重试。连同 admin、share、native-channel、媒体、视频和 transports 的定向回归共 167 项全部通过，日志为 `group-album-regression.log`（内部归档）。
 
 没有执行真实群相册写入。云端只读验收与后续写入验收由主任务按已经授权的范围单独进行。
 
-后续 [r14q 分页验收](../outputs/qqapi-wave5-readonly-r14q-cloud-acceptance-20261117.json)双账号共 8 次真实公开读取，6 次通过、2 次失败：各自首屏 5 条，第二页为空但返回全零重置定位器，第三页重新读到首屏而被跨页资源唯一性检查拒绝。该轮未证明完整分页；[外部报告](../outputs/qqapi-wave5-readonly-r14q-external-guard-20261117.json)整体同样失败，四项容器/路由/映射/旧证据保留检查均为 true。[原响应诊断](../outputs/qqapi-album-pagination-r14q-diagnostic-20261117.json)只读取已保存的 HTTP 响应，未新增 QQ 调用。r15 修复先以两条失败回归复现问题，再通过相册目标 49/49；正向云端结果须由新批次另记，不能改写 r14q。
+后续 r14q 分页验收双账号共 8 次真实公开读取，6 次通过、2 次失败：各自首屏 5 条，第二页为空但返回全零重置定位器，第三页重新读到首屏而被跨页资源唯一性检查拒绝。该轮未证明完整分页；外部报告整体同样失败，四项容器/路由/映射/旧证据保留检查均为 true。原响应诊断只读取已保存的 HTTP 响应，未新增 QQ 调用。r15 修复先以两条失败回归复现问题，再通过相册目标 49/49；正向云端结果须由新批次另记，不能改写 r14q。
 
-2026-11-17 的 [r12q 云端只读验收](../outputs/qqapi-wave5-readonly-r12q-cloud-acceptance-20261116.json)在两个批准账号分别调用旧式目录与媒体列表，共 4/4 通过；均通过目录中的真实 `id` 定位唯一 `test` 相册，首屏各返回 5 条图片记录。两次返回均带非空续页游标，本轮未继续分页、下载照片或验证相册写入。[外部检查](../outputs/qqapi-wave5-readonly-r12q-external-guard-20261117.json)确认运行容器、原配置、17700/17701 路由和消息映射保持。旧 r9q 的验收字段错误及 r10q 的真实媒体解码失败分别保留，不能追改为成功。
+2026-11-17 的 r12q 云端只读验收在两个批准账号分别调用旧式目录与媒体列表，共 4/4 通过；均通过目录中的真实 `id` 定位唯一 `test` 相册，首屏各返回 5 条图片记录。两次返回均带非空续页游标，本轮未继续分页、下载照片或验证相册写入。外部检查确认运行容器、原配置、17700/17701 路由和消息映射保持。旧 r9q 的验收字段错误及 r10q 的真实媒体解码失败分别保留，不能追改为成功。

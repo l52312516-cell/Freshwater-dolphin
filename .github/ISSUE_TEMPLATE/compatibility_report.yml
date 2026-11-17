@@ -65,7 +65,7 @@ body:
     id: evidence
     attributes:
       label: 测试范围、步骤与证据
-      description: 分开记录离线测试、登录、只读 API、真实收发、完整下载、AstrBot 处理；未执行项写“未验证”。接口返回 0、资源 ID 或连接成功不单独视为业务通过。
+      description: 分开记录离线测试、登录、只读 API、真实收发、完整下载、下游 OneBot v11 框架处理（例如 AstrBot）；未执行项写“未验证”。接口返回 0、资源 ID 或连接成功不单独视为业务通过。
       placeholder: |
         测试时间及时区：
         action / 参数变体 / 消息类型：
