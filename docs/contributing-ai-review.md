@@ -10,7 +10,9 @@ AI 评审用于发现需要维护者复核的问题，不代表接口、QQ 版�
 - Review effort 为 `lite`，启用仓库自定义指令，关闭 MCP 与跨仓库上下文。
 - 仅使用现有账号权限尝试审核，没有开通付费订阅、购买额度或设置新的 API key。
 
-**配置已保存；实际审核权限、额度及能否完成一次真实 PR 审核仍待验证。** 成功保存规则不代表 Copilot 已完成审核。PR 页面没有实际 review 时，不能记为“AI 已通过”。现有 CI 保持独立，不把 AI review 设为 required gate，也不授予自动合并权限。
+**配置已保存，但现有权限未完成真实 AI 审核。** 已对 [发布 PR #1](https://github.com/l52312516-cell/Freshwater-dolphin/pull/1) 手动请求 `lite` 审核，GitHub 返回 HTTP `422`、`failure_reason: ACTOR_INELIGIBLE`。官方错误说明为：请求者没有包含代码审核的 Copilot 许可，或组织策略禁用了代码审核。该响应没有区分这两个原因，也不是“配额耗尽”的证据。
+
+规则与审核指令保留，未购买订阅、开通付费额度或尝试绕过许可。现有 CI 独立工作；AI review 不作为 required gate，不授予自动合并权限。PR 页面没有实际 review 时，不能记为“AI 已通过”。获得现有计划允许的审核资格、或由管理员解除相关策略限制后，维护者可重新请求并核验实际结果。
 
 原先拟采用的 **GitHub Models 已于 2026-07-30 全面退役**。GitHub 官方说明其 playground、模型目录、推理 API 与 BYOK 均不再向任何客户提供。不能通过添加 `models: read` 权限重新启用，因此本仓库没有调用退役 Models 接口的 workflow。
 
