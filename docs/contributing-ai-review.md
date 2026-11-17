@@ -18,6 +18,8 @@ API 采用 Chat Completions 格式；基础 URL 未以 `/chat/completions` 结�
 
 密钥仅配置为 GitHub Secret，不写入仓库文件、Issue、PR、命令行参数或公开日志。配置存在不代表服务可用，也不代表审核已经完成。
 
+`AI_REVIEW_API_KEY` 必须创建在 **Secrets** 页签；**Variables** 中的同名变量不会被工作流读取。若曾将密钥误填为普通变量，应删除该变量并轮换密钥，再将新值保存为 Secret；仅删除变量不能撤销已暴露的密钥。
+
 ## 自动与手动触发
 
 自动审核使用 `pull_request_target`，仅处理目标为 `main`、分支属于本仓库、作者关联身份为 `OWNER`、`MEMBER` 或 `COLLABORATOR` 的 PR。
